@@ -101,6 +101,11 @@ button {
   font-weight: 700;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 button.secondary {
   background: rgba(255, 255, 255, 0.1);
   color: #f7f5ee;
@@ -137,6 +142,20 @@ button.secondary {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: #e9eef7;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.approval-actions button {
+  height: 34px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #f7f5ee;
 }
 
 .composer {

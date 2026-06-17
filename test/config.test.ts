@@ -46,4 +46,10 @@ describe("config", () => {
     expect(realtime1.realtime.model).toBe("gpt-realtime");
     expect(realtime2.realtime.model).toBe("gpt-realtime-2");
   });
+
+  it("configures OpenAI Realtime turn detection explicitly", () => {
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_TURN_DETECTION: "semantic_vad" });
+
+    expect(config.openai.turnDetection).toBe("semantic_vad");
+  });
 });

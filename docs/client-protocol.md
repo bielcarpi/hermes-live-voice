@@ -50,10 +50,8 @@ The server replies:
 {
   "type": "session.ready",
   "sessionId": "live_...",
-  "sessionKey": "agent:main:hermes-live:profile:default:user:alice",
   "model": "gpt-realtime-2",
   "hermes": {
-    "baseUrl": "http://127.0.0.1:8642",
     "model": "hermes-agent"
   }
 }
@@ -78,6 +76,8 @@ End the current stream:
   "type": "audio.end"
 }
 ```
+
+For OpenAI Realtime with `OPENAI_REALTIME_TURN_DETECTION=disabled`, `audio.end` commits the input buffer and triggers a response. With OpenAI VAD enabled, provider turn detection owns that timing and `audio.end` is treated as a no-op by the OpenAI adapter.
 
 ## Text Input
 

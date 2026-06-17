@@ -55,6 +55,8 @@ Supported providers:
 - OpenAI Realtime through WebSocket.
 - Mock provider for local text tests.
 
+Provider credential tests are not part of the default CI gate. See [live-provider-testing.md](live-provider-testing.md) for the manual evidence required before calling a live deployment ready.
+
 ### Hermes
 
 Hermes owns:
@@ -116,6 +118,8 @@ agent:main:hermes-live:profile:default:user:alice
 ```
 
 For OpenAI Realtime, the gateway also sends a hashed privacy-preserving safety identifier in the `OpenAI-Safety-Identifier` header.
+
+The derived Hermes session key stays server-side. Clients receive the gateway session id, not the internal Hermes session key or Hermes base URL.
 
 ## Failure Model
 

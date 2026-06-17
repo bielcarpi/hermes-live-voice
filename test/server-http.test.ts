@@ -129,6 +129,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       model: "gpt-realtime-2",
       voice: "marin",
       reasoningEffort: "low",
+      turnDetection: "disabled",
       inputAudioFormat: "pcm16",
       outputAudioFormat: "pcm16",
     },

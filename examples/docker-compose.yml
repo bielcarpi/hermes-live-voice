@@ -15,6 +15,7 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-live-2.5-flash-native-audio}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2}
+      OPENAI_REALTIME_TURN_DETECTION: ${OPENAI_REALTIME_TURN_DETECTION:-disabled}
     ports:
       - "8788:8788"
     extra_hosts:

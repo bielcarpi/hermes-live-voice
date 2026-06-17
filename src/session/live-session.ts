@@ -69,9 +69,7 @@ export class LiveGatewaySession {
         ...(this.sessionKey ? { safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey) } : {}),
         callbacks: {
           onOpen: () => {
-            const hermesInfo: { baseUrl: string; model?: string; capabilities?: Record<string, unknown> } = {
-              baseUrl: this.deps.hermes.baseUrl,
-            };
+            const hermesInfo: { model?: string; capabilities?: Record<string, unknown> } = {};
             if (typeof capabilities.model === "string") {
               hermesInfo.model = capabilities.model;
             }
@@ -81,7 +79,6 @@ export class LiveGatewaySession {
             this.send({
               type: "session.ready",
               sessionId: this.id,
-              sessionKey: this.sessionKey ?? "",
               model: this.deps.config.realtime.model,
               hermes: hermesInfo,
             });

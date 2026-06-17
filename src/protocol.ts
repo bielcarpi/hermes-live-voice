@@ -40,9 +40,8 @@ export type ServerMessage =
   | {
       type: "session.ready";
       sessionId: string;
-      sessionKey: string;
       model: string;
-      hermes: { baseUrl: string; model?: string; capabilities?: Record<string, unknown> };
+      hermes: { model?: string; capabilities?: Record<string, unknown> };
     }
   | { type: "session.error"; code: string; message: string; requestId?: string; recoverable?: boolean }
   | { type: "audio.output"; data: string; mimeType: string }

@@ -23,3 +23,4 @@ jobs:
       - run: npm audit --audit-level=high
       - run: python3 -m py_compile plugins/hermes-live/__init__.py
       - run: npm pack --dry-run
+      - run: docker build -t hermes-live:ci .

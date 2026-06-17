@@ -76,6 +76,7 @@ For OpenAI Realtime:
 HERMES_LIVE_PROVIDER=openai
 OPENAI_API_KEY=...
 OPENAI_REALTIME_MODEL=gpt-realtime-2
+OPENAI_REALTIME_TURN_DETECTION=disabled
 HERMES_BASE_URL=http://127.0.0.1:8642
 ```
 
@@ -84,6 +85,8 @@ For OpenAI Realtime 1 style models, set:
 ```sh
 OPENAI_REALTIME_MODEL=gpt-realtime
 ```
+
+`OPENAI_REALTIME_TURN_DETECTION=disabled` keeps push-to-talk behavior where clients send `audio.end`. Set it to `semantic_vad` or `server_vad` for OpenAI-managed turn detection.
 
 For local gateway development without a realtime provider:
 
@@ -109,6 +112,7 @@ Useful commands:
 
 ```sh
 npm run check
+npm run check:web-demo
 npm run print-config
 npm run verify
 ```
@@ -184,6 +188,8 @@ npm run verify
 ```
 
 The test suite uses mock providers and fake Hermes clients. Live provider tests require external credentials and are intentionally not part of the default CI gate.
+
+Use [docs/live-provider-testing.md](docs/live-provider-testing.md) before claiming a real Gemini Live or OpenAI Realtime deployment is ready.
 
 ## References
 
