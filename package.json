@@ -1,0 +1,88 @@
+{
+  "name": "hermes-live",
+  "version": "0.1.0",
+  "description": "Realtime voice gateway for Hermes Agent powered by pluggable live providers.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "author": "Saturday Labs",
+  "homepage": "https://github.com/saturday-labs/hermes-live#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/saturday-labs/hermes-live.git"
+  },
+  "bugs": {
+    "url": "https://github.com/saturday-labs/hermes-live/issues"
+  },
+  "keywords": [
+    "hermes-agent",
+    "gemini-live",
+    "openai-realtime",
+    "realtime",
+    "voice",
+    "agent",
+    "websocket"
+  ],
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/saturday-labs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "hermes-live": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "apps/web-demo",
+    "docs",
+    "examples",
+    "plugins/hermes-live",
+    "!plugins/hermes-live/__pycache__",
+    "!plugins/hermes-live/**/*.pyc",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    ".env.example"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.ts dev",
+    "start": "node dist/cli.js serve",
+    "check": "tsx src/cli.ts check",
+    "print-config": "tsx src/cli.ts print-config",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify": "npm run typecheck && npm test && npm run build",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@google/genai": "^1.24.0",
+    "ws": "^8.18.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  }
+}
