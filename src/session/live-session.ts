@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type WebSocket from "ws";
+import { isPcmMimeType } from "../audio/pcm.js";
 import { makeSessionKey, type AppConfig } from "../config.js";
 import { HermesClient } from "../hermes/client.js";
 import type { Logger } from "../logger.js";
@@ -146,9 +147,7 @@ export class LiveGatewaySession {
     }
     switch (message.type) {
       case "audio.input":
-        if (Buffer.byteLength(message.data, "base64") > this.deps.config.server.maxAudioBytes) {
-          throw new Error("Audio frame exceeds HERMES_LIVE_MAX_AUDIO_BYTES.");
-        }
+        validateAudioFrame(message.data, message.mimeType, this.deps.config.server.maxAudioBytes);
         await this.liveSession.sendRealtimeAudio({ data: message.data, mimeType: message.mimeType });
         break;
       case "audio.end":
@@ -349,6 +348,23 @@ export class LiveGatewaySession {
     this.deps.logger.warn("live session error", { sessionId: this.id, code, message });
     this.send({ type: "session.error", code, message, recoverable });
   }
+}
+
+function validateAudioFrame(data: string, mimeType: string, maxBytes: number): void {
+  const decoded = decodeBase64Audio(data);
+  if (decoded.length > maxBytes) {
+    throw new Error("Audio frame exceeds HERMES_LIVE_MAX_AUDIO_BYTES.");
+  }
+  if (isPcmMimeType(mimeType) && decoded.length % 2 !== 0) {
+    throw new Error("PCM16 audio frames must contain an even number of bytes.");
+  }
+}
+
+function decodeBase64Audio(data: string): Buffer {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data) || data.length % 4 === 1) {
+    throw new Error("Audio frame data must be base64 encoded.");
+  }
+  return Buffer.from(data, "base64");
 }
 
 function errorToMessage(error: unknown): string {

@@ -109,7 +109,7 @@ Required environment:
 
 Optional:
   HERMES_LIVE_PORT          Gateway port, default 8788
-  HERMES_LIVE_AUTH_TOKEN    Require clients to authenticate to /v1/live
+  HERMES_LIVE_AUTH_TOKEN    Require auth for /v1/live, /ready, and /v1/capabilities
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2
 `);

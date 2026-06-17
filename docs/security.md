@@ -19,6 +19,10 @@ Client-side allowed:
 
 - `HERMES_LIVE_AUTH_TOKEN` only if it is scoped/revocable for gateway access.
 
+When `HERMES_LIVE_AUTH_TOKEN` is set, `WS /v1/live`, `GET /ready`, and `GET /v1/capabilities` require authentication. `GET /health` intentionally stays public for health checks.
+
+Prefer `Authorization: Bearer <token>`. Query-token auth exists for browser WebSocket clients that cannot set upgrade headers; avoid it for server-side clients because URLs often appear in logs.
+
 ## Origin Checks
 
 Set:
