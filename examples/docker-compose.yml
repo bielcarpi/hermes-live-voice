@@ -12,7 +12,7 @@ services:
       HERMES_LIVE_AUTH_TOKEN: ${HERMES_LIVE_AUTH_TOKEN:-}
       HERMES_LIVE_ALLOW_ORIGIN: ${HERMES_LIVE_ALLOW_ORIGIN:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-live-preview}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-live-2.5-flash-native-audio}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2}
     ports:
