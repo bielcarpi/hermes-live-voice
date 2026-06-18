@@ -163,6 +163,45 @@ describe("live gateway WebSocket", () => {
     expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", expect.any(AbortSignal));
   });
 
+  it("requests Hermes stop before aborting the run event stream on socket close", async () => {
+    const eventStreamAttached = deferred<void>();
+    const stopped = deferred<void>();
+    let eventStreamSignal: AbortSignal | undefined;
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, signal?: AbortSignal) {
+        eventStreamSignal = signal;
+        eventStreamAttached.resolve();
+        await stopped.promise;
+        yield { event: "run.cancelled" };
+      },
+      stopRun: vi.fn(async () => {
+        expect(eventStreamSignal?.aborted).toBe(false);
+        stopped.resolve();
+        return { status: "stopping" };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run until the socket closes" });
+    await waitForMessage(socket, "run.started");
+    await eventStreamAttached.promise;
+    socket.close(1000, "test close");
+
+    await stopped.promise;
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws");
+  });
+
   it("rejects unauthorized WebSocket upgrades when auth is configured", async () => {
     const server = await startServer({
       config: testConfig({ server: { authToken: "secret-token" } }),
@@ -260,7 +299,7 @@ describe("live gateway WebSocket", () => {
 
 function fakeHermes(
   options: {
-    streamEvents?: () => AsyncGenerator<Record<string, unknown>>;
+    streamEvents?: (runId: string, signal?: AbortSignal) => AsyncGenerator<Record<string, unknown>>;
     stopRun?: ReturnType<typeof vi.fn>;
     submitApproval?: ReturnType<typeof vi.fn>;
   } = {},
