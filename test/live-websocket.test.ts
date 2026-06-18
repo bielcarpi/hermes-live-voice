@@ -321,6 +321,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       port: 0,
       sessionPrefix: "agent:main:hermes-live",
       maxAudioBytes: 2_000_000,
+      demoEnabled: true,
       ...overrides.server,
     },
     hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent" },

@@ -23,6 +23,10 @@ When `HERMES_LIVE_AUTH_TOKEN` is set, `WS /v1/live`, `GET /ready`, and `GET /v1/
 
 Use `Authorization: Bearer <token>` for HTTP endpoints and server-side clients. Query-token auth is accepted only for browser WebSocket clients that cannot set upgrade headers.
 
+## Built-in Demo
+
+The browser demo is useful for local testing but should not be exposed accidentally. It is enabled by default for local development and disabled by default when `NODE_ENV=production`; set `HERMES_LIVE_DEMO_ENABLED=true` only when you intentionally want to serve it.
+
 ## Origin Checks
 
 Set:
@@ -51,6 +55,7 @@ Add your own rate limiting before public deployment.
 
 - `HERMES_LIVE_AUTH_TOKEN` is set.
 - `HERMES_LIVE_ALLOW_ORIGIN` is exact.
+- `HERMES_LIVE_DEMO_ENABLED=false` if the public browser demo is not intentionally exposed.
 - Hermes API Server is private to the gateway network.
 - TLS is enabled.
 - Reverse proxy request size limits are configured.

@@ -8,6 +8,7 @@
 - Add browser demo, docs, examples, and optional plugin metadata.
 - Protect readiness/capabilities behind gateway auth when configured.
 - Restrict query-token auth to browser WebSocket upgrades.
+- Add `HERMES_LIVE_DEMO_ENABLED=false` to disable the built-in browser demo, with production defaults closed.
 - Validate base64 audio frames and PCM16 byte alignment before provider forwarding.
 - Keep internal Hermes session keys server-side.
 - Add OpenAI push-to-talk/VAD turn detection configuration.

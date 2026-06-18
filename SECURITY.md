@@ -24,6 +24,7 @@ Security-sensitive areas include:
 
 - Set `HERMES_LIVE_AUTH_TOKEN` outside local development.
 - Set `HERMES_LIVE_ALLOW_ORIGIN` to the exact app origin in browser deployments.
+- Leave `HERMES_LIVE_DEMO_ENABLED=false` in public production deployments unless the demo is intentionally exposed.
 - Keep `HERMES_BASE_URL` private to the gateway network.
 - Do not put Gemini/OpenAI/Hermes credentials in mobile apps or browser code.
 - Terminate TLS before exposing the gateway beyond localhost.

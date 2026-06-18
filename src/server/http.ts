@@ -140,13 +140,13 @@ async function handleHttp(
         hermes_run_events: true,
         hermes_stop: true,
         hermes_approval: true,
-        browser_demo: true,
+        browser_demo: options.config.server.demoEnabled,
         optional_hermes_plugin: true,
       },
     });
     return;
   }
-  if (serveStatic(req, res, { root: options.demoRoot })) {
+  if (options.config.server.demoEnabled && serveStatic(req, res, { root: options.demoRoot })) {
     return;
   }
   json(res, 404, { status: "not_found" });

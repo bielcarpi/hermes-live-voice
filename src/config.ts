@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const EnvSchema = z.object({
+  NODE_ENV: z.string().optional(),
   HERMES_LIVE_HOST: z.string().default("127.0.0.1"),
   HERMES_LIVE_PORT: z.coerce.number().int().min(1).max(65535).default(8788),
   PORT: z.coerce.number().int().min(1).max(65535).optional(),
@@ -8,6 +9,7 @@ const EnvSchema = z.object({
   HERMES_LIVE_ALLOW_ORIGIN: z.string().optional(),
   HERMES_LIVE_SESSION_PREFIX: z.string().default("agent:main:hermes-live"),
   HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(2_000_000),
+  HERMES_LIVE_DEMO_ENABLED: z.string().optional(),
 
   HERMES_BASE_URL: z.string().url().default("http://127.0.0.1:8642"),
   HERMES_API_KEY: z.string().optional(),
@@ -43,6 +45,7 @@ export interface AppConfig {
     allowOrigin?: string;
     sessionPrefix: string;
     maxAudioBytes: number;
+    demoEnabled: boolean;
   };
   hermes: {
     baseUrl: string;
@@ -88,6 +91,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(parsed.HERMES_LIVE_ALLOW_ORIGIN ? { allowOrigin: parsed.HERMES_LIVE_ALLOW_ORIGIN } : {}),
       sessionPrefix: parsed.HERMES_LIVE_SESSION_PREFIX,
       maxAudioBytes: parsed.HERMES_LIVE_MAX_AUDIO_BYTES,
+      demoEnabled:
+        parsed.HERMES_LIVE_DEMO_ENABLED === undefined
+          ? parsed.NODE_ENV !== "production"
+          : parseBool(parsed.HERMES_LIVE_DEMO_ENABLED),
     },
     hermes: {
       baseUrl: withoutTrailingSlash(parsed.HERMES_BASE_URL),
