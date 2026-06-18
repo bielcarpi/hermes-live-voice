@@ -10,6 +10,7 @@ import {
   serverMessage,
   type ClientMessage,
   type HermesRunEvent,
+  type LiveModelEvent,
   type LiveToolCall,
   type ServerMessage,
 } from "../protocol.js";
@@ -63,41 +64,48 @@ export class LiveGatewaySession {
       this.userLabel = message.userLabel ?? "anonymous";
       this.sessionKey = makeSessionKey(this.deps.config.server.sessionPrefix, this.profileId, this.userLabel);
       const capabilities = await this.deps.hermes.assertRunsSupported(this.abort.signal);
+      const pendingEvents: LiveModelEvent[] = [];
+      let providerOpen = false;
+      let readySent = false;
+      const sendReady = () => {
+        if (readySent || !providerOpen || !this.liveSession || this.closing) {
+          return;
+        }
+        const hermesInfo: { model?: string; capabilities?: Record<string, unknown> } = {};
+        if (typeof capabilities.model === "string") {
+          hermesInfo.model = capabilities.model;
+        }
+        if (capabilities.features) {
+          hermesInfo.capabilities = capabilities.features;
+        }
+        this.send({
+          type: "session.ready",
+          sessionId: this.id,
+          model: this.deps.config.realtime.model,
+          hermes: hermesInfo,
+        });
+        readySent = true;
+        for (const event of pendingEvents.splice(0)) {
+          this.handleLiveModelEvent(event);
+        }
+      };
       const liveSession = await this.deps.liveModel.connect({
         sessionId: this.id,
         systemInstruction: buildSystemInstruction(),
         ...(this.sessionKey ? { safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey) } : {}),
         callbacks: {
           onOpen: () => {
-            const hermesInfo: { model?: string; capabilities?: Record<string, unknown> } = {};
-            if (typeof capabilities.model === "string") {
-              hermesInfo.model = capabilities.model;
-            }
-            if (capabilities.features) {
-              hermesInfo.capabilities = capabilities.features;
-            }
-            this.send({
-              type: "session.ready",
-              sessionId: this.id,
-              model: this.deps.config.realtime.model,
-              hermes: hermesInfo,
-            });
+            providerOpen = true;
+            sendReady();
           },
           onClose: (event) => this.send({ type: "log", level: "info", message: "Realtime provider session closed", data: event }),
           onError: (error) => this.fail("realtime_provider_error", error, true),
           onEvent: (event) => {
-            if (event.type === "audio") {
-              this.send({ type: "audio.output", ...event.audio });
-            } else if (event.type === "text") {
-              this.send({ type: "transcript.delta", speaker: "assistant", text: event.text });
-            } else if (event.type === "tool_call") {
-              void this.handleToolCall(event.call).catch(async (error) => {
-                this.fail("tool_call_failed", error, true);
-                await this.sendToolFailure(event.call, error);
-              });
-            } else {
-              this.send({ type: "realtime.message", message: event.message });
+            if (!readySent) {
+              pendingEvents.push(event);
+              return;
             }
+            this.handleLiveModelEvent(event);
           },
         },
       });
@@ -106,6 +114,7 @@ export class LiveGatewaySession {
         return;
       }
       this.liveSession = liveSession;
+      sendReady();
     } finally {
       this.starting = false;
     }
@@ -208,6 +217,21 @@ export class LiveGatewaySession {
       }
       default:
         await this.liveSession?.sendToolResponse(call, { ok: false, error: `Unknown hermes-live tool: ${call.name}` });
+    }
+  }
+
+  private handleLiveModelEvent(event: LiveModelEvent): void {
+    if (event.type === "audio") {
+      this.send({ type: "audio.output", ...event.audio });
+    } else if (event.type === "text") {
+      this.send({ type: "transcript.delta", speaker: "assistant", text: event.text });
+    } else if (event.type === "tool_call") {
+      void this.handleToolCall(event.call).catch(async (error) => {
+        this.fail("tool_call_failed", error, true);
+        await this.sendToolFailure(event.call, error);
+      });
+    } else {
+      this.send({ type: "realtime.message", message: event.message });
     }
   }
 
