@@ -51,4 +51,10 @@ Then they connect any client to:
 ws://localhost:8788/v1/live
 ```
 
+They can also send a one-shot text request from a terminal:
+
+```sh
+hermes-live client "What should I work on next?"
+```
+
 Saturday is one client. It is not required.

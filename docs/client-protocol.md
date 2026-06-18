@@ -8,6 +8,12 @@ ws://127.0.0.1:8788/v1/live
 
 Use `wss://` behind TLS in production.
 
+For a one-shot terminal smoke test, use:
+
+```sh
+hermes-live client "What is the current status?"
+```
+
 ## Authentication
 
 If `HERMES_LIVE_AUTH_TOKEN` is configured, clients must authenticate to:

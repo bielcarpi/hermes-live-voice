@@ -40,6 +40,18 @@ HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
 
+Gemini Enterprise / Vertex:
+
+```sh
+HERMES_LIVE_PROVIDER=gemini \
+GOOGLE_GENAI_USE_ENTERPRISE=true \
+GOOGLE_CLOUD_PROJECT=... \
+GOOGLE_CLOUD_LOCATION=us-central1 \
+HERMES_BASE_URL=http://127.0.0.1:8642 \
+HERMES_LIVE_AUTH_TOKEN=local-test-token \
+npm run dev
+```
+
 OpenAI Realtime:
 
 ```sh
