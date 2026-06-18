@@ -24,19 +24,19 @@ If `HERMES_LIVE_AUTH_TOKEN` is configured, clients must authenticate to:
 
 `GET /health` remains public so load balancers and container health checks can probe the process without receiving gateway credentials.
 
-Preferred:
+For HTTP endpoints and clients that can set headers:
 
 ```txt
 Authorization: Bearer <token>
 ```
 
-For browser WebSocket clients that cannot set upgrade headers:
+Only for browser WebSocket clients that cannot set upgrade headers:
 
 ```txt
 /v1/live?token=<token>
 ```
 
-Avoid query-token auth outside browser WebSocket cases because URLs are easier to leak through logs and analytics.
+Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
 
 ## Start Session
 

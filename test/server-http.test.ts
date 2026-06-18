@@ -75,6 +75,7 @@ describe("HTTP server", () => {
     expect(await fetch(`${server.url}/health`).then((res) => res.status)).toBe(200);
     expect(await fetch(`${server.url}/ready`).then((res) => res.status)).toBe(401);
     expect(await fetch(`${server.url}/v1/capabilities`).then((res) => res.status)).toBe(401);
+    expect(await fetch(`${server.url}/v1/capabilities?token=secret-token`).then((res) => res.status)).toBe(401);
 
     const authorized = await fetch(`${server.url}/v1/capabilities`, {
       headers: { authorization: "Bearer secret-token" },
