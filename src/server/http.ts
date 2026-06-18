@@ -63,7 +63,12 @@ export async function startServer({ config, logger, hermes: providedHermes, live
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(config.server.port, config.server.host, resolve));
+  try {
+    await listenHttpServer(server, config.server.port, config.server.host);
+  } catch (error) {
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    throw error;
+  }
   const address = server.address() as AddressInfo | null;
   const port = address?.port ?? config.server.port;
   const url = `http://${config.server.host}:${port}`;
@@ -224,4 +229,25 @@ function secureTokenEqual(actual: string | null | undefined, expected: string): 
 function resolveDemoRoot(): string {
   const current = dirname(fileURLToPath(import.meta.url));
   return join(current, "..", "..", "apps", "web-demo");
+}
+
+function listenHttpServer(server: ReturnType<typeof createServer>, port: number, host: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      server.off("error", onError);
+      server.off("listening", onListening);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(new Error(`Failed to start hermes-live on ${host}:${port}: ${error.message}`));
+    };
+    const onListening = () => {
+      cleanup();
+      resolve();
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
 }
