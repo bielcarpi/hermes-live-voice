@@ -5,6 +5,7 @@ describe("protocol", () => {
   it("validates known client messages", () => {
     expect(parseClientMessage({ type: "session.start", profileId: "default" }).type).toBe("session.start");
     expect(parseClientMessage({ type: "text.input", text: "hello" }).type).toBe("text.input");
+    expect(parseClientMessage({ type: "response.cancel", reason: "user interrupted" }).type).toBe("response.cancel");
     expect(parseClientMessage({ type: "approval.respond", runId: "run_1", choice: "once" }).type).toBe("approval.respond");
   });
 

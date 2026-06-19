@@ -68,6 +68,12 @@ class GeminiLiveSession implements LiveModelSession {
     await this.session.sendRealtimeInput({ audioStreamEnd: true });
   }
 
+  async cancelResponse(): Promise<boolean> {
+    // Gemini Live handles barge-in through live audio activity. The SDK does not
+    // currently expose a direct response-cancel event.
+    return false;
+  }
+
   async sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
     await this.session.sendToolResponse({
       functionResponses: [{ id: call.id, name: call.name, response }],

@@ -13,6 +13,7 @@ let activeRunId = "";
 let audioContext;
 let playbackContext;
 let playbackCursor = 0;
+const playbackSources = new Set();
 let mediaStream;
 let workletNode;
 
@@ -20,31 +21,56 @@ gatewayInput.value = `${location.protocol === "https:" ? "wss" : "ws"}://${locat
 
 connectButton.addEventListener("click", () => {
   if (socket?.readyState === WebSocket.OPEN) {
+    clearPlayback();
     socket.close(1000, "user disconnected");
     return;
   }
-  connect();
+  if (socket?.readyState === WebSocket.CONNECTING) {
+    return;
+  }
+  try {
+    connect();
+  } catch (error) {
+    showError(error);
+  }
 });
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   const text = textInput.value.trim();
   if (!text) return;
-  send({ type: "text.input", text });
-  addLog("you", text);
-  textInput.value = "";
+  try {
+    clearPlayback();
+    requestResponseCancel("new text input");
+    send({ type: "text.input", text });
+    addLog("you", text);
+    textInput.value = "";
+  } catch (error) {
+    showError(error);
+  }
 });
 
 micButton.addEventListener("click", async () => {
-  if (workletNode) {
-    await stopMic();
-    return;
+  try {
+    if (workletNode) {
+      await stopMic();
+      return;
+    }
+    await startMic();
+  } catch (error) {
+    showError(error);
+    await stopMic({ notify: false, status: socket?.readyState === WebSocket.OPEN ? "Connected" : "Disconnected" });
   }
-  await startMic();
 });
 
 stopButton.addEventListener("click", () => {
-  send({ type: "run.stop", runId: activeRunId || undefined, reason: "demo user clicked stop" });
+  try {
+    clearPlayback();
+    requestResponseCancel("demo user clicked stop");
+    send({ type: "run.stop", runId: activeRunId || undefined, reason: "demo user clicked stop" });
+  } catch (error) {
+    showError(error);
+  }
 });
 
 function connect() {
@@ -52,19 +78,37 @@ function connect() {
   const token = tokenInput.value.trim();
   if (token) url.searchParams.set("token", token);
 
-  socket = new WebSocket(url);
-  socket.addEventListener("open", () => {
+  const nextSocket = new WebSocket(url);
+  socket = nextSocket;
+  setStatus("Connecting");
+  nextSocket.addEventListener("open", () => {
+    if (socket !== nextSocket) return;
+    activeRunId = "";
     setStatus("Connected");
     connectButton.textContent = "Disconnect";
-    send({ type: "session.start", profileId: "demo", userLabel: "web-demo" });
+    nextSocket.send(JSON.stringify({ type: "session.start", profileId: "demo", userLabel: "web-demo" }));
   });
-  socket.addEventListener("close", () => {
+  nextSocket.addEventListener("close", () => {
+    if (socket !== nextSocket) return;
+    activeRunId = "";
+    socket = undefined;
+    clearPlayback();
     setStatus("Disconnected");
     connectButton.textContent = "Connect";
-    if (workletNode) void stopMic({ notify: false });
+    if (workletNode) void stopMic({ notify: false, status: "Disconnected" });
   });
-  socket.addEventListener("error", () => setStatus("WebSocket error"));
-  socket.addEventListener("message", (event) => handleMessage(JSON.parse(event.data)));
+  nextSocket.addEventListener("error", () => {
+    if (socket !== nextSocket) return;
+    setStatus("WebSocket error");
+  });
+  nextSocket.addEventListener("message", (event) => {
+    if (socket !== nextSocket) return;
+    try {
+      handleMessage(JSON.parse(event.data));
+    } catch (error) {
+      showError(error);
+    }
+  });
 }
 
 function handleMessage(message) {
@@ -87,9 +131,11 @@ function handleMessage(message) {
     addLog("approval", `submitted ${message.choice} for ${message.runId}`);
   } else if (message.type === "run.failed" || message.type === "session.error") {
     if (message.type === "run.failed") activeRunId = "";
+    clearPlayback();
     addLog("error", JSON.stringify(message, null, 2));
   } else if (message.type === "run.stopped") {
     activeRunId = "";
+    clearPlayback();
     addLog("run", `stopped ${message.runId}: ${message.status}`);
   } else if (message.type !== "realtime.message") {
     addLog(message.type, JSON.stringify(message, null, 2));
@@ -98,6 +144,8 @@ function handleMessage(message) {
 
 async function startMic() {
   ensureOpen();
+  clearPlayback();
+  requestResponseCancel("microphone started");
   mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   audioContext = new AudioContext({ sampleRate: 24000 });
   await audioContext.audioWorklet.addModule("/mic-worklet.js");
@@ -112,7 +160,7 @@ async function startMic() {
   setStatus("Streaming microphone");
 }
 
-async function stopMic({ notify = true } = {}) {
+async function stopMic({ notify = true, status = "Connected" } = {}) {
   if (notify && socket?.readyState === WebSocket.OPEN) {
     send({ type: "audio.end" });
   }
@@ -123,7 +171,7 @@ async function stopMic({ notify = true } = {}) {
   await audioContext?.close();
   audioContext = undefined;
   micButton.textContent = "Mic";
-  setStatus("Connected");
+  setStatus(status);
 }
 
 async function playPcmAudio(base64, mimeType) {
@@ -149,10 +197,12 @@ async function playPcmAudio(base64, mimeType) {
   source.connect(ctx.destination);
   const startAt = Math.max(ctx.currentTime + 0.02, playbackCursor || 0);
   source.start(startAt);
+  playbackSources.add(source);
   playbackCursor = startAt + buffer.duration;
   source.addEventListener(
     "ended",
     () => {
+      playbackSources.delete(source);
       if (playbackCursor <= ctx.currentTime) {
         playbackCursor = 0;
       }
@@ -161,9 +211,27 @@ async function playPcmAudio(base64, mimeType) {
   );
 }
 
+function clearPlayback() {
+  playbackCursor = 0;
+  for (const source of playbackSources) {
+    try {
+      source.stop();
+    } catch {
+      // The source may already have ended.
+    }
+  }
+  playbackSources.clear();
+}
+
 function send(message) {
   ensureOpen();
   socket.send(JSON.stringify(message));
+}
+
+function requestResponseCancel(reason) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "response.cancel", reason }));
+  }
 }
 
 function ensureOpen() {
@@ -212,6 +280,12 @@ function addApprovalRequest(message) {
 
 function setStatus(value) {
   statusEl.textContent = value;
+}
+
+function showError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  setStatus("Error");
+  addLog("error", message);
 }
 
 function arrayBufferToBase64(buffer) {

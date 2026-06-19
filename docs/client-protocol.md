@@ -85,6 +85,19 @@ End the current stream:
 
 For OpenAI Realtime with `OPENAI_REALTIME_TURN_DETECTION=disabled`, `audio.end` commits the input buffer and triggers a response. With OpenAI VAD enabled, provider turn detection owns that timing and `audio.end` is treated as a no-op by the OpenAI adapter.
 
+## Cancel Provider Speech
+
+Cancel the current realtime provider response before sending an interruption or new input:
+
+```json
+{
+  "type": "response.cancel",
+  "reason": "user interrupted"
+}
+```
+
+This is a best-effort provider cancellation. OpenAI Realtime maps it to `response.cancel`. Gemini Live handles barge-in through live audio activity, so the current Gemini adapter accepts this message without sending a dedicated provider cancel event.
+
 ## Text Input
 
 Text input is useful for smoke tests and accessibility.
