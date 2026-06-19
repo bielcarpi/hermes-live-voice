@@ -221,6 +221,31 @@ describe("live gateway WebSocket", () => {
     expect(liveModel.session.cancelResponse).toHaveBeenCalledWith("barge-in");
   });
 
+  it("closes the client session when the realtime provider closes unexpectedly", async () => {
+    const providerClosed = deferred<void>();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new ProviderCloseAdapter(providerClosed),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const closed = waitForClose(socket);
+    providerClosed.resolve();
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "realtime_provider_closed",
+      recoverable: true,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+  });
+
   it("requests Hermes stop before aborting the run event stream on socket close", async () => {
     const eventStreamAttached = deferred<void>();
     const stopped = deferred<void>();
@@ -434,6 +459,24 @@ async function waitForMessage(socket: WebSocket, type: string): Promise<any> {
   });
 }
 
+async function waitForClose(socket: WebSocket): Promise<{ code: number; reason: string }> {
+  return await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for WebSocket close"));
+    }, 2_000);
+    const onClose = (code: number, reason: Buffer) => {
+      cleanup();
+      resolve({ code, reason: reason.toString("utf8") });
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off("close", onClose);
+    };
+    socket.once("close", onClose);
+  });
+}
+
 async function expectNoMessage(socket: WebSocket, durationMs = 50): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -587,6 +630,16 @@ class CancelTrackingSession implements LiveModelSession {
   async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
 
   async close(): Promise<void> {}
+}
+
+class ProviderCloseAdapter implements LiveModelAdapter {
+  constructor(private readonly providerClosed: ReturnType<typeof deferred<void>>) {}
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    this.providerClosed.promise.then(() => params.callbacks.onClose?.({ code: 1006, reason: "provider closed" }));
+    return new ToolEchoSession(params.callbacks);
+  }
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
