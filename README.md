@@ -84,6 +84,12 @@ GEMINI_API_KEY=...
 HERMES_BASE_URL=http://127.0.0.1:8642
 ```
 
+Hermes JSON requests time out after 30 seconds by default. To tune that for a slower local or remote Hermes API Server:
+
+```sh
+HERMES_LIVE_HERMES_TIMEOUT_MS=60000
+```
+
 For Vertex/Gemini Enterprise mode, also set:
 
 ```sh
