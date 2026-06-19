@@ -19,7 +19,7 @@ const EnvSchema = z.object({
   HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "mock"]).default("gemini"),
   GEMINI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default("gemini-live-2.5-flash-native-audio"),
+  GEMINI_MODEL: z.string().default("gemini-3.1-flash-live-preview"),
   GOOGLE_GENAI_USE_ENTERPRISE: z.string().optional(),
   GOOGLE_CLOUD_PROJECT: z.string().optional(),
   GOOGLE_CLOUD_LOCATION: z.string().default("us-central1"),

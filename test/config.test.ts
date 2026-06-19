@@ -10,6 +10,7 @@ describe("config", () => {
     expect(config.server.demoEnabled).toBe(true);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
     expect(config.realtime.provider).toBe("gemini");
+    expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
     expect(config.realtime.model).toBe(config.gemini.model);
   });
 
