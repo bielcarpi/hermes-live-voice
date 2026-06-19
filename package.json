@@ -65,12 +65,13 @@
     "start": "node dist/cli.js serve",
     "check": "tsx src/cli.ts check",
     "check:cli-client": "node scripts/cli-client-smoke.mjs",
+    "check:package": "node scripts/package-smoke.mjs",
     "check:web-demo": "node --check apps/web-demo/app.js && node --check apps/web-demo/mic-worklet.js",
     "print-config": "tsx src/cli.ts print-config",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify": "npm run typecheck && npm run check:web-demo && npm test && npm run build && npm run check:cli-client",
+    "verify": "npm run typecheck && npm run check:web-demo && npm test && npm run build && npm run check:cli-client && npm run check:package",
     "prepack": "npm run build"
   },
   "dependencies": {
