@@ -76,6 +76,28 @@ describe("HTTP server", () => {
     const response = await fetch(`${server.url}/health`, { headers: { origin: "https://app.example.com" } });
 
     expect(response.headers.get("access-control-allow-origin")).toBe("https://app.example.com");
+    expect(response.headers.get("access-control-allow-methods")).toBe("GET, HEAD, OPTIONS");
+    expect(response.headers.get("access-control-allow-methods")).not.toContain("POST");
+  });
+
+  it("limits JSON endpoints to GET and HEAD", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    const head = await fetch(`${server.url}/health`, { method: "HEAD" });
+    const post = await fetch(`${server.url}/v1/capabilities`, { method: "POST" });
+
+    expect(head.status).toBe(200);
+    expect(head.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await head.text()).toBe("");
+    expect(post.status).toBe(405);
+    expect(post.headers.get("allow")).toBe("GET, HEAD");
+    await expect(post.json()).resolves.toMatchObject({ status: "method_not_allowed" });
   });
 
   it("keeps health public but protects readiness and capabilities when auth is configured", async () => {

@@ -33,7 +33,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
       await handleHttp(req, res, { config, hermes, demoRoot });
     } catch (error) {
       logger.error("http handler failed", { error: String(error) });
-      json(res, 500, { status: "error", error: String(error) });
+      json(req, res, 500, { status: "error", error: String(error) });
     }
   });
 
@@ -101,14 +101,22 @@ async function handleHttp(
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
   if (url.pathname === "/health") {
-    json(res, 200, { status: "ok", service: "hermes-live" });
+    if (!isGetOrHead(req)) {
+      methodNotAllowed(req, res, "GET, HEAD");
+      return;
+    }
+    json(req, res, 200, { status: "ok", service: "hermes-live" });
     return;
   }
   if (requiresHttpAuth(url.pathname) && !isAuthorized(req, options.config, url, { allowQueryToken: false })) {
-    json(res, 401, { status: "unauthorized" });
+    json(req, res, 401, { status: "unauthorized" });
     return;
   }
   if (url.pathname === "/ready") {
+    if (!isGetOrHead(req)) {
+      methodNotAllowed(req, res, "GET, HEAD");
+      return;
+    }
     const checks: Record<string, unknown> = {};
     let ready = true;
     try {
@@ -128,11 +136,15 @@ async function handleHttp(
       ...(options.config.realtime.provider === "gemini" ? { enterprise: options.config.gemini.enterprise } : {}),
       ...(options.config.realtime.provider === "openai" ? { baseUrl: options.config.openai.baseUrl } : {}),
     };
-    json(res, ready ? 200 : 503, { status: ready ? "ready" : "not_ready", checks });
+    json(req, res, ready ? 200 : 503, { status: ready ? "ready" : "not_ready", checks });
     return;
   }
   if (url.pathname === "/v1/capabilities") {
-    json(res, 200, {
+    if (!isGetOrHead(req)) {
+      methodNotAllowed(req, res, "GET, HEAD");
+      return;
+    }
+    json(req, res, 200, {
       object: "hermes_live.capabilities",
       service: "hermes-live",
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },
@@ -154,7 +166,7 @@ async function handleHttp(
   if (options.config.server.demoEnabled && serveStatic(req, res, { root: options.demoRoot })) {
     return;
   }
-  json(res, 404, { status: "not_found" });
+  json(req, res, 404, { status: "not_found" });
 }
 
 function isAuthorized(req: IncomingMessage, config: AppConfig, url: URL, options: { allowQueryToken: boolean }): boolean {
@@ -197,13 +209,37 @@ function addCors(req: IncomingMessage, res: ServerResponse, config: AppConfig): 
     res.setHeader("access-control-allow-origin", origin);
     res.setHeader("vary", "origin");
     res.setHeader("access-control-allow-headers", "authorization, content-type");
-    res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+    res.setHeader("access-control-allow-methods", "GET, HEAD, OPTIONS");
   }
 }
 
-function json(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
+function isGetOrHead(req: IncomingMessage): boolean {
+  return req.method === "GET" || req.method === "HEAD";
+}
+
+function methodNotAllowed(req: IncomingMessage, res: ServerResponse, allow: string): void {
+  json(req, res, 405, { status: "method_not_allowed", allow }, { allow });
+}
+
+function json(
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): void {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": String(Buffer.byteLength(payload)),
+    "x-content-type-options": "nosniff",
+    ...headers,
+  });
+  if (req.method === "HEAD") {
+    res.end();
+  } else {
+    res.end(payload);
+  }
 }
 
 function bearerToken(authorization: string | undefined): string | undefined {
