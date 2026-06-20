@@ -258,13 +258,17 @@ describe("live gateway WebSocket", () => {
     await waitForOpen(socket);
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
-    send(socket, { type: "response.cancel", reason: "barge-in" });
+    send(socket, {
+      type: "response.cancel",
+      reason: "barge-in",
+      truncate: { itemId: "item_1", contentIndex: 0, audioEndMs: 480 },
+    });
 
     await expect(waitForMessage(socket, "log")).resolves.toMatchObject({
       level: "info",
       message: "Realtime response cancellation requested",
     });
-    expect(liveModel.session.cancelResponse).toHaveBeenCalledWith("barge-in");
+    expect(liveModel.session.cancelResponse).toHaveBeenCalledWith("barge-in", { itemId: "item_1", contentIndex: 0, audioEndMs: 480 });
   });
 
   it("closes the client session when the realtime provider closes unexpectedly", async () => {

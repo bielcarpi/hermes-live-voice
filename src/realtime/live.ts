@@ -1,4 +1,4 @@
-import type { LiveModelAudio, LiveModelEvent, LiveToolCall } from "../protocol.js";
+import type { LiveModelAudio, LiveModelEvent, LiveToolCall, RealtimeResponseTruncation } from "../protocol.js";
 
 export interface LiveModelCallbacks {
   onEvent(event: LiveModelEvent): void;
@@ -11,7 +11,7 @@ export interface LiveModelSession {
   sendRealtimeAudio(audio: LiveModelAudio): Promise<void>;
   sendText(text: string): Promise<void>;
   sendAudioStreamEnd(): Promise<void>;
-  cancelResponse(reason?: string): Promise<boolean>;
+  cancelResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean>;
   sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void>;
   close(): Promise<void>;
 }

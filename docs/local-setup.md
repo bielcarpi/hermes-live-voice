@@ -51,6 +51,8 @@ OpenAI:
 HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=... npm run dev
 ```
 
+`OPENAI_REALTIME_MODEL` defaults to `gpt-realtime-2`. Set it to `gpt-realtime-1.5` for current Realtime 1.x behavior.
+
 ## 4. Check Readiness
 
 ```sh

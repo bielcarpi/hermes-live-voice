@@ -12,6 +12,7 @@ import {
   type HermesRunEvent,
   type LiveModelEvent,
   type LiveToolCall,
+  type RealtimeResponseTruncation,
   type ServerMessage,
 } from "../protocol.js";
 import { buildSystemInstruction, type LiveModelAdapter, type LiveModelSession } from "../realtime/live.js";
@@ -173,7 +174,7 @@ export class LiveGatewaySession {
         await this.liveSession.sendText(message.text);
         break;
       case "response.cancel":
-        await this.cancelRealtimeResponse(message.reason);
+        await this.cancelRealtimeResponse(message.reason, message.truncate);
         break;
       case "approval.respond":
         await this.handleApprovalResponse(message);
@@ -359,14 +360,14 @@ export class LiveGatewaySession {
     return { ok: true, run_id: target, status: result.status ?? "stopping" };
   }
 
-  private async cancelRealtimeResponse(reason?: string): Promise<void> {
+  private async cancelRealtimeResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<void> {
     try {
-      const cancelled = (await this.liveSession?.cancelResponse(reason)) ?? false;
+      const cancelled = (await this.liveSession?.cancelResponse(reason, truncate)) ?? false;
       this.send({
         type: "log",
         level: cancelled ? "info" : "debug",
         message: cancelled ? "Realtime response cancellation requested" : "No active realtime response to cancel",
-        data: { reason },
+        data: { reason, truncate },
       });
     } catch (error) {
       this.deps.logger.warn("failed to cancel realtime response", {

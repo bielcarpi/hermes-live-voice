@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOpenAIConversationItemTruncate,
   buildOpenAIRealtimeAudioAppend,
   buildOpenAIResponseCancel,
   buildOpenAISessionUpdate,
@@ -8,13 +9,21 @@ import {
 
 describe("OpenAI Realtime adapter helpers", () => {
   it("normalizes audio and transcript deltas", () => {
-    expect(normalizeOpenAIRealtimeEvent({ type: "response.output_audio.delta", delta: "abc" })).toContainEqual({
+    expect(normalizeOpenAIRealtimeEvent({ type: "response.output_audio.delta", delta: "abc", item_id: "item_1", content_index: 0 })).toContainEqual({
       type: "audio",
-      audio: { data: "abc", mimeType: "audio/pcm;rate=24000" },
+      audio: { data: "abc", mimeType: "audio/pcm;rate=24000", itemId: "item_1", contentIndex: 0 },
+    });
+    expect(normalizeOpenAIRealtimeEvent({ type: "response.audio.delta", delta: "legacy-audio" })).toContainEqual({
+      type: "audio",
+      audio: { data: "legacy-audio", mimeType: "audio/pcm;rate=24000" },
     });
     expect(normalizeOpenAIRealtimeEvent({ type: "response.output_audio_transcript.delta", delta: "hi" })).toContainEqual({
       type: "text",
       text: "hi",
+    });
+    expect(normalizeOpenAIRealtimeEvent({ type: "response.audio_transcript.delta", delta: "older hi" })).toContainEqual({
+      type: "text",
+      text: "older hi",
     });
   });
 
@@ -49,6 +58,12 @@ describe("OpenAI Realtime adapter helpers", () => {
 
   it("builds response cancellation events", () => {
     expect(buildOpenAIResponseCancel()).toEqual({ type: "response.cancel" });
+    expect(buildOpenAIConversationItemTruncate({ itemId: "item_1", contentIndex: 0, audioEndMs: 123.6 })).toEqual({
+      type: "conversation.item.truncate",
+      item_id: "item_1",
+      content_index: 0,
+      audio_end_ms: 124,
+    });
   });
 
   it("builds session updates for push-to-talk and VAD modes", () => {
@@ -64,6 +79,10 @@ describe("OpenAI Realtime adapter helpers", () => {
       parallel_tool_calls: false,
       tool_choice: "auto",
     });
+
+    const realtime15 = buildOpenAISessionUpdate(testOpenAIConfig({ model: "gpt-realtime-1.5" }), "hello");
+    expect(realtime15.session).toMatchObject({ model: "gpt-realtime-1.5" });
+    expect(realtime15.session).not.toHaveProperty("reasoning");
   });
 });
 

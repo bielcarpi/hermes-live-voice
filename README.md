@@ -108,11 +108,13 @@ OPENAI_REALTIME_TURN_DETECTION=disabled
 HERMES_BASE_URL=http://127.0.0.1:8642
 ```
 
-For OpenAI Realtime 1 style models, set:
+For current OpenAI Realtime 1.x behavior, set:
 
 ```sh
-OPENAI_REALTIME_MODEL=gpt-realtime
+OPENAI_REALTIME_MODEL=gpt-realtime-1.5
 ```
+
+The older `gpt-realtime` alias is still accepted if your OpenAI account is pinned to that model family.
 
 `OPENAI_REALTIME_TURN_DETECTION=disabled` keeps push-to-talk behavior where clients send `audio.end`. Set it to `semantic_vad` or `server_vad` for OpenAI-managed turn detection.
 
@@ -254,7 +256,8 @@ Use [docs/live-provider-testing.md](docs/live-provider-testing.md) before claimi
 
 - OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime
 - OpenAI Realtime API reference: https://developers.openai.com/api/reference/resources/realtime
+- OpenAI GPT-Realtime-2 model: https://developers.openai.com/api/docs/models/gpt-realtime-2
 - Gemini Live API overview: https://ai.google.dev/gemini-api/docs/live-api
-- Gemini 2.5 Flash Live model: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-live-api
+- Gemini Live API reference: https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/multimodal-live
 - Google Gen AI JavaScript SDK: https://github.com/googleapis/js-genai
 - Hermes Agent: https://github.com/NousResearch/hermes-agent

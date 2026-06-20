@@ -98,6 +98,22 @@ Cancel the current realtime provider response before sending an interruption or 
 
 This is a best-effort provider cancellation. OpenAI Realtime maps it to `response.cancel`. Gemini Live handles barge-in through live audio activity, so the current Gemini adapter accepts this message without sending a dedicated provider cancel event.
 
+For OpenAI WebSocket playback, include truncation metadata when the user interrupts audio that has already started playing:
+
+```json
+{
+  "type": "response.cancel",
+  "reason": "user interrupted",
+  "truncate": {
+    "itemId": "item_...",
+    "contentIndex": 0,
+    "audioEndMs": 1200
+  }
+}
+```
+
+`audioEndMs` should be the number of milliseconds of that assistant audio item actually heard by the user. The gateway maps this to OpenAI's `conversation.item.truncate` event.
+
 ## Text Input
 
 Text input is useful for smoke tests and accessibility.
@@ -117,9 +133,13 @@ Assistant audio:
 {
   "type": "audio.output",
   "data": "<base64>",
-  "mimeType": "audio/pcm;rate=24000"
+  "mimeType": "audio/pcm;rate=24000",
+  "itemId": "item_...",
+  "contentIndex": 0
 }
 ```
+
+`itemId` and `contentIndex` are optional provider metadata. OpenAI Realtime clients can use them to truncate unplayed assistant audio during interruption.
 
 Transcript:
 
