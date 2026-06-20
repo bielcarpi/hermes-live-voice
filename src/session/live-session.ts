@@ -121,6 +121,10 @@ export class LiveGatewaySession {
       }
       this.liveSession = liveSession;
       sendReady();
+    } catch (error) {
+      if (!this.closing) {
+        this.fail("session_start_failed", error, true);
+      }
     } finally {
       this.starting = false;
     }
