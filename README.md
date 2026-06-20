@@ -157,6 +157,7 @@ npm run dev
 node dist/cli.js client "What can Hermes do?"
 npm run check
 npm run check:cli-client
+npm run check:gateway
 npm run check:web-demo
 npm run print-config
 npm run verify
@@ -249,6 +250,8 @@ npm run verify
 ```
 
 The test suite uses mock providers and fake Hermes clients. Live provider tests require external credentials and are intentionally not part of the default CI gate.
+
+`npm run check:gateway` builds confidence in the packaged path by starting `dist/cli.js serve`, opening `/v1/live`, and driving a fake Hermes run over HTTP/SSE.
 
 Use [docs/live-provider-testing.md](docs/live-provider-testing.md) before claiming a real Gemini Live or OpenAI Realtime deployment is ready.
 
