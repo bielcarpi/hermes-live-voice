@@ -48,7 +48,7 @@ describe("HTTP server", () => {
 
   it("returns not_ready when Hermes capabilities fail", async () => {
     const hermes = fakeHermes();
-    vi.mocked(hermes.capabilities).mockRejectedValueOnce(new Error("down"));
+    vi.mocked(hermes.assertRunsSupported).mockRejectedValueOnce(new Error("down"));
     const server = await startServer({
       config: testConfig(),
       hermes,
@@ -62,6 +62,34 @@ describe("HTTP server", () => {
 
     expect(response.status).toBe(503);
     expect(body.status).toBe("not_ready");
+  });
+
+  it("returns not_ready when Hermes is missing required run features", async () => {
+    const hermes = fakeHermes();
+    vi.mocked(hermes.assertRunsSupported).mockRejectedValueOnce(
+      new Error("Hermes API Server is missing required features: run_events_sse"),
+    );
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    const response = await fetch(`${server.url}/ready`);
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      status: "not_ready",
+      checks: {
+        hermes: {
+          ok: false,
+          error: "Error: Hermes API Server is missing required features: run_events_sse",
+        },
+      },
+    });
   });
 
   it("honors CORS allowlist for configured origins", async () => {

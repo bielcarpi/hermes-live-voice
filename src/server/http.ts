@@ -120,7 +120,7 @@ async function handleHttp(
     const checks: Record<string, unknown> = {};
     let ready = true;
     try {
-      checks.hermes = await options.hermes.capabilities();
+      checks.hermes = await options.hermes.assertRunsSupported();
     } catch (error) {
       ready = false;
       checks.hermes = { ok: false, error: String(error) };
