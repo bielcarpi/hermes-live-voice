@@ -22,3 +22,4 @@
 - Add live-provider testing guide, Docker healthcheck, CI Docker build, web demo syntax checks, and package smoke checks.
 - Add `hermes-live client "..."` for terminal smoke tests against a running gateway.
 - Add a built gateway smoke test against a fake Hermes API Server.
+- Verify the packed npm tarball installs, exposes the CLI, and imports correctly.
