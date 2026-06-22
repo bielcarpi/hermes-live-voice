@@ -86,7 +86,7 @@ function connect() {
   nextSocket.addEventListener("open", () => {
     if (socket !== nextSocket) return;
     activeRunId = "";
-    setStatus("Connected");
+    setStatus("Starting session");
     connectButton.textContent = "Disconnect";
     nextSocket.send(JSON.stringify({ type: "session.start", profileId: "demo", userLabel: "web-demo" }));
   });
@@ -115,6 +115,7 @@ function connect() {
 
 function handleMessage(message) {
   if (message.type === "session.ready") {
+    setStatus("Connected");
     addLog("session", JSON.stringify(message, null, 2));
   } else if (message.type === "transcript.delta") {
     addLog(message.speaker ?? "assistant", message.text ?? "");
@@ -133,6 +134,7 @@ function handleMessage(message) {
     addLog("approval", `submitted ${message.choice} for ${message.runId}`);
   } else if (message.type === "run.failed" || message.type === "session.error") {
     if (message.type === "run.failed") activeRunId = "";
+    setStatus(message.type === "run.failed" ? "Run failed" : "Error");
     clearPlayback();
     addLog("error", JSON.stringify(message, null, 2));
   } else if (message.type === "run.stopped") {
@@ -155,6 +157,7 @@ async function startMic() {
   workletNode = new AudioWorkletNode(audioContext, "pcm-capture");
   const captureRate = Math.round(audioContext.sampleRate);
   workletNode.port.onmessage = (event) => {
+    if (event.data?.type === "flushed") return;
     send({ type: "audio.input", data: arrayBufferToBase64(event.data), mimeType: `audio/pcm;rate=${captureRate}` });
   };
   source.connect(workletNode);
@@ -163,6 +166,7 @@ async function startMic() {
 }
 
 async function stopMic({ notify = true, status = "Connected" } = {}) {
+  await flushMicWorklet();
   if (notify && socket?.readyState === WebSocket.OPEN) {
     send({ type: "audio.end" });
   }
@@ -174,6 +178,28 @@ async function stopMic({ notify = true, status = "Connected" } = {}) {
   audioContext = undefined;
   micButton.textContent = "Mic";
   setStatus(status);
+}
+
+async function flushMicWorklet() {
+  const node = workletNode;
+  if (!node) return;
+  await new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, 80);
+    const onMessage = (event) => {
+      if (event.data?.type !== "flushed") return;
+      cleanup();
+      resolve();
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      node.port.removeEventListener("message", onMessage);
+    };
+    node.port.addEventListener("message", onMessage);
+    node.port.postMessage({ type: "flush" });
+  });
 }
 
 async function playPcmAudio(base64, mimeType, itemId, contentIndex = 0) {

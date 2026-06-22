@@ -31,3 +31,5 @@
 - Scope run stop, status, and approval actions to the active Hermes run for the current voice session.
 - Require gateway auth for network-accessible binds unless explicitly opted out, and only send Hermes session-key headers on authenticated Hermes requests.
 - Bound raw client WebSocket payload size from configured audio/text limits before JSON parsing.
+- Flush the web demo microphone worklet before sending `audio.end`.
+- Keep the web demo in a starting/error state until `session.ready` succeeds.
