@@ -605,6 +605,28 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("closes oversized WebSocket payloads before parsing client messages", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { maxAudioBytes: 1, maxTextChars: 1 } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    socket.on("error", () => undefined);
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+
+    const close = waitForClose(socket);
+    send(socket, { type: "text.input", text: "x".repeat(6_000) });
+
+    await expect(close).resolves.toMatchObject({ code: 1009 });
+  });
+
   it("rejects oversized provider tool-call text before starting Hermes", async () => {
     const hermes = fakeHermes();
     const server = await startServer({
