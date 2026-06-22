@@ -40,6 +40,7 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
       };
       const onInitialError = (error: unknown) => {
         cleanup();
+        closeWebSocket(ws, 1011, "OpenAI Realtime session start failed");
         reject(error);
       };
       const onInitialClose = (code: number, reason: Buffer) => {
@@ -133,9 +134,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   async close(): Promise<void> {
-    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-      this.ws.close(1000, "session closed");
-    }
+    closeWebSocket(this.ws, 1000, "session closed");
   }
 
   private handleMessage(raw: WebSocket.RawData): void {
@@ -187,6 +186,14 @@ class OpenAIRealtimeSession implements LiveModelSession {
       this.responsePending = false;
       this.responseActive = false;
     }
+  }
+}
+
+function closeWebSocket(ws: WebSocket, code: number, reason: string): void {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.close(code, reason);
+  } else if (ws.readyState === WebSocket.CONNECTING) {
+    ws.once("open", () => ws.close(code, reason));
   }
 }
 
