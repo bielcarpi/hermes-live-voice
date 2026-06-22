@@ -8,6 +8,7 @@ describe("config", () => {
     expect(config.server.host).toBe("127.0.0.1");
     expect(config.server.port).toBe(8788);
     expect(config.server.demoEnabled).toBe(true);
+    expect(config.server.maxTextChars).toBe(20_000);
     expect(config.server.providerReadyTimeoutMs).toBe(15_000);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
     expect(config.hermes.timeoutMs).toBe(30_000);
@@ -26,6 +27,12 @@ describe("config", () => {
     const config = loadConfig({ HERMES_LIVE_HERMES_TIMEOUT_MS: "1200" });
 
     expect(config.hermes.timeoutMs).toBe(1200);
+  });
+
+  it("configures the text size limit", () => {
+    const config = loadConfig({ HERMES_LIVE_MAX_TEXT_CHARS: "1234" });
+
+    expect(config.server.maxTextChars).toBe(1234);
   });
 
   it("configures the realtime provider ready timeout", () => {

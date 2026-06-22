@@ -36,6 +36,7 @@ const gateway = spawn(process.execPath, ["dist/cli.js", "serve"], {
     HERMES_LIVE_DEMO_ENABLED: "false",
     HERMES_LIVE_HERMES_TIMEOUT_MS: "5000",
     HERMES_LIVE_HOST: "127.0.0.1",
+    HERMES_LIVE_MAX_TEXT_CHARS: "20000",
     HERMES_LIVE_PORT: String(gatewayPort),
     HERMES_LIVE_PROVIDER: "mock",
     HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: "5000",

@@ -19,6 +19,8 @@ Hermes JSON requests time out after 30 seconds by default. Set `HERMES_LIVE_HERM
 
 Realtime provider sessions must report ready within 15 seconds by default. Set `HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS` if your provider or network needs a longer startup bound.
 
+Text inputs and provider tool-call messages are limited to 20,000 characters by default. Set `HERMES_LIVE_MAX_TEXT_CHARS` if you need a different bound.
+
 ## 2. Install Gateway Dependencies
 
 ```sh

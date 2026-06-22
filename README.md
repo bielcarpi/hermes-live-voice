@@ -96,6 +96,12 @@ Realtime provider sessions must become ready within 15 seconds by default. To tu
 HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS=30000
 ```
 
+Text inputs and provider tool-call messages are limited to 20,000 characters by default:
+
+```sh
+HERMES_LIVE_MAX_TEXT_CHARS=20000
+```
+
 For Vertex/Gemini Enterprise mode, also set:
 
 ```sh

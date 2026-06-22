@@ -127,6 +127,7 @@ Required environment:
 Optional:
   HERMES_LIVE_PORT          Gateway port, default 8788
   HERMES_LIVE_AUTH_TOKEN    Require auth for /v1/live, /ready, and /v1/capabilities
+  HERMES_LIVE_MAX_TEXT_CHARS Text/tool-call character limit, default 20000
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2; use gpt-realtime-1.5 for 1.x
