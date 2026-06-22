@@ -90,6 +90,12 @@ Hermes JSON requests time out after 30 seconds by default. To tune that for a sl
 HERMES_LIVE_HERMES_TIMEOUT_MS=60000
 ```
 
+Realtime provider sessions must become ready within 15 seconds by default. To tune that for slower provider handshakes:
+
+```sh
+HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS=30000
+```
+
 For Vertex/Gemini Enterprise mode, also set:
 
 ```sh

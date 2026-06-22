@@ -136,6 +136,35 @@ describe("live gateway WebSocket", () => {
     expect(hermes.startRun).toHaveBeenCalledWith(expect.objectContaining({ input: "Now ask Hermes" }), expect.any(AbortSignal));
   });
 
+  it("reports a session start failure when the provider never becomes ready", async () => {
+    const liveModel = new NeverOpenAdapter();
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 20 } }),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      message: "Realtime provider did not become ready within 20ms.",
+      recoverable: true,
+    });
+    expect(liveModel.session.close).toHaveBeenCalled();
+
+    send(socket, { type: "text.input", text: "after timeout" });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_not_started",
+      recoverable: true,
+    });
+  });
+
   it("reconstructs completed output from Hermes message deltas", async () => {
     const hermes = fakeHermes({
       streamEvents: async function* () {
@@ -562,6 +591,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       port: 0,
       sessionPrefix: "agent:main:hermes-live",
       maxAudioBytes: 2_000_000,
+      providerReadyTimeoutMs: 15_000,
       demoEnabled: true,
       ...overrides.server,
     },
@@ -643,6 +673,14 @@ class FailingConnectAdapter implements LiveModelAdapter {
   }
 }
 
+class NeverOpenAdapter implements LiveModelAdapter {
+  readonly session = new CloseTrackingSession();
+
+  async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
+    return this.session;
+  }
+}
+
 class ToolEchoSession implements LiveModelSession {
   constructor(private readonly callbacks: LiveModelCallbacks) {}
 
@@ -666,6 +704,22 @@ class ToolEchoSession implements LiveModelSession {
   }
 
   async close(): Promise<void> {}
+}
+
+class CloseTrackingSession implements LiveModelSession {
+  readonly close = vi.fn(async () => undefined);
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(_text: string): Promise<void> {}
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async cancelResponse(): Promise<boolean> {
+    return false;
+  }
+
+  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
 }
 
 class CancelTrackingAdapter implements LiveModelAdapter {

@@ -24,3 +24,4 @@
 - Add a built gateway smoke test against a fake Hermes API Server.
 - Verify the packed npm tarball installs, exposes the CLI, and imports correctly.
 - Require Hermes run/event/stop/approval support before `/ready` reports ready.
+- Add a provider-ready timeout so live sessions fail visibly instead of hanging before `session.ready`.
