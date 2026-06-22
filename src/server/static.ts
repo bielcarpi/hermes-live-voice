@@ -30,6 +30,11 @@ export function serveStatic(req: IncomingMessage, res: ServerResponse, options: 
     "content-type": MIME_TYPES[extname(realFilePath)] ?? "application/octet-stream",
     "content-length": String(stats.size),
     "cache-control": "no-store",
+    "content-security-policy":
+      "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
   });
   if (req.method === "HEAD") {
     res.end();

@@ -31,6 +31,8 @@ Use `Authorization: Bearer <token>` for HTTP endpoints and server-side clients. 
 
 The browser demo is useful for local testing but should not be exposed accidentally. It is enabled by default for local development and disabled by default when `NODE_ENV=production`; set `HERMES_LIVE_DEMO_ENABLED=true` only when you intentionally want to serve it.
 
+Static demo responses include `no-store`, `nosniff`, `no-referrer`, frame denial, and a restrictive content security policy.
+
 ## Origin Checks
 
 Set:

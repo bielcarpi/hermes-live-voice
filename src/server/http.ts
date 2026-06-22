@@ -82,7 +82,10 @@ export async function startServer({ config, logger, hermes: providedHermes, live
         client.close(1001, "server shutdown");
       }
       await new Promise<void>((resolve) => wss.close(() => resolve()));
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      const closing = new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      server.closeIdleConnections();
+      server.closeAllConnections();
+      await closing;
     },
   };
 }
@@ -232,7 +235,10 @@ function json(
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": String(Buffer.byteLength(payload)),
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
     ...headers,
   });
   if (req.method === "HEAD") {
