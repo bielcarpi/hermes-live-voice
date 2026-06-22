@@ -38,6 +38,10 @@ Only for browser WebSocket clients that cannot set upgrade headers:
 
 Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
 
+## Client Limits
+
+Client message metadata such as request IDs, profile IDs, user labels, run IDs, MIME types, cancellation reasons, and playback truncation fields is bounded by the protocol before dispatch. Text input and provider tool-call text use `HERMES_LIVE_MAX_TEXT_CHARS`; audio frames use `HERMES_LIVE_MAX_AUDIO_BYTES`.
+
 ## Start Session
 
 The first message must be `session.start`.
