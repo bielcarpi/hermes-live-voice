@@ -26,3 +26,4 @@
 - Require Hermes run/event/stop/approval support before `/ready` reports ready.
 - Add a provider-ready timeout so live sessions fail visibly instead of hanging before `session.ready`.
 - Close OpenAI Realtime sockets when initial session setup is rejected.
+- Fail session startup immediately when a provider errors or closes before readiness.

@@ -70,11 +70,16 @@ export class LiveGatewaySession {
       const pendingEvents: LiveModelEvent[] = [];
       let providerOpen = false;
       let readySent = false;
+      let providerStartupFailed = false;
       let providerReadyTimedOut = false;
       let providerReadyTimeout: ReturnType<typeof setTimeout> | undefined;
       let resolveProviderReady!: () => void;
+      let rejectProviderReady!: (error: Error) => void;
       const providerReady = new Promise<void>((resolve) => {
         resolveProviderReady = resolve;
+      });
+      const providerReadyFailure = new Promise<never>((_, reject) => {
+        rejectProviderReady = reject;
       });
       const providerReadyDeadline = new Promise<never>((_, reject) => {
         providerReadyTimeout = setTimeout(() => {
@@ -87,6 +92,14 @@ export class LiveGatewaySession {
           clearTimeout(providerReadyTimeout);
           providerReadyTimeout = undefined;
         }
+      };
+      const failProviderStartup = (error: unknown): boolean => {
+        if (readySent || this.closing) {
+          return false;
+        }
+        providerStartupFailed = true;
+        rejectProviderReady(error instanceof Error ? error : new Error(errorToMessage(error)));
+        return true;
       };
       const sendReady = () => {
         if (readySent || !providerOpen || !this.liveSession || this.closing) {
@@ -123,13 +136,21 @@ export class LiveGatewaySession {
               sendReady();
             },
             onClose: (event) => {
+              if (failProviderStartup(new Error("Realtime provider session closed before ready."))) {
+                return;
+              }
               this.send({ type: "log", level: "info", message: "Realtime provider session closed", data: event });
               if (!this.closing) {
                 this.fail("realtime_provider_closed", new Error("Realtime provider session closed."), true);
                 void this.close().finally(() => this.socket.close(1011, "realtime provider closed"));
               }
             },
-            onError: (error) => this.fail("realtime_provider_error", error, true),
+            onError: (error) => {
+              if (failProviderStartup(error)) {
+                return;
+              }
+              this.fail("realtime_provider_error", error, true);
+            },
             onEvent: (event) => {
               if (!readySent) {
                 pendingEvents.push(event);
@@ -140,12 +161,12 @@ export class LiveGatewaySession {
           },
         })
         .then(async (session) => {
-          if (providerReadyTimedOut || this.closing) {
+          if (providerReadyTimedOut || providerStartupFailed || this.closing) {
             await session.close().catch(() => undefined);
           }
           return session;
         });
-      liveSession = await Promise.race([connect, providerReadyDeadline]);
+      liveSession = await Promise.race([connect, providerReadyDeadline, providerReadyFailure]);
       if (this.closing) {
         clearProviderReadyTimeout();
         await liveSession.close().catch(() => undefined);
@@ -153,7 +174,7 @@ export class LiveGatewaySession {
       }
       this.liveSession = liveSession;
       sendReady();
-      await Promise.race([providerReady, providerReadyDeadline]);
+      await Promise.race([providerReady, providerReadyDeadline, providerReadyFailure]);
     } catch (error) {
       clearProviderReadyTimeout();
       await liveSession?.close().catch(() => undefined);
