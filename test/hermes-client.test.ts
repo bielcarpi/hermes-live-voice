@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("HermesClient", () => {
-  it("sends runs with the Hermes session key header", async () => {
+  it("sends runs with the Hermes session key header when authenticated", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "queued" }));
     vi.stubGlobal("fetch", fetchMock);
     const client = hermesClient();
@@ -40,6 +40,31 @@ describe("HermesClient", () => {
       session_id: "live_1",
       instructions: "be brief",
     });
+  });
+
+  it("omits the Hermes session key header when the Hermes client is unauthenticated", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "queued" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient({ apiKey: undefined });
+
+    await expect(
+      client.startRun({
+        input: "check the repo",
+        sessionId: "live_1",
+        sessionKey: "agent:main:hermes-live:profile:default:user:alice",
+      }),
+    ).resolves.toEqual({ runId: "run_123", status: "queued" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8642/v1/runs",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.not.objectContaining({
+          authorization: expect.any(String),
+          "X-Hermes-Session-Key": expect.any(String),
+        }),
+      }),
+    );
   });
 
   it("rejects Hermes capabilities without required run features", async () => {

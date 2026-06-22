@@ -5,8 +5,16 @@
 Start Hermes API Server locally and confirm it exposes run endpoints.
 
 ```sh
-curl http://127.0.0.1:8642/v1/capabilities
+curl -H "Authorization: Bearer $API_SERVER_KEY" http://127.0.0.1:8642/v1/capabilities
 ```
+
+Set the same secret for the gateway:
+
+```sh
+HERMES_API_KEY=$API_SERVER_KEY
+```
+
+Current Hermes API Server deployments require `API_SERVER_KEY`, including local loopback deployments. The gateway uses `HERMES_API_KEY` as the bearer token when calling Hermes.
 
 The gateway expects these feature flags to be true:
 
@@ -32,13 +40,13 @@ npm install
 Mock:
 
 ```sh
-HERMES_LIVE_PROVIDER=mock npm run dev
+HERMES_LIVE_PROVIDER=mock HERMES_API_KEY=$API_SERVER_KEY npm run dev
 ```
 
 Gemini:
 
 ```sh
-HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=... npm run dev
+HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=... HERMES_API_KEY=$API_SERVER_KEY npm run dev
 ```
 
 The default Gemini Live model is `gemini-3.1-flash-live-preview`.
@@ -46,13 +54,13 @@ The default Gemini Live model is `gemini-3.1-flash-live-preview`.
 Gemini Enterprise / Vertex mode:
 
 ```sh
-HERMES_LIVE_PROVIDER=gemini GOOGLE_GENAI_USE_ENTERPRISE=true GOOGLE_CLOUD_PROJECT=... npm run dev
+HERMES_LIVE_PROVIDER=gemini GOOGLE_GENAI_USE_ENTERPRISE=true GOOGLE_CLOUD_PROJECT=... HERMES_API_KEY=$API_SERVER_KEY npm run dev
 ```
 
 OpenAI:
 
 ```sh
-HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=... npm run dev
+HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=... HERMES_API_KEY=$API_SERVER_KEY npm run dev
 ```
 
 `OPENAI_REALTIME_MODEL` defaults to `gpt-realtime-2`. Set it to `gpt-realtime-1.5` for current Realtime 1.x behavior.
@@ -63,6 +71,8 @@ HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=... npm run dev
 npm run check
 curl http://127.0.0.1:8788/ready
 ```
+
+If you bind the gateway to `0.0.0.0`, set `HERMES_LIVE_AUTH_TOKEN`; otherwise startup will fail unless you explicitly opt out with `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 
 ## 5. Open Demo
 

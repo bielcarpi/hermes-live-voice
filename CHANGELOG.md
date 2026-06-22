@@ -29,3 +29,4 @@
 - Fail session startup immediately when a provider errors or closes before readiness.
 - Add `HERMES_LIVE_MAX_TEXT_CHARS` to bound client text input and provider tool-call messages.
 - Scope run stop, status, and approval actions to the active Hermes run for the current voice session.
+- Require gateway auth for network-accessible binds unless explicitly opted out, and only send Hermes session-key headers on authenticated Hermes requests.

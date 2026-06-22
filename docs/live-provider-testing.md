@@ -7,6 +7,7 @@ Use this page before claiming a hosted gateway is ready.
 ## Prerequisites
 
 - Hermes API Server running with run endpoints enabled.
+- `HERMES_API_KEY` set to Hermes Agent's `API_SERVER_KEY`.
 - A realtime provider key or authenticated Vertex/Gemini environment.
 - `HERMES_LIVE_AUTH_TOKEN` set for any non-local gateway.
 - `HERMES_LIVE_ALLOW_ORIGIN` set to your app origin for browser clients.
@@ -36,6 +37,7 @@ Gemini Live:
 HERMES_LIVE_PROVIDER=gemini \
 GEMINI_API_KEY=... \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
+HERMES_API_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
@@ -48,6 +50,7 @@ GOOGLE_GENAI_USE_ENTERPRISE=true \
 GOOGLE_CLOUD_PROJECT=... \
 GOOGLE_CLOUD_LOCATION=us-central1 \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
+HERMES_API_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
@@ -60,6 +63,7 @@ OPENAI_API_KEY=... \
 OPENAI_REALTIME_MODEL=gpt-realtime-2 \
 OPENAI_REALTIME_TURN_DETECTION=disabled \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
+HERMES_API_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```

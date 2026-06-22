@@ -8,6 +8,7 @@ describe("config", () => {
     expect(config.server.host).toBe("127.0.0.1");
     expect(config.server.port).toBe(8788);
     expect(config.server.demoEnabled).toBe(true);
+    expect(config.server.allowUnauthenticated).toBe(false);
     expect(config.server.maxTextChars).toBe(20_000);
     expect(config.server.providerReadyTimeoutMs).toBe(15_000);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
@@ -71,6 +72,24 @@ describe("config", () => {
 
     expect(realtimeProviderConfigured(config)).toBe(true);
     expect(() => assertRuntimeConfig(config)).not.toThrow();
+  });
+
+  it("requires gateway auth for network-accessible binds", () => {
+    const exposed = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_LIVE_HOST: "0.0.0.0" });
+    const protectedConfig = loadConfig({
+      HERMES_LIVE_PROVIDER: "mock",
+      HERMES_LIVE_HOST: "0.0.0.0",
+      HERMES_LIVE_AUTH_TOKEN: "gateway-secret",
+    });
+    const explicitUnsafe = loadConfig({
+      HERMES_LIVE_PROVIDER: "mock",
+      HERMES_LIVE_HOST: "0.0.0.0",
+      HERMES_LIVE_ALLOW_UNAUTHENTICATED: "true",
+    });
+
+    expect(() => assertRuntimeConfig(exposed)).toThrow(/HERMES_LIVE_AUTH_TOKEN/);
+    expect(() => assertRuntimeConfig(protectedConfig)).not.toThrow();
+    expect(() => assertRuntimeConfig(explicitUnsafe)).not.toThrow();
   });
 
   it("requires OpenAI credentials for OpenAI provider", () => {
