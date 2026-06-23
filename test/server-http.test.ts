@@ -101,6 +101,26 @@ describe("HTTP server", () => {
       features: { auth_required: true },
     });
   });
+
+  it("rejects startup when the listen port is already in use", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const occupiedPort = Number(new URL(server.url).port);
+
+    await expect(
+      startServer({
+        config: testConfig({ server: { port: occupiedPort } }),
+        hermes: fakeHermes(),
+        liveModel: new MockLiveAdapter(),
+        logger: fakeLogger(),
+      }),
+    ).rejects.toThrow(/Failed to start hermes-live on 127\.0\.0\.1:\d+/);
+  });
 });
 
 function fakeHermes(): HermesClient {
