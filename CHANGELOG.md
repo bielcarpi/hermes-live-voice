@@ -37,3 +37,4 @@
 - Run the Docker image as the non-root `node` user.
 - Add defensive security headers to JSON and browser demo responses.
 - Close idle and active HTTP connections during explicit server shutdown.
+- Bound client protocol metadata fields before dispatch.

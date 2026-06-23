@@ -59,6 +59,8 @@ The gateway sends a hashed session key as `OpenAI-Safety-Identifier` when using 
 
 Raw client WebSocket payload size is capped from `HERMES_LIVE_MAX_AUDIO_BYTES` and `HERMES_LIVE_MAX_TEXT_CHARS`, so oversized frames are closed before JSON parsing.
 
+Client metadata fields are also bounded before dispatch, including profile IDs, user labels, run IDs, reasons, MIME types, and playback truncation values.
+
 Add your own rate limiting before public deployment.
 
 ## Public Deployment Checklist
