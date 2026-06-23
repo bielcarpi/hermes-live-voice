@@ -98,7 +98,13 @@ export class LiveGatewaySession {
             providerOpen = true;
             sendReady();
           },
-          onClose: (event) => this.send({ type: "log", level: "info", message: "Realtime provider session closed", data: event }),
+          onClose: (event) => {
+            this.send({ type: "log", level: "info", message: "Realtime provider session closed", data: event });
+            if (!this.closing) {
+              this.fail("realtime_provider_closed", new Error("Realtime provider session closed."), true);
+              void this.close().finally(() => this.socket.close(1011, "realtime provider closed"));
+            }
+          },
           onError: (error) => this.fail("realtime_provider_error", error, true),
           onEvent: (event) => {
             if (!readySent) {
