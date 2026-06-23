@@ -62,3 +62,4 @@
 - Disclose that realtime readiness does not open a provider session handshake.
 - Send the derived Hermes session key on authenticated run status, stop, and approval calls.
 - Send the derived Hermes session key on authenticated run event streams.
+- Reject realtime provider tool calls without call IDs before starting Hermes work.
