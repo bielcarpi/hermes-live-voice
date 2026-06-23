@@ -121,6 +121,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 }
 
 export function assertRuntimeConfig(config: AppConfig): void {
+  if (config.realtime.provider === "gemini" && config.gemini.enterprise && !config.gemini.project) {
+    throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
+  }
   if (realtimeProviderConfigured(config)) {
     return;
   }
@@ -132,9 +135,6 @@ export function assertRuntimeConfig(config: AppConfig): void {
       "Set GEMINI_API_KEY or GOOGLE_API_KEY, enable GOOGLE_GENAI_USE_ENTERPRISE=true, or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
     );
   }
-  if (config.gemini.enterprise && !config.gemini.project) {
-    throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
-  }
 }
 
 export function realtimeProviderConfigured(config: AppConfig): boolean {
@@ -144,7 +144,10 @@ export function realtimeProviderConfigured(config: AppConfig): boolean {
   if (config.realtime.provider === "openai") {
     return Boolean(config.openai.apiKey);
   }
-  return config.gemini.enterprise || Boolean(config.gemini.apiKey);
+  if (config.gemini.enterprise) {
+    return Boolean(config.gemini.project);
+  }
+  return Boolean(config.gemini.apiKey);
 }
 
 export function sanitizeSessionComponent(value: string): string {

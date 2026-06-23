@@ -37,6 +37,12 @@ HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=... npm run dev
 
 The default Gemini Live model is `gemini-live-2.5-flash-native-audio`.
 
+Gemini Enterprise / Vertex mode:
+
+```sh
+HERMES_LIVE_PROVIDER=gemini GOOGLE_GENAI_USE_ENTERPRISE=true GOOGLE_CLOUD_PROJECT=... npm run dev
+```
+
 OpenAI:
 
 ```sh
@@ -57,3 +63,13 @@ http://127.0.0.1:8788
 ```
 
 The demo can send text through the gateway and, in supported browsers, capture microphone audio as PCM16 frames.
+
+## 6. Terminal Smoke Test
+
+With the gateway running:
+
+```sh
+node dist/cli.js client "What is the current status?"
+```
+
+Use `HERMES_LIVE_URL` if the gateway is running somewhere else.

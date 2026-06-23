@@ -70,6 +70,14 @@ GEMINI_API_KEY=...
 HERMES_BASE_URL=http://127.0.0.1:8642
 ```
 
+For Vertex/Gemini Enterprise mode, also set:
+
+```sh
+GOOGLE_GENAI_USE_ENTERPRISE=true
+GOOGLE_CLOUD_PROJECT=...
+GOOGLE_CLOUD_LOCATION=us-central1
+```
+
 For OpenAI Realtime:
 
 ```sh
@@ -111,7 +119,10 @@ http://127.0.0.1:8788
 Useful commands:
 
 ```sh
+npm run dev
+node dist/cli.js client "What can Hermes do?"
 npm run check
+npm run check:cli-client
 npm run check:web-demo
 npm run print-config
 npm run verify
@@ -167,6 +178,22 @@ Or send text for smoke testing:
 ```
 
 See [docs/client-protocol.md](docs/client-protocol.md).
+
+## Terminal Client
+
+After starting the gateway, send one text prompt through it:
+
+```sh
+node dist/cli.js client "Summarize my current project state."
+```
+
+When installed globally:
+
+```sh
+hermes-live client "Summarize my current project state."
+```
+
+Set `HERMES_LIVE_URL` when the gateway is not on `ws://127.0.0.1:8788/v1/live`. If `HERMES_LIVE_AUTH_TOKEN` is set, the client sends it as a bearer token.
 
 ## Plugin or Sidecar?
 

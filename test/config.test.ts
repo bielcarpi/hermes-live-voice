@@ -52,4 +52,21 @@ describe("config", () => {
 
     expect(config.openai.turnDetection).toBe("semantic_vad");
   });
+
+  it("requires a Google Cloud project for Gemini Enterprise mode", () => {
+    const missingProject = loadConfig({
+      HERMES_LIVE_PROVIDER: "gemini",
+      GOOGLE_GENAI_USE_ENTERPRISE: "true",
+    });
+    const withProject = loadConfig({
+      HERMES_LIVE_PROVIDER: "gemini",
+      GOOGLE_GENAI_USE_ENTERPRISE: "true",
+      GOOGLE_CLOUD_PROJECT: "demo-project",
+    });
+
+    expect(realtimeProviderConfigured(missingProject)).toBe(false);
+    expect(() => assertRuntimeConfig(missingProject)).toThrow(/GOOGLE_CLOUD_PROJECT/);
+    expect(realtimeProviderConfigured(withProject)).toBe(true);
+    expect(() => assertRuntimeConfig(withProject)).not.toThrow();
+  });
 });
