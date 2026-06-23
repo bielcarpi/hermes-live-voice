@@ -2,8 +2,13 @@ import type { HermesRunEvent } from "../protocol.js";
 
 export function parseSseEventBlock(block: string): HermesRunEvent | null {
   const dataLines: string[] = [];
+  let eventName: string | undefined;
   for (const line of block.split(/\r?\n/)) {
     if (!line || line.startsWith(":")) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trimStart();
       continue;
     }
     if (line.startsWith("data:")) {
@@ -15,9 +20,15 @@ export function parseSseEventBlock(block: string): HermesRunEvent | null {
   }
   const payload = dataLines.join("\n");
   try {
-    return JSON.parse(payload) as HermesRunEvent;
+    const parsed = JSON.parse(payload) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return eventName && typeof (parsed as HermesRunEvent).event !== "string"
+        ? { event: eventName, ...(parsed as Record<string, unknown>) }
+        : (parsed as HermesRunEvent);
+    }
+    return { event: eventName ?? "hermes.raw", data: parsed };
   } catch {
-    return { event: "hermes.raw", data: payload };
+    return { event: eventName ?? "hermes.raw", data: payload };
   }
 }
 
