@@ -55,6 +55,8 @@ Run-scoped actions are limited to the active Hermes run for the current voice se
 
 The gateway sends a hashed session key as `OpenAI-Safety-Identifier` when using OpenAI Realtime. This is privacy-preserving and stable enough for provider-side abuse monitoring.
 
+Raw client WebSocket payload size is capped from `HERMES_LIVE_MAX_AUDIO_BYTES` and `HERMES_LIVE_MAX_TEXT_CHARS`, so oversized frames are closed before JSON parsing.
+
 Add your own rate limiting before public deployment.
 
 ## Public Deployment Checklist

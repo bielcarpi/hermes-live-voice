@@ -37,7 +37,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
     }
   });
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: clientWebSocketMaxPayload(config) });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (url.pathname !== "/v1/live") {
@@ -260,6 +260,12 @@ function secureTokenEqual(actual: string | null | undefined, expected: string): 
   const actualHash = createHash("sha256").update(actual).digest();
   const expectedHash = createHash("sha256").update(expected).digest();
   return timingSafeEqual(actualHash, expectedHash);
+}
+
+function clientWebSocketMaxPayload(config: AppConfig): number {
+  const base64AudioBytes = Math.ceil((config.server.maxAudioBytes * 4) / 3);
+  const textBytes = config.server.maxTextChars * 4;
+  return Math.max(base64AudioBytes, textBytes) + 4096;
 }
 
 function resolveDemoRoot(): string {
