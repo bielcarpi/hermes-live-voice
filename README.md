@@ -121,13 +121,13 @@ Connect to:
 ws://127.0.0.1:8788/v1/live
 ```
 
-If `HERMES_LIVE_AUTH_TOKEN` is set, clients must send either:
+If `HERMES_LIVE_AUTH_TOKEN` is set, `/v1/live`, `/ready`, and `/v1/capabilities` require either:
 
 ```txt
 Authorization: Bearer <token>
 ```
 
-or:
+or, for browser WebSocket clients that cannot set upgrade headers:
 
 ```txt
 /v1/live?token=<token>

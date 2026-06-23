@@ -131,6 +131,100 @@ describe("live gateway WebSocket", () => {
     await expect(waitForMessage(socket, "run.stopped")).resolves.toMatchObject({ runId: "run_ws", status: "stopping" });
     expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", expect.any(AbortSignal));
   });
+
+  it("rejects unauthorized WebSocket upgrades when auth is configured", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { authToken: "secret-token" } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    await expect(expectUpgradeRejected(toWebSocketUrl(server.url), { origin: server.url })).resolves.toBe(401);
+  });
+
+  it("allows browser WebSocket auth through the token query parameter", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { authToken: "secret-token" } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const url = new URL(toWebSocketUrl(server.url));
+    url.searchParams.set("token", "secret-token");
+    const socket = new WebSocket(url, { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.ready")).resolves.toMatchObject({ type: "session.ready" });
+  });
+
+  it("rejects disallowed WebSocket origins", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { allowOrigin: "https://app.example.com" } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    await expect(expectUpgradeRejected(toWebSocketUrl(server.url), { origin: "https://evil.example.com" })).resolves.toBe(403);
+  });
+
+  it("rejects malformed and oversized audio frames before forwarding to the provider", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { maxAudioBytes: 2 } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+
+    send(socket, { type: "audio.input", data: "%%%not-base64%%%", mimeType: "audio/pcm;rate=24000" });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: expect.stringContaining("base64"),
+    });
+
+    send(socket, { type: "audio.input", data: Buffer.from([1, 2, 3, 4]).toString("base64"), mimeType: "audio/pcm;rate=24000" });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: expect.stringContaining("HERMES_LIVE_MAX_AUDIO_BYTES"),
+    });
+  });
+
+  it("rejects odd-byte PCM frames", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+
+    send(socket, { type: "audio.input", data: Buffer.from([1]).toString("base64"), mimeType: "audio/pcm;rate=24000" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: expect.stringContaining("even number"),
+    });
+  });
 });
 
 function fakeHermes(
@@ -219,13 +313,14 @@ function toWebSocketUrl(url: string): string {
   return parsed.toString();
 }
 
-function testConfig(): AppConfig {
+function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): AppConfig {
   return {
     server: {
       host: "127.0.0.1",
       port: 0,
       sessionPrefix: "agent:main:hermes-live",
       maxAudioBytes: 2_000_000,
+      ...overrides.server,
     },
     hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent" },
     realtime: { provider: "mock", model: "mock-live" },
@@ -239,6 +334,39 @@ function testConfig(): AppConfig {
       outputAudioFormat: "pcm16",
     },
   };
+}
+
+async function expectUpgradeRejected(url: string | URL, headers: Record<string, string>): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, { headers });
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.close();
+      reject(new Error("Timed out waiting for rejected WebSocket upgrade"));
+    }, 2_000);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off("unexpected-response", onUnexpectedResponse);
+      socket.off("open", onOpen);
+      socket.off("error", onError);
+    };
+    const onUnexpectedResponse = (_request: unknown, response: { statusCode?: number }) => {
+      cleanup();
+      resolve(response.statusCode ?? 0);
+    };
+    const onOpen = () => {
+      cleanup();
+      socket.close();
+      reject(new Error("WebSocket unexpectedly opened"));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    socket.once("unexpected-response", onUnexpectedResponse);
+    socket.once("open", onOpen);
+    socket.once("error", onError);
+  });
 }
 
 function fakeLogger(): Logger {

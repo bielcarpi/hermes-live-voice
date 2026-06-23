@@ -10,17 +10,27 @@ Use `wss://` behind TLS in production.
 
 ## Authentication
 
-If `HERMES_LIVE_AUTH_TOKEN` is configured, clients must include one of:
+If `HERMES_LIVE_AUTH_TOKEN` is configured, clients must authenticate to:
+
+- `WS /v1/live`
+- `GET /ready`
+- `GET /v1/capabilities`
+
+`GET /health` remains public so load balancers and container health checks can probe the process without receiving gateway credentials.
+
+Preferred:
 
 ```txt
 Authorization: Bearer <token>
 ```
 
-or:
+For browser WebSocket clients that cannot set upgrade headers:
 
 ```txt
 /v1/live?token=<token>
 ```
+
+Avoid query-token auth outside browser WebSocket cases because URLs are easier to leak through logs and analytics.
 
 ## Start Session
 

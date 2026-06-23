@@ -62,6 +62,29 @@ describe("HTTP server", () => {
 
     expect(response.headers.get("access-control-allow-origin")).toBe("https://app.example.com");
   });
+
+  it("keeps health public but protects readiness and capabilities when auth is configured", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { authToken: "secret-token" } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    expect(await fetch(`${server.url}/health`).then((res) => res.status)).toBe(200);
+    expect(await fetch(`${server.url}/ready`).then((res) => res.status)).toBe(401);
+    expect(await fetch(`${server.url}/v1/capabilities`).then((res) => res.status)).toBe(401);
+
+    const authorized = await fetch(`${server.url}/v1/capabilities`, {
+      headers: { authorization: "Bearer secret-token" },
+    });
+
+    expect(authorized.status).toBe(200);
+    await expect(authorized.json()).resolves.toMatchObject({
+      features: { auth_required: true },
+    });
+  });
 });
 
 function fakeHermes(): HermesClient {

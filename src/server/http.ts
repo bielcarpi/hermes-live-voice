@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
@@ -98,6 +99,10 @@ async function handleHttp(
     json(res, 200, { status: "ok", service: "hermes-live" });
     return;
   }
+  if (requiresHttpAuth(url.pathname) && !isAuthorized(req, options.config, url)) {
+    json(res, 401, { status: "unauthorized" });
+    return;
+  }
   if (url.pathname === "/ready") {
     const checks: Record<string, unknown> = {};
     let ready = true;
@@ -127,6 +132,7 @@ async function handleHttp(
       service: "hermes-live",
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },
       features: {
+        auth_required: Boolean(options.config.server.authToken),
         gemini_live: options.config.realtime.provider === "gemini",
         openai_realtime: options.config.realtime.provider === "openai",
         mock_live: options.config.realtime.provider === "mock",
@@ -150,8 +156,13 @@ function isAuthorized(req: IncomingMessage, config: AppConfig, url: URL): boolea
   if (!config.server.authToken) {
     return true;
   }
-  const expected = `Bearer ${config.server.authToken}`;
-  return req.headers.authorization === expected || url.searchParams.get("token") === config.server.authToken;
+  const bearer = bearerToken(req.headers.authorization);
+  const queryToken = url.searchParams.get("token");
+  return secureTokenEqual(bearer, config.server.authToken) || secureTokenEqual(queryToken, config.server.authToken);
+}
+
+function requiresHttpAuth(pathname: string): boolean {
+  return pathname === "/ready" || pathname === "/v1/capabilities";
 }
 
 function isWebSocketOriginAllowed(req: IncomingMessage, config: AppConfig): boolean {
@@ -188,6 +199,26 @@ function addCors(req: IncomingMessage, res: ServerResponse, config: AppConfig): 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
+}
+
+function bearerToken(authorization: string | undefined): string | undefined {
+  if (!authorization) {
+    return undefined;
+  }
+  const [scheme, ...rest] = authorization.trim().split(/\s+/);
+  if (scheme?.toLowerCase() !== "bearer" || rest.length !== 1) {
+    return undefined;
+  }
+  return rest[0];
+}
+
+function secureTokenEqual(actual: string | null | undefined, expected: string): boolean {
+  if (!actual) {
+    return false;
+  }
+  const actualHash = createHash("sha256").update(actual).digest();
+  const expectedHash = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(actualHash, expectedHash);
 }
 
 function resolveDemoRoot(): string {
