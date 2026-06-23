@@ -72,6 +72,8 @@ npm run check
 curl http://127.0.0.1:8788/ready
 ```
 
+Both commands report gateway, Hermes, and realtime provider readiness. A `503` response includes an `error` on the failing section.
+
 If you bind the gateway to `0.0.0.0`, set a strong `HERMES_LIVE_AUTH_TOKEN`; otherwise startup will fail unless you explicitly opt out with `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 
 ## 5. Open Demo

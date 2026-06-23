@@ -63,7 +63,16 @@ const gatewayExit = once(gateway, "exit").then(([code, signal]) => {
 });
 
 try {
-  await waitForHttpOk(`http://127.0.0.1:${gatewayPort}/ready`, 6_000);
+  const readiness = await waitForReadiness(`http://127.0.0.1:${gatewayPort}/ready`, 6_000);
+  if (readiness.status !== "ready") {
+    throw new Error(`Gateway readiness status mismatch: ${JSON.stringify(readiness)}.`);
+  }
+  if (readiness.checks?.gateway?.ok !== true || readiness.checks?.hermes?.ok !== true || readiness.checks?.realtime?.ok !== true) {
+    throw new Error(`Gateway readiness checks were not all ok: ${JSON.stringify(readiness)}.`);
+  }
+  if (readiness.checks?.realtime?.provider !== "mock" || readiness.checks?.realtime?.model !== "mock-live") {
+    throw new Error(`Gateway readiness advertised unexpected realtime provider: ${JSON.stringify(readiness.checks?.realtime)}.`);
+  }
 
   const socket = new WebSocket(`ws://127.0.0.1:${gatewayPort}/v1/live`, {
     headers: { origin: `http://127.0.0.1:${gatewayPort}` },
@@ -266,7 +275,7 @@ function createInbox(socket) {
   };
 }
 
-async function waitForHttpOk(url, timeoutMs) {
+async function waitForReadiness(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
@@ -278,7 +287,7 @@ async function waitForHttpOk(url, timeoutMs) {
       const response = await fetch(url);
       const body = await response.text();
       if (response.ok) {
-        return;
+        return JSON.parse(body);
       }
       lastError = new Error(`HTTP ${response.status}: ${body}`);
     } catch (error) {

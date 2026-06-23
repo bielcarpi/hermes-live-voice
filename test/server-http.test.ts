@@ -105,9 +105,48 @@ describe("HTTP server", () => {
     expect(body).toMatchObject({
       status: "not_ready",
       checks: {
+        gateway: {
+          ok: true,
+          authRequired: false,
+        },
         hermes: {
           ok: false,
-          error: "Error: Hermes API Server is missing required features: run_events_sse",
+          baseUrl: "http://127.0.0.1:8642",
+          error: "Hermes API Server is missing required features: run_events_sse",
+        },
+        realtime: {
+          ok: true,
+          configured: true,
+          injected: true,
+          provider: "openai",
+        },
+      },
+    });
+  });
+
+  it("reports injected realtime providers explicitly in readiness", async () => {
+    const server = await startServer({
+      config: testConfig({ openai: { apiKey: undefined } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    const response = await fetch(`${server.url}/ready`);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "ready",
+      checks: {
+        hermes: { ok: true, baseUrl: "http://127.0.0.1:8642" },
+        realtime: {
+          ok: true,
+          configured: true,
+          injected: true,
+          provider: "openai",
+          model: "gpt-realtime-2",
         },
       },
     });

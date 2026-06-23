@@ -158,6 +158,8 @@ Expected:
 HTTP/1.1 200 OK
 ```
 
+The JSON body should include `checks.gateway`, `checks.hermes`, and `checks.realtime`, each with `ok: true`.
+
 Health remains public:
 
 ```sh

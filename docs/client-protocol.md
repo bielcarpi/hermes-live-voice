@@ -38,6 +38,23 @@ Only for browser WebSocket clients that cannot set upgrade headers:
 
 Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
 
+## HTTP Readiness
+
+`GET /ready` returns the same gateway, Hermes, and realtime readiness sections as `hermes-live check`.
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "gateway": { "ok": true, "authRequired": true },
+    "hermes": { "ok": true, "baseUrl": "http://127.0.0.1:8642" },
+    "realtime": { "ok": true, "configured": true, "provider": "openai", "model": "gpt-realtime-2" }
+  }
+}
+```
+
+When any section is not ready, the endpoint returns `503` with that section's `error`.
+
 ## Client Limits
 
 Client message metadata such as request IDs, profile IDs, user labels, run IDs, MIME types, cancellation reasons, and playback truncation fields is bounded by the protocol before dispatch. Text input and provider tool-call text use `HERMES_LIVE_MAX_TEXT_CHARS`; audio frames use `HERMES_LIVE_MAX_AUDIO_BYTES`.

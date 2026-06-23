@@ -4,9 +4,10 @@ import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { assertGatewayExposureConfig, assertHermesApiConfig, assertRealtimeProviderConfig, realtimeProviderConfigured, type AppConfig } from "../config.js";
+import { assertGatewayExposureConfig, assertHermesApiConfig, assertRealtimeProviderConfig, type AppConfig } from "../config.js";
 import { HermesClient } from "../hermes/client.js";
 import type { Logger } from "../logger.js";
+import { buildReadinessReport } from "../readiness.js";
 import { createLiveModelAdapter } from "../realtime/factory.js";
 import type { LiveModelAdapter } from "../realtime/live.js";
 import { LiveGatewaySession } from "../session/live-session.js";
@@ -37,7 +38,13 @@ export async function startServer({ config, logger, hermes: providedHermes, live
 
   const server = createServer(async (req, res) => {
     try {
-      await handleHttp(req, res, { config, hermes, demoRoot });
+      await handleHttp(req, res, {
+        config,
+        hermes,
+        demoRoot,
+        requireHermesApiKey: !providedHermes,
+        requireRealtimeProviderConfig: !providedLiveModel,
+      });
     } catch (error) {
       logger.error("http handler failed", { error: String(error) });
       json(req, res, 500, { status: "error", error: String(error) });
@@ -100,7 +107,13 @@ export async function startServer({ config, logger, hermes: providedHermes, live
 async function handleHttp(
   req: IncomingMessage,
   res: ServerResponse,
-  options: { config: AppConfig; hermes: HermesClient; demoRoot: string },
+  options: {
+    config: AppConfig;
+    hermes: HermesClient;
+    demoRoot: string;
+    requireHermesApiKey: boolean;
+    requireRealtimeProviderConfig: boolean;
+  },
 ): Promise<void> {
   addCors(req, res, options.config);
   if (req.method === "OPTIONS") {
@@ -127,26 +140,19 @@ async function handleHttp(
       methodNotAllowed(req, res, "GET, HEAD");
       return;
     }
-    const checks: Record<string, unknown> = {};
-    let ready = true;
-    try {
-      checks.hermes = await options.hermes.assertRunsSupported();
-    } catch (error) {
-      ready = false;
-      checks.hermes = { ok: false, error: String(error) };
-    }
-    const realtimeOk = realtimeProviderConfigured(options.config);
-    if (!realtimeOk) {
-      ready = false;
-    }
-    checks.realtime = {
-      ok: realtimeOk,
-      provider: options.config.realtime.provider,
-      model: options.config.realtime.model,
-      ...(options.config.realtime.provider === "gemini" ? { enterprise: options.config.gemini.enterprise } : {}),
-      ...(options.config.realtime.provider === "openai" ? { baseUrl: options.config.openai.baseUrl } : {}),
-    };
-    json(req, res, ready ? 200 : 503, { status: ready ? "ready" : "not_ready", checks });
+    const report = await buildReadinessReport(options.config, {
+      hermes: options.hermes,
+      requireHermesApiKey: options.requireHermesApiKey,
+      requireRealtimeProviderConfig: options.requireRealtimeProviderConfig,
+    });
+    json(req, res, report.ok ? 200 : 503, {
+      status: report.ok ? "ready" : "not_ready",
+      checks: {
+        gateway: report.gateway,
+        hermes: report.hermes,
+        realtime: report.realtime,
+      },
+    });
     return;
   }
   if (url.pathname === "/v1/capabilities") {

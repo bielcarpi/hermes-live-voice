@@ -1,0 +1,59 @@
+import { describe, expect, it, vi } from "vitest";
+import { loadConfig } from "../src/config.js";
+import type { HermesClient } from "../src/hermes/client.js";
+import { buildReadinessReport } from "../src/readiness.js";
+
+describe("readiness", () => {
+  it("reports missing Hermes and OpenAI credentials without probing the network", async () => {
+    const report = await buildReadinessReport(
+      loadConfig({
+        HERMES_BASE_URL: "http://127.0.0.1:9",
+        HERMES_LIVE_PROVIDER: "openai",
+      }),
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.gateway).toMatchObject({ ok: true, host: "127.0.0.1" });
+    expect(report.hermes).toMatchObject({
+      ok: false,
+      baseUrl: "http://127.0.0.1:9",
+      error: "Set HERMES_API_KEY to Hermes Agent's API_SERVER_KEY.",
+    });
+    expect(report.realtime).toMatchObject({
+      ok: false,
+      configured: false,
+      provider: "openai",
+      error: "Set OPENAI_API_KEY or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
+    });
+  });
+
+  it("supports injected clients without requiring default provider credentials", async () => {
+    const hermes = {
+      baseUrl: "http://injected-hermes.local",
+      assertRunsSupported: vi.fn(async () => ({
+        model: "hermes-agent",
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+        },
+      })),
+    } as unknown as HermesClient;
+    const report = await buildReadinessReport(
+      loadConfig({
+        HERMES_LIVE_PROVIDER: "openai",
+      }),
+      {
+        hermes,
+        requireHermesApiKey: false,
+        requireRealtimeProviderConfig: false,
+      },
+    );
+
+    expect(report.ok).toBe(true);
+    expect(report.hermes).toMatchObject({ ok: true, baseUrl: "http://injected-hermes.local", model: "hermes-agent" });
+    expect(report.realtime).toMatchObject({ ok: true, configured: true, injected: true, provider: "openai" });
+    expect(hermes.assertRunsSupported).toHaveBeenCalledOnce();
+  });
+});
