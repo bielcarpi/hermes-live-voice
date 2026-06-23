@@ -14,6 +14,8 @@ export { HermesClient } from "./hermes/client.js";
 export type { ApprovalResult, HermesCapabilities, StartRunParams, StartRunResult } from "./hermes/client.js";
 export { parseSseEventBlock, parseSseStream } from "./hermes/sse.js";
 export { buildOpenAISessionUpdate, OpenAIRealtimeAdapter, normalizeOpenAIRealtimeEvent } from "./openai/realtime.js";
+export { buildReadinessReport } from "./readiness.js";
+export type { BuildReadinessReportOptions, ReadinessReport, ReadinessSection } from "./readiness.js";
 export { createLiveModelAdapter } from "./realtime/factory.js";
 export { buildSystemInstruction } from "./realtime/live.js";
 export type { LiveModelAdapter, LiveModelCallbacks, LiveModelConnectParams, LiveModelSession } from "./realtime/live.js";
