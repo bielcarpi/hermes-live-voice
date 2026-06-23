@@ -60,6 +60,8 @@ export class LiveGatewaySession {
     }
 
     this.starting = true;
+    let liveSession: LiveModelSession | undefined;
+    let clearProviderReadyTimeout = () => {};
     try {
       this.profileId = message.profileId ?? "default";
       this.userLabel = message.userLabel ?? "anonymous";
@@ -68,10 +70,29 @@ export class LiveGatewaySession {
       const pendingEvents: LiveModelEvent[] = [];
       let providerOpen = false;
       let readySent = false;
+      let providerReadyTimedOut = false;
+      let providerReadyTimeout: ReturnType<typeof setTimeout> | undefined;
+      let resolveProviderReady!: () => void;
+      const providerReady = new Promise<void>((resolve) => {
+        resolveProviderReady = resolve;
+      });
+      const providerReadyDeadline = new Promise<never>((_, reject) => {
+        providerReadyTimeout = setTimeout(() => {
+          providerReadyTimedOut = true;
+          reject(new Error(`Realtime provider did not become ready within ${this.deps.config.server.providerReadyTimeoutMs}ms.`));
+        }, this.deps.config.server.providerReadyTimeoutMs);
+      });
+      clearProviderReadyTimeout = () => {
+        if (providerReadyTimeout) {
+          clearTimeout(providerReadyTimeout);
+          providerReadyTimeout = undefined;
+        }
+      };
       const sendReady = () => {
         if (readySent || !providerOpen || !this.liveSession || this.closing) {
           return;
         }
+        clearProviderReadyTimeout();
         const hermesInfo: { model?: string; capabilities?: Record<string, unknown> } = {};
         if (typeof capabilities.model === "string") {
           hermesInfo.model = capabilities.model;
@@ -86,43 +107,59 @@ export class LiveGatewaySession {
           hermes: hermesInfo,
         });
         readySent = true;
+        resolveProviderReady();
         for (const event of pendingEvents.splice(0)) {
           this.handleLiveModelEvent(event);
         }
       };
-      const liveSession = await this.deps.liveModel.connect({
-        sessionId: this.id,
-        systemInstruction: buildSystemInstruction(),
-        ...(this.sessionKey ? { safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey) } : {}),
-        callbacks: {
-          onOpen: () => {
-            providerOpen = true;
-            sendReady();
+      const connect = this.deps.liveModel
+        .connect({
+          sessionId: this.id,
+          systemInstruction: buildSystemInstruction(),
+          ...(this.sessionKey ? { safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey) } : {}),
+          callbacks: {
+            onOpen: () => {
+              providerOpen = true;
+              sendReady();
+            },
+            onClose: (event) => {
+              this.send({ type: "log", level: "info", message: "Realtime provider session closed", data: event });
+              if (!this.closing) {
+                this.fail("realtime_provider_closed", new Error("Realtime provider session closed."), true);
+                void this.close().finally(() => this.socket.close(1011, "realtime provider closed"));
+              }
+            },
+            onError: (error) => this.fail("realtime_provider_error", error, true),
+            onEvent: (event) => {
+              if (!readySent) {
+                pendingEvents.push(event);
+                return;
+              }
+              this.handleLiveModelEvent(event);
+            },
           },
-          onClose: (event) => {
-            this.send({ type: "log", level: "info", message: "Realtime provider session closed", data: event });
-            if (!this.closing) {
-              this.fail("realtime_provider_closed", new Error("Realtime provider session closed."), true);
-              void this.close().finally(() => this.socket.close(1011, "realtime provider closed"));
-            }
-          },
-          onError: (error) => this.fail("realtime_provider_error", error, true),
-          onEvent: (event) => {
-            if (!readySent) {
-              pendingEvents.push(event);
-              return;
-            }
-            this.handleLiveModelEvent(event);
-          },
-        },
-      });
+        })
+        .then(async (session) => {
+          if (providerReadyTimedOut || this.closing) {
+            await session.close().catch(() => undefined);
+          }
+          return session;
+        });
+      liveSession = await Promise.race([connect, providerReadyDeadline]);
       if (this.closing) {
+        clearProviderReadyTimeout();
         await liveSession.close().catch(() => undefined);
         return;
       }
       this.liveSession = liveSession;
       sendReady();
+      await Promise.race([providerReady, providerReadyDeadline]);
     } catch (error) {
+      clearProviderReadyTimeout();
+      await liveSession?.close().catch(() => undefined);
+      if (liveSession && this.liveSession === liveSession) {
+        this.liveSession = undefined;
+      }
       if (!this.closing) {
         this.fail("session_start_failed", error, true);
       }

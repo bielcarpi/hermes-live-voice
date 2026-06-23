@@ -17,6 +17,8 @@ The gateway expects these feature flags to be true:
 
 Hermes JSON requests time out after 30 seconds by default. Set `HERMES_LIVE_HERMES_TIMEOUT_MS` if your local or remote Hermes API Server needs a different bound.
 
+Realtime provider sessions must report ready within 15 seconds by default. Set `HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS` if your provider or network needs a longer startup bound.
+
 ## 2. Install Gateway Dependencies
 
 ```sh
