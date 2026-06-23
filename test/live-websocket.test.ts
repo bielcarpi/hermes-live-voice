@@ -103,6 +103,48 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("reports provider errors before readiness as session start failures", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 1_000 } }),
+      hermes: fakeHermes(),
+      liveModel: new PreReadyErrorAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      message: "Provider errored before ready",
+      recoverable: true,
+    });
+  });
+
+  it("reports provider close before readiness as a session start failure", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 1_000 } }),
+      hermes: fakeHermes(),
+      liveModel: new PreReadyCloseAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      message: "Realtime provider session closed before ready.",
+      recoverable: true,
+    });
+  });
+
   it("waits to announce ready until the provider session is assigned", async () => {
     const providerOpened = deferred<void>();
     const releaseProvider = deferred<void>();
@@ -670,6 +712,22 @@ class DelayedOpenAdapter implements LiveModelAdapter {
 class FailingConnectAdapter implements LiveModelAdapter {
   async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
     throw new Error("Provider did not connect");
+  }
+}
+
+class PreReadyErrorAdapter implements LiveModelAdapter {
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    params.callbacks.onError?.(new Error("Provider errored before ready"));
+    await new Promise(() => undefined);
+    return new CloseTrackingSession();
+  }
+}
+
+class PreReadyCloseAdapter implements LiveModelAdapter {
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    params.callbacks.onClose?.({ code: 1006, reason: "closed before ready" });
+    await new Promise(() => undefined);
+    return new CloseTrackingSession();
   }
 }
 
