@@ -10,6 +10,7 @@ import { startServer } from "../src/server/http.js";
 
 const openServers: Array<{ close(): Promise<void> }> = [];
 const openSockets: WebSocket[] = [];
+const defaultSessionKey = "agent:main:hermes-live:profile:default:user:anonymous";
 
 afterEach(async () => {
   for (const socket of openSockets.splice(0)) {
@@ -321,6 +322,7 @@ describe("live gateway WebSocket", () => {
     await expect(completed).resolves.toMatchObject({ output: "Approved." });
     expect(hermes.submitApproval).toHaveBeenCalledWith("run_ws", "once", {
       signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
     });
   });
 
@@ -389,7 +391,10 @@ describe("live gateway WebSocket", () => {
     send(socket, { type: "run.stop", runId: started.runId, reason: "test" });
 
     await expect(waitForMessage(socket, "run.stopped")).resolves.toMatchObject({ runId: "run_ws", status: "stopping" });
-    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", expect.any(AbortSignal));
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
   });
 
   it("rejects client stop requests for runs outside the active voice session", async () => {
@@ -458,6 +463,45 @@ describe("live gateway WebSocket", () => {
       recoverable: true,
     });
     expect(hermes.stopRun).not.toHaveBeenCalled();
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.completed");
+  });
+
+  it("routes provider status tool calls with the Hermes session key", async () => {
+    const releaseRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        await releaseRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run something long" });
+    await waitForMessage(socket, "run.started");
+    const response = liveModel.nextToolResponse();
+    liveModel.emitToolCall({ id: "status_active", name: "get_hermes_run_status", args: { run_id: "run_ws" } });
+
+    await expect(response).resolves.toMatchObject({
+      call: { id: "status_active", name: "get_hermes_run_status" },
+      response: { ok: true, status: { run_id: "run_ws", status: "running" } },
+    });
+    expect(hermes.getRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
     releaseRun.resolve();
     await waitForMessage(socket, "run.completed");
   });
@@ -577,7 +621,10 @@ describe("live gateway WebSocket", () => {
     socket.close(1000, "test close");
 
     await stopped.promise;
-    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws");
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
   });
 
   it("rejects unauthorized WebSocket upgrades when auth is configured", async () => {
@@ -1067,20 +1114,42 @@ class OversizedToolCallSession implements LiveModelSession {
 
 class ManualToolAdapter implements LiveModelAdapter {
   private callbacks?: LiveModelCallbacks;
+  private readonly responses: Array<{ call: LiveToolCall; response: Record<string, unknown> }> = [];
+  private readonly responseWaiters: Array<(value: { call: LiveToolCall; response: Record<string, unknown> }) => void> = [];
 
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
     this.callbacks = params.callbacks;
     queueMicrotask(() => params.callbacks.onOpen?.());
-    return new ManualToolSession(params.callbacks);
+    return new ManualToolSession(params.callbacks, (call, response) => this.recordToolResponse(call, response));
   }
 
   emitToolCall(call: LiveToolCall): void {
     this.callbacks?.onEvent({ type: "tool_call", call });
   }
+
+  nextToolResponse(): Promise<{ call: LiveToolCall; response: Record<string, unknown> }> {
+    const response = this.responses.shift();
+    if (response) {
+      return Promise.resolve(response);
+    }
+    return new Promise((resolve) => this.responseWaiters.push(resolve));
+  }
+
+  private recordToolResponse(call: LiveToolCall, response: Record<string, unknown>): void {
+    const waiter = this.responseWaiters.shift();
+    if (waiter) {
+      waiter({ call, response });
+      return;
+    }
+    this.responses.push({ call, response });
+  }
 }
 
 class ManualToolSession implements LiveModelSession {
-  constructor(private readonly callbacks: LiveModelCallbacks) {}
+  constructor(
+    private readonly callbacks: LiveModelCallbacks,
+    private readonly onToolResponse: (call: LiveToolCall, response: Record<string, unknown>) => void,
+  ) {}
 
   async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
 
@@ -1097,7 +1166,9 @@ class ManualToolSession implements LiveModelSession {
     return false;
   }
 
-  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
+  async sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
+    this.onToolResponse(call, response);
+  }
 
   async close(): Promise<void> {}
 }

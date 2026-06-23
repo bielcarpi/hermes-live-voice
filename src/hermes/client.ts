@@ -25,6 +25,11 @@ export interface StartRunResult {
   status: string;
 }
 
+export interface HermesRequestOptions {
+  signal?: AbortSignal;
+  sessionKey?: string;
+}
+
 export interface ApprovalResult {
   object?: string;
   run_id?: string;
@@ -77,11 +82,10 @@ export class HermesClient {
     if (params.conversationHistory?.length) {
       body.conversation_history = params.conversationHistory;
     }
-    const headers: Record<string, string> = this.apiKey ? { "X-Hermes-Session-Key": params.sessionKey } : {};
     const response = await this.requestJson<{ run_id?: string; runId?: string; status?: string }>("/v1/runs", {
       method: "POST",
       body: JSON.stringify(body),
-      headers,
+      headers: this.sessionHeaders(params.sessionKey),
       ...signalInit(signal),
     });
     const runId = response.run_id ?? response.runId;
@@ -91,29 +95,34 @@ export class HermesClient {
     return { runId, status: response.status ?? "started" };
   }
 
-  async getRun(runId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  async getRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<Record<string, unknown>> {
+    const requestOptions = normalizeHermesRequestOptions(options);
     return this.requestJson<Record<string, unknown>>(`/v1/runs/${encodeURIComponent(runId)}`, {
       method: "GET",
-      ...signalInit(signal),
+      headers: this.sessionHeaders(requestOptions.sessionKey),
+      ...signalInit(requestOptions.signal),
     });
   }
 
-  async stopRun(runId: string, signal?: AbortSignal): Promise<{ run_id?: string; status?: string }> {
+  async stopRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<{ run_id?: string; status?: string }> {
+    const requestOptions = normalizeHermesRequestOptions(options);
     return this.requestJson<{ run_id?: string; status?: string }>(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
       method: "POST",
       body: "{}",
-      ...signalInit(signal),
+      headers: this.sessionHeaders(requestOptions.sessionKey),
+      ...signalInit(requestOptions.signal),
     });
   }
 
   async submitApproval(
     runId: string,
     choice: ApprovalChoice,
-    options: { resolveAll?: boolean; signal?: AbortSignal } = {},
+    options: { resolveAll?: boolean; signal?: AbortSignal; sessionKey?: string } = {},
   ): Promise<ApprovalResult> {
     return this.requestJson<ApprovalResult>(`/v1/runs/${encodeURIComponent(runId)}/approval`, {
       method: "POST",
       body: JSON.stringify({ choice, resolve_all: options.resolveAll ?? false }),
+      headers: this.sessionHeaders(options.sessionKey),
       ...signalInit(options.signal),
     });
   }
@@ -170,6 +179,17 @@ export class HermesClient {
       ...extra,
     };
   }
+
+  private sessionHeaders(sessionKey: string | undefined): Record<string, string> {
+    return this.apiKey && sessionKey ? { "X-Hermes-Session-Key": sessionKey } : {};
+  }
+}
+
+function normalizeHermesRequestOptions(options: AbortSignal | HermesRequestOptions | undefined): HermesRequestOptions {
+  if (!options) {
+    return {};
+  }
+  return "aborted" in options && "addEventListener" in options ? { signal: options } : options;
 }
 
 function signalInit(signal: AbortSignal | undefined): Pick<RequestInit, "signal"> {

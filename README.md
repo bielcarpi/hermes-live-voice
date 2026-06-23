@@ -86,7 +86,7 @@ HERMES_BASE_URL=http://127.0.0.1:8642
 HERMES_API_KEY=...
 ```
 
-Set `HERMES_API_KEY` to the same value as Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth, and Hermes only accepts the long-term memory `X-Hermes-Session-Key` header from authenticated clients.
+Set `HERMES_API_KEY` to the same value as Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth, and Hermes only accepts the long-term memory `X-Hermes-Session-Key` header from authenticated clients. `hermes-live` keeps that session key server-side and sends it to Hermes on run creation and follow-up run-scoped calls.
 
 Hermes JSON requests time out after 30 seconds by default. To tune that for a slower local or remote Hermes API Server:
 

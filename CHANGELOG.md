@@ -60,3 +60,4 @@
 - Make `hermes-live check` report actionable gateway, Hermes, and realtime configuration failures.
 - Align `/ready` with the same actionable readiness report used by the CLI.
 - Disclose that realtime readiness does not open a provider session handshake.
+- Send the derived Hermes session key on authenticated run status, stop, and approval calls.

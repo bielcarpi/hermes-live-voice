@@ -195,7 +195,7 @@ export class LiveGatewaySession {
     }
     this.closing = true;
     if (this.activeRunId) {
-      await this.deps.hermes.stopRun(this.activeRunId).catch(() => undefined);
+      await this.deps.hermes.stopRun(this.activeRunId, this.hermesRequestOptions()).catch(() => undefined);
     }
     this.abort.abort();
     await this.liveSession?.close().catch(() => undefined);
@@ -273,7 +273,7 @@ export class LiveGatewaySession {
       }
       case "get_hermes_run_status": {
         const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
-        const status = await this.deps.hermes.getRun(runId, this.abort.signal);
+        const status = await this.deps.hermes.getRun(runId, this.hermesRequestOptions());
         await this.liveSession?.sendToolResponse(call, { ok: true, status });
         break;
       }
@@ -288,7 +288,7 @@ export class LiveGatewaySession {
         const parsedChoice = ApprovalChoiceSchema.parse(stringArg(call, "choice"));
         const result = await this.deps.hermes.submitApproval(runId, parsedChoice, {
           resolveAll: Boolean(call.args.resolve_all),
-          signal: this.abort.signal,
+          ...this.hermesRequestOptions(),
         });
         await this.liveSession?.sendToolResponse(call, { ok: true, result });
         break;
@@ -410,7 +410,7 @@ export class LiveGatewaySession {
     const runId = this.resolveActiveRunId(message.runId);
     const result = await this.deps.hermes.submitApproval(runId, message.choice, {
       ...(message.resolveAll === undefined ? {} : { resolveAll: message.resolveAll }),
-      signal: this.abort.signal,
+      ...this.hermesRequestOptions(),
     });
     this.send({
       type: "approval.responded",
@@ -422,10 +422,14 @@ export class LiveGatewaySession {
 
   private async stopRun(runId: string | undefined, reason?: string): Promise<Record<string, unknown>> {
     const target = this.resolveActiveRunId(runId);
-    const result = await this.deps.hermes.stopRun(target, this.abort.signal);
+    const result = await this.deps.hermes.stopRun(target, this.hermesRequestOptions());
     this.send({ type: "run.stopped", runId: target, status: result.status ?? "stopping" });
     this.send({ type: "log", level: "info", message: "Hermes run stop requested", data: { runId: target, reason } });
     return { ok: true, run_id: target, status: result.status ?? "stopping" };
+  }
+
+  private hermesRequestOptions(): { signal: AbortSignal; sessionKey?: string } {
+    return { signal: this.abort.signal, ...(this.sessionKey ? { sessionKey: this.sessionKey } : {}) };
   }
 
   private resolveActiveRunId(requestedRunId: string | undefined): string {
