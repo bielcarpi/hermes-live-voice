@@ -57,6 +57,52 @@ describe("live gateway WebSocket", () => {
     );
   });
 
+  it("reports Hermes startup failures as session start failures", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes({
+        assertRunsSupported: vi.fn(async () => {
+          throw new Error("Hermes capabilities unavailable");
+        }),
+      }),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      message: "Hermes capabilities unavailable",
+      recoverable: true,
+    });
+  });
+
+  it("reports provider connection failures as session start failures", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new FailingConnectAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      message: "Provider did not connect",
+      recoverable: true,
+    });
+  });
+
   it("waits to announce ready until the provider session is assigned", async () => {
     const providerOpened = deferred<void>();
     const releaseProvider = deferred<void>();
@@ -382,6 +428,7 @@ describe("live gateway WebSocket", () => {
 
 function fakeHermes(
   options: {
+    assertRunsSupported?: ReturnType<typeof vi.fn>;
     streamEvents?: (runId: string, signal?: AbortSignal) => AsyncGenerator<Record<string, unknown>>;
     stopRun?: ReturnType<typeof vi.fn>;
     submitApproval?: ReturnType<typeof vi.fn>;
@@ -393,15 +440,17 @@ function fakeHermes(
 } {
   const hermes = {
     baseUrl: "http://127.0.0.1:8642",
-    assertRunsSupported: vi.fn(async () => ({
-      model: "hermes-agent",
-      features: {
-        run_submission: true,
-        run_events_sse: true,
-        run_stop: true,
-        run_approval_response: true,
-      },
-    })),
+    assertRunsSupported:
+      options.assertRunsSupported ??
+      vi.fn(async () => ({
+        model: "hermes-agent",
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+        },
+      })),
     startRun: vi.fn(async () => ({ runId: "run_ws", status: "started" })),
     getRun: vi.fn(async () => ({ run_id: "run_ws", status: "running" })),
     streamRunEvents:
@@ -581,6 +630,12 @@ class DelayedOpenAdapter implements LiveModelAdapter {
     this.providerOpened.resolve();
     await this.releaseProvider;
     return new ToolEchoSession(params.callbacks);
+  }
+}
+
+class FailingConnectAdapter implements LiveModelAdapter {
+  async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
+    throw new Error("Provider did not connect");
   }
 }
 
