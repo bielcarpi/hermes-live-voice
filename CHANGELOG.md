@@ -21,6 +21,7 @@
 - Stop active Hermes runs before aborting run event streams on client disconnect.
 - Add live-provider testing guide, Docker healthcheck, CI Docker build, web demo syntax checks, and package smoke checks.
 - Add `hermes-live client "..."` for terminal smoke tests against a running gateway.
+- Fail the terminal client when the gateway closes before completing a one-shot request.
 - Add a built gateway smoke test against a fake Hermes API Server.
 - Verify the packed npm tarball installs, exposes the CLI, and imports correctly.
 - Require Hermes run/event/stop/approval support before `/ready` reports ready.

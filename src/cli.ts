@@ -162,8 +162,8 @@ async function runTextClient(config: AppConfig, text: string): Promise<void> {
       });
       ws.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
       ws.once("close", (code, reason) => {
-        if (!finished && code !== 1000) {
-          finish(new Error(`Gateway WebSocket closed: ${code} ${reason.toString("utf8")}`));
+        if (!finished) {
+          finish(new Error(`Gateway WebSocket closed before completing the request: ${code} ${reason.toString("utf8")}`));
         }
       });
       ws.on("message", (raw) => {
