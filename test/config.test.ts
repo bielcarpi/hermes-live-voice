@@ -7,6 +7,7 @@ describe("config", () => {
 
     expect(config.server.host).toBe("127.0.0.1");
     expect(config.server.port).toBe(8788);
+    expect(config.server.demoEnabled).toBe(true);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
     expect(config.realtime.provider).toBe("gemini");
     expect(config.realtime.model).toBe(config.gemini.model);
@@ -16,6 +17,24 @@ describe("config", () => {
     const config = loadConfig({ PORT: "9000", HERMES_LIVE_PORT: "8788" });
 
     expect(config.server.port).toBe(9000);
+  });
+
+  it("can disable the built-in browser demo", () => {
+    const config = loadConfig({ HERMES_LIVE_DEMO_ENABLED: "false" });
+
+    expect(config.server.demoEnabled).toBe(false);
+  });
+
+  it("disables the built-in browser demo by default in production", () => {
+    const config = loadConfig({ NODE_ENV: "production" });
+
+    expect(config.server.demoEnabled).toBe(false);
+  });
+
+  it("can explicitly enable the built-in browser demo in production", () => {
+    const config = loadConfig({ NODE_ENV: "production", HERMES_LIVE_DEMO_ENABLED: "true" });
+
+    expect(config.server.demoEnabled).toBe(true);
   });
 
   it("redacts unsafe session pieces into stable session keys", () => {

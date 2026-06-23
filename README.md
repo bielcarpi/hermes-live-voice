@@ -49,9 +49,23 @@ Not implemented in this repo:
 
 ## Install
 
+From a clone:
+
 ```sh
 npm install
 npm run build
+```
+
+After the package is published, users can install the CLI globally:
+
+```sh
+npm install -g hermes-live
+```
+
+Or run the Docker example:
+
+```sh
+docker compose -f examples/docker-compose.yml up
 ```
 
 ## Configure
@@ -114,6 +128,18 @@ Then open:
 
 ```txt
 http://127.0.0.1:8788
+```
+
+The built-in browser demo is enabled by default for local development and disabled by default when `NODE_ENV=production`. To force it off:
+
+```sh
+HERMES_LIVE_DEMO_ENABLED=false
+```
+
+To expose it intentionally in a production/container environment:
+
+```sh
+HERMES_LIVE_DEMO_ENABLED=true
 ```
 
 Useful commands:

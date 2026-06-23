@@ -31,6 +31,21 @@ describe("HTTP server", () => {
     });
   });
 
+  it("can disable the built-in browser demo", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { demoEnabled: false } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    expect(await fetch(`${server.url}/`).then((res) => res.status)).toBe(404);
+    await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
+      features: { browser_demo: false },
+    });
+  });
+
   it("returns not_ready when Hermes capabilities fail", async () => {
     const hermes = fakeHermes();
     vi.mocked(hermes.capabilities).mockRejectedValueOnce(new Error("down"));
@@ -119,6 +134,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       port: 0,
       sessionPrefix: "agent:main:hermes-live",
       maxAudioBytes: 2_000_000,
+      demoEnabled: true,
       ...overrides.server,
     },
     hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent" },

@@ -64,6 +64,18 @@ http://127.0.0.1:8788
 
 The demo can send text through the gateway and, in supported browsers, capture microphone audio as PCM16 frames.
 
+To run the gateway without serving the demo page:
+
+```sh
+HERMES_LIVE_DEMO_ENABLED=false npm run dev
+```
+
+Production runs default the demo off when `NODE_ENV=production`. If you want to test the demo through Docker or another production-like process, enable it explicitly:
+
+```sh
+HERMES_LIVE_DEMO_ENABLED=true docker compose -f examples/docker-compose.yml up
+```
+
 ## 6. Terminal Smoke Test
 
 With the gateway running:
