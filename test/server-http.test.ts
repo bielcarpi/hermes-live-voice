@@ -46,6 +46,27 @@ describe("HTTP server", () => {
     });
   });
 
+  it("serves the browser demo with defensive security headers", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    const response = await fetch(`${server.url}/`);
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("hermes-live");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("x-frame-options")).toBe("DENY");
+  });
+
   it("returns not_ready when Hermes capabilities fail", async () => {
     const hermes = fakeHermes();
     vi.mocked(hermes.assertRunsSupported).mockRejectedValueOnce(new Error("down"));

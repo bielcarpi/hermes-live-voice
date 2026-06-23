@@ -35,3 +35,5 @@
 - Keep the web demo in a starting/error state until `session.ready` succeeds.
 - Include optional Hermes plugin syntax validation in `npm run verify`.
 - Run the Docker image as the non-root `node` user.
+- Add defensive security headers to JSON and browser demo responses.
+- Close idle and active HTTP connections during explicit server shutdown.
