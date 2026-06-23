@@ -72,9 +72,7 @@ class GeminiLiveSession implements LiveModelSession {
   }
 
   async sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
-    await this.session.sendToolResponse({
-      functionResponses: [{ id: call.id, name: call.name, response }],
-    });
+    await this.session.sendToolResponse(buildGeminiToolResponse(call, response));
   }
 
   async close(): Promise<void> {
@@ -96,12 +94,29 @@ export function buildGeminiTextTurn(text: string): { turns: Array<{ role: "user"
   };
 }
 
+export function buildGeminiToolResponse(
+  call: LiveToolCall,
+  response: Record<string, unknown>,
+): { functionResponses: Array<{ id: string; name: string; response: Record<string, unknown> }> } {
+  if (!call.id) {
+    throw new Error(`Gemini Live function call ${call.name} did not include an id.`);
+  }
+  return { functionResponses: [{ id: call.id, name: call.name, response }] };
+}
+
 export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
   const events: LiveModelEvent[] = [];
   const root = unwrapMessage(message);
 
   for (const call of extractFunctionCalls(root)) {
     events.push({ type: "tool_call", call });
+  }
+  const data = root?.data;
+  if (typeof data === "string") {
+    events.push({
+      type: "audio",
+      audio: { data, mimeType: root.mimeType ?? root.mime_type ?? "audio/pcm;rate=24000" },
+    });
   }
   for (const part of extractParts(root)) {
     const text = typeof part.text === "string" ? part.text : undefined;
@@ -123,7 +138,10 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
 
 function unwrapMessage(message: unknown): any {
   if (message && typeof message === "object" && "data" in message) {
-    return (message as { data: unknown }).data;
+    const data = (message as { data: unknown }).data;
+    if (data && typeof data === "object") {
+      return data;
+    }
   }
   return message;
 }

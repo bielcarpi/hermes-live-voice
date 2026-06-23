@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildGeminiRealtimeAudioInput, buildGeminiTextTurn, normalizeGeminiLiveMessage } from "../src/gemini/live.js";
+import { buildGeminiRealtimeAudioInput, buildGeminiTextTurn, buildGeminiToolResponse, normalizeGeminiLiveMessage } from "../src/gemini/live.js";
 
 describe("Gemini Live adapter helpers", () => {
   it("normalizes function calls from Gemini toolCall messages", () => {
@@ -29,6 +29,33 @@ describe("Gemini Live adapter helpers", () => {
     expect(events.at(-1)).toMatchObject({ type: "raw" });
   });
 
+  it("normalizes top-level Gemini audio data", () => {
+    const events = normalizeGeminiLiveMessage({
+      data: "base64-audio",
+      serverContent: { turnComplete: true },
+    });
+
+    expect(events).toContainEqual({
+      type: "audio",
+      audio: { data: "base64-audio", mimeType: "audio/pcm;rate=24000" },
+    });
+    expect(events.at(-1)).toMatchObject({ type: "raw" });
+  });
+
+  it("still unwraps SDK or event wrappers whose data field contains a message object", () => {
+    const events = normalizeGeminiLiveMessage({
+      data: {
+        serverContent: {
+          modelTurn: {
+            parts: [{ text: "wrapped hello" }],
+          },
+        },
+      },
+    });
+
+    expect(events).toContainEqual({ type: "text", text: "wrapped hello" });
+  });
+
   it("builds Gemini audio input at the Gemini sample rate", () => {
     const input = Buffer.alloc(48).toString("base64");
 
@@ -42,5 +69,12 @@ describe("Gemini Live adapter helpers", () => {
       turns: [{ role: "user", parts: [{ text: "hello" }] }],
       turnComplete: true,
     });
+  });
+
+  it("builds Gemini tool responses with the function call id", () => {
+    expect(buildGeminiToolResponse({ id: "call_1", name: "start_hermes_run", args: {} }, { ok: true })).toEqual({
+      functionResponses: [{ id: "call_1", name: "start_hermes_run", response: { ok: true } }],
+    });
+    expect(() => buildGeminiToolResponse({ name: "start_hermes_run", args: {} }, { ok: false })).toThrow(/did not include an id/);
   });
 });
