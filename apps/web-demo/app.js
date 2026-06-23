@@ -123,9 +123,7 @@ function handleMessage(message) {
     addLog(message.speaker ?? "assistant", message.text ?? "");
   } else if (message.type === "input.speech_started") {
     const truncate = clearPlayback();
-    if (truncate) {
-      requestResponseCancel("provider detected user speech", truncate);
-    }
+    requestResponseCancel("provider detected user speech", truncate);
     addLog("speech", `started${message.audioStartMs === undefined ? "" : ` at ${message.audioStartMs}ms`}`);
   } else if (message.type === "audio.output") {
     void playPcmAudio(message.data, message.mimeType, message.itemId, message.contentIndex);
