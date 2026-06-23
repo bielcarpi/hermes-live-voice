@@ -167,7 +167,7 @@ Provider-managed speech start:
 }
 ```
 
-OpenAI VAD can emit this when the provider detects user speech. Voice clients should stop local assistant playback immediately. If queued assistant audio has provider item metadata, send `response.cancel` with `truncate` so the gateway can remove unheard audio from the provider conversation.
+OpenAI VAD can emit this when the provider detects user speech. Voice clients should stop local assistant playback immediately and send `response.cancel`. If queued assistant audio has provider item metadata, include `truncate` so the gateway can remove unheard audio from the provider conversation.
 
 Raw realtime provider message:
 
