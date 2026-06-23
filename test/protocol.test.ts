@@ -6,6 +6,16 @@ describe("protocol", () => {
     expect(parseClientMessage({ type: "session.start", profileId: "default" }).type).toBe("session.start");
     expect(parseClientMessage({ type: "text.input", text: "hello" }).type).toBe("text.input");
     expect(parseClientMessage({ type: "response.cancel", reason: "user interrupted" }).type).toBe("response.cancel");
+    expect(
+      parseClientMessage({
+        type: "response.cancel",
+        reason: "barge-in",
+        truncate: { itemId: "item_1", audioEndMs: 1200 },
+      }),
+    ).toMatchObject({
+      type: "response.cancel",
+      truncate: { itemId: "item_1", contentIndex: 0, audioEndMs: 1200 },
+    });
     expect(parseClientMessage({ type: "approval.respond", runId: "run_1", choice: "once" }).type).toBe("approval.respond");
   });
 

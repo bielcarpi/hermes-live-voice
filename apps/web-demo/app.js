@@ -14,6 +14,8 @@ let audioContext;
 let playbackContext;
 let playbackCursor = 0;
 const playbackSources = new Set();
+const playbackItems = new Map();
+let lastPlaybackItem;
 let mediaStream;
 let workletNode;
 
@@ -40,8 +42,8 @@ form.addEventListener("submit", (event) => {
   const text = textInput.value.trim();
   if (!text) return;
   try {
-    clearPlayback();
-    requestResponseCancel("new text input");
+    const truncate = clearPlayback();
+    requestResponseCancel("new text input", truncate);
     send({ type: "text.input", text });
     addLog("you", text);
     textInput.value = "";
@@ -65,8 +67,8 @@ micButton.addEventListener("click", async () => {
 
 stopButton.addEventListener("click", () => {
   try {
-    clearPlayback();
-    requestResponseCancel("demo user clicked stop");
+    const truncate = clearPlayback();
+    requestResponseCancel("demo user clicked stop", truncate);
     send({ type: "run.stop", runId: activeRunId || undefined, reason: "demo user clicked stop" });
   } catch (error) {
     showError(error);
@@ -117,7 +119,7 @@ function handleMessage(message) {
   } else if (message.type === "transcript.delta") {
     addLog(message.speaker ?? "assistant", message.text ?? "");
   } else if (message.type === "audio.output") {
-    void playPcmAudio(message.data, message.mimeType);
+    void playPcmAudio(message.data, message.mimeType, message.itemId, message.contentIndex);
   } else if (message.type === "run.started") {
     activeRunId = message.runId;
     addLog("run", `started ${message.runId}`);
@@ -144,8 +146,8 @@ function handleMessage(message) {
 
 async function startMic() {
   ensureOpen();
-  clearPlayback();
-  requestResponseCancel("microphone started");
+  const truncate = clearPlayback();
+  requestResponseCancel("microphone started", truncate);
   mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   audioContext = new AudioContext({ sampleRate: 24000 });
   await audioContext.audioWorklet.addModule("/mic-worklet.js");
@@ -174,7 +176,7 @@ async function stopMic({ notify = true, status = "Connected" } = {}) {
   setStatus(status);
 }
 
-async function playPcmAudio(base64, mimeType) {
+async function playPcmAudio(base64, mimeType, itemId, contentIndex = 0) {
   const rate = Number(/rate=(\d+)/.exec(mimeType || "")?.[1] || 24000);
   const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
   const samples = new Float32Array(bytes.length / 2);
@@ -197,12 +199,23 @@ async function playPcmAudio(base64, mimeType) {
   source.connect(ctx.destination);
   const startAt = Math.max(ctx.currentTime + 0.02, playbackCursor || 0);
   source.start(startAt);
-  playbackSources.add(source);
+  const itemKey = itemId ? `${itemId}:${contentIndex}` : "";
+  if (itemId) {
+    lastPlaybackItem = { itemId, contentIndex };
+    if (!playbackItems.has(itemKey)) {
+      playbackItems.set(itemKey, { itemId, contentIndex, playedMs: 0 });
+    }
+  }
+  const sourceRecord = { source, context: ctx, itemKey, startAt, duration: buffer.duration, stopped: false };
+  playbackSources.add(sourceRecord);
   playbackCursor = startAt + buffer.duration;
   source.addEventListener(
     "ended",
     () => {
-      playbackSources.delete(source);
+      playbackSources.delete(sourceRecord);
+      if (!sourceRecord.stopped && sourceRecord.itemKey) {
+        addPlayedAudio(sourceRecord.itemKey, sourceRecord.duration * 1000);
+      }
       if (playbackCursor <= ctx.currentTime) {
         playbackCursor = 0;
       }
@@ -212,15 +225,37 @@ async function playPcmAudio(base64, mimeType) {
 }
 
 function clearPlayback() {
+  const hadQueuedAudio = playbackSources.size > 0;
   playbackCursor = 0;
-  for (const source of playbackSources) {
+  for (const sourceRecord of playbackSources) {
+    if (sourceRecord.itemKey) {
+      const playedSeconds = Math.max(0, Math.min(sourceRecord.duration, sourceRecord.context.currentTime - sourceRecord.startAt));
+      addPlayedAudio(sourceRecord.itemKey, playedSeconds * 1000);
+    }
+    sourceRecord.stopped = true;
     try {
-      source.stop();
+      sourceRecord.source.stop();
     } catch {
       // The source may already have ended.
     }
   }
   playbackSources.clear();
+  const truncate =
+    hadQueuedAudio && lastPlaybackItem
+      ? playbackItems.get(`${lastPlaybackItem.itemId}:${lastPlaybackItem.contentIndex}`)
+      : undefined;
+  playbackItems.clear();
+  lastPlaybackItem = undefined;
+  return truncate && truncate.playedMs > 0
+    ? { itemId: truncate.itemId, contentIndex: truncate.contentIndex, audioEndMs: Math.floor(truncate.playedMs) }
+    : undefined;
+}
+
+function addPlayedAudio(itemKey, playedMs) {
+  const item = playbackItems.get(itemKey);
+  if (item) {
+    item.playedMs += Math.max(0, playedMs);
+  }
 }
 
 function send(message) {
@@ -228,9 +263,9 @@ function send(message) {
   socket.send(JSON.stringify(message));
 }
 
-function requestResponseCancel(reason) {
+function requestResponseCancel(reason, truncate) {
   if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "response.cancel", reason }));
+    socket.send(JSON.stringify({ type: "response.cancel", reason, ...(truncate ? { truncate } : {}) }));
   }
 }
 

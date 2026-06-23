@@ -1,7 +1,13 @@
 import WebSocket from "ws";
 import { normalizePcm16Audio } from "../audio/pcm.js";
 import type { AppConfig } from "../config.js";
-import { OPENAI_HERMES_LIVE_TOOLS, type LiveModelAudio, type LiveModelEvent, type LiveToolCall } from "../protocol.js";
+import {
+  OPENAI_HERMES_LIVE_TOOLS,
+  type LiveModelAudio,
+  type LiveModelEvent,
+  type LiveToolCall,
+  type RealtimeResponseTruncation,
+} from "../protocol.js";
 import type { LiveModelAdapter, LiveModelCallbacks, LiveModelConnectParams, LiveModelSession } from "../realtime/live.js";
 
 const OPENAI_REALTIME_PCM_INPUT_SAMPLE_RATE = 24_000;
@@ -99,11 +105,17 @@ class OpenAIRealtimeSession implements LiveModelSession {
     this.createResponse();
   }
 
-  async cancelResponse(): Promise<boolean> {
-    if (!this.responsePending && !this.responseActive) {
+  async cancelResponse(_reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean> {
+    const shouldCancel = this.responsePending || this.responseActive;
+    if (!shouldCancel && !truncate) {
       return false;
     }
-    this.sendJson(buildOpenAIResponseCancel());
+    if (shouldCancel) {
+      this.sendJson(buildOpenAIResponseCancel());
+    }
+    if (truncate) {
+      this.sendJson(buildOpenAIConversationItemTruncate(truncate));
+    }
     this.responsePending = false;
     this.responseActive = false;
     return true;
@@ -185,11 +197,22 @@ export function normalizeOpenAIRealtimeEvent(
   const events: LiveModelEvent[] = [{ type: "raw", message: event }];
   const root = event as any;
 
-  if (root?.type === "response.output_audio.delta" && typeof root.delta === "string") {
+  if ((root?.type === "response.output_audio.delta" || root?.type === "response.audio.delta") && typeof root.delta === "string") {
     events.push({ type: "audio", audio: { data: root.delta, mimeType: openAiAudioMimeType(outputAudioFormat) } });
+    const audio = events[events.length - 1];
+    if (audio?.type === "audio") {
+      if (typeof root.item_id === "string") {
+        audio.audio.itemId = root.item_id;
+      }
+      if (typeof root.content_index === "number") {
+        audio.audio.contentIndex = root.content_index;
+      }
+    }
   }
   if (
-    (root?.type === "response.output_text.delta" || root?.type === "response.output_audio_transcript.delta") &&
+    (root?.type === "response.output_text.delta" ||
+      root?.type === "response.output_audio_transcript.delta" ||
+      root?.type === "response.audio_transcript.delta") &&
     typeof root.delta === "string"
   ) {
     events.push({ type: "text", text: root.delta });
@@ -217,6 +240,20 @@ export function buildOpenAIRealtimeAudioAppend(
 
 export function buildOpenAIResponseCancel(): { type: "response.cancel" } {
   return { type: "response.cancel" };
+}
+
+export function buildOpenAIConversationItemTruncate(truncate: RealtimeResponseTruncation): {
+  type: "conversation.item.truncate";
+  item_id: string;
+  content_index: number;
+  audio_end_ms: number;
+} {
+  return {
+    type: "conversation.item.truncate",
+    item_id: truncate.itemId,
+    content_index: truncate.contentIndex,
+    audio_end_ms: Math.max(0, Math.round(truncate.audioEndMs)),
+  };
 }
 
 export function buildOpenAISessionUpdate(

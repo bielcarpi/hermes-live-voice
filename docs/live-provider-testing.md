@@ -64,11 +64,13 @@ HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
 
-For Realtime 1 style sessions:
+For current Realtime 1.x sessions:
 
 ```sh
-OPENAI_REALTIME_MODEL=gpt-realtime
+OPENAI_REALTIME_MODEL=gpt-realtime-1.5
 ```
+
+Use `gpt-realtime` only when intentionally testing the older Realtime model alias.
 
 For OpenAI-managed turn detection:
 
@@ -97,6 +99,7 @@ Expected evidence:
 - `run.completed` appears.
 - Assistant audio plays for live provider responses.
 - Starting a new text/mic turn cancels queued provider speech.
+- OpenAI interruptions include `conversation.item.truncate` when the client has audio item metadata and playback duration.
 - Approval requests render decision buttons.
 - Stop sends `run.stop` and the gateway forwards Hermes cancellation.
 
@@ -151,7 +154,7 @@ HTTP/1.1 200 OK
 
 OpenAI documents WebSockets as appropriate for server-to-server Realtime integrations and recommends WebRTC for browser/mobile clients that connect directly to OpenAI. `hermes-live` keeps provider credentials server-side, so its provider connection is a server-side WebSocket pipeline.
 
-OpenAI Realtime model families currently include `gpt-realtime`, `gpt-realtime-1.5`, `gpt-realtime-mini`, and `gpt-realtime-2`. Use `gpt-realtime-2` when you want reasoning-capable voice behavior; use `gpt-realtime` when explicitly testing Realtime 1 style behavior.
+OpenAI Realtime model families currently include `gpt-realtime`, `gpt-realtime-1.5`, `gpt-realtime-mini`, and `gpt-realtime-2`. Use `gpt-realtime-2` when you want reasoning-capable voice behavior; use `gpt-realtime-1.5` when explicitly testing the current Realtime 1.x behavior.
 
 OpenAI Realtime can run with VAD or push-to-talk. In this repo, `OPENAI_REALTIME_TURN_DETECTION=disabled` means the client sends `audio.end`; `semantic_vad` and `server_vad` delegate turn boundaries to OpenAI.
 
@@ -159,9 +162,13 @@ Clients can send `response.cancel` before a barge-in or new turn. The OpenAI ada
 
 Gemini Live expects raw PCM input and returns raw PCM output. The gateway normalizes PCM sample rates for the provider adapters, so clients should report the true capture sample rate in the audio MIME type.
 
+The default `GEMINI_MODEL` is the Gemini API Live preview model used by this repo. Gemini Enterprise / Vertex deployments can expose a narrower supported-model list, so override `GEMINI_MODEL` to an Enterprise-supported Live model if `session.start` returns a provider model error.
+
 References:
 
 - OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime
 - OpenAI Realtime WebSocket guide: https://developers.openai.com/api/docs/guides/realtime-websocket
 - OpenAI Realtime conversations: https://developers.openai.com/api/docs/guides/realtime-conversations
+- OpenAI GPT-Realtime-2 model: https://developers.openai.com/api/docs/models/gpt-realtime-2
 - Gemini Live API: https://ai.google.dev/gemini-api/docs/live-api
+- Gemini Enterprise Live API reference: https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/multimodal-live

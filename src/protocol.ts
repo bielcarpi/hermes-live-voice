@@ -3,6 +3,13 @@ import { z } from "zod";
 export const ApprovalChoiceSchema = z.enum(["once", "session", "always", "deny"]);
 export type ApprovalChoice = z.infer<typeof ApprovalChoiceSchema>;
 
+export const RealtimeResponseTruncationSchema = z.object({
+  itemId: z.string().min(1),
+  contentIndex: z.number().int().nonnegative().default(0),
+  audioEndMs: z.number().nonnegative(),
+});
+export type RealtimeResponseTruncation = z.infer<typeof RealtimeResponseTruncationSchema>;
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("session.start"),
@@ -18,7 +25,12 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("audio.end"), id: z.string().optional() }),
   z.object({ type: z.literal("text.input"), id: z.string().optional(), text: z.string().min(1) }),
-  z.object({ type: z.literal("response.cancel"), id: z.string().optional(), reason: z.string().optional() }),
+  z.object({
+    type: z.literal("response.cancel"),
+    id: z.string().optional(),
+    reason: z.string().optional(),
+    truncate: RealtimeResponseTruncationSchema.optional(),
+  }),
   z.object({
     type: z.literal("approval.respond"),
     id: z.string().optional(),
@@ -45,7 +57,7 @@ export type ServerMessage =
       hermes: { model?: string; capabilities?: Record<string, unknown> };
     }
   | { type: "session.error"; code: string; message: string; requestId?: string; recoverable?: boolean }
-  | { type: "audio.output"; data: string; mimeType: string }
+  | { type: "audio.output"; data: string; mimeType: string; itemId?: string; contentIndex?: number }
   | { type: "transcript.delta"; speaker: "user" | "assistant" | "system"; text: string; final?: boolean }
   | { type: "realtime.message"; message: unknown }
   | { type: "run.started"; runId: string; sessionId: string }
@@ -77,6 +89,8 @@ export interface LiveToolCall {
 export interface LiveModelAudio {
   data: string;
   mimeType: string;
+  itemId?: string;
+  contentIndex?: number;
 }
 
 export type LiveModelEvent =
