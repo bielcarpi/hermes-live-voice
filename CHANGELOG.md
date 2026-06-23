@@ -12,6 +12,12 @@
 - Validate base64 audio frames and PCM16 byte alignment before provider forwarding.
 - Keep internal Hermes session keys server-side.
 - Add OpenAI push-to-talk/VAD turn detection configuration.
+- Add best-effort realtime provider response cancellation for interruption handling.
 - Require `GOOGLE_CLOUD_PROJECT` for Gemini Enterprise mode before startup.
-- Add live-provider testing guide, Docker healthcheck, CI Docker build, and web demo syntax checks.
+- Default Gemini Live to `gemini-3.1-flash-live-preview`.
+- Bound stalled Hermes JSON requests with `HERMES_LIVE_HERMES_TIMEOUT_MS` while keeping established run event streams open.
+- Restrict gateway JSON endpoints to `GET`/`HEAD` and return `405` for unsupported methods.
+- Reconstruct completed Hermes output from streamed message deltas when the terminal event omits output.
+- Stop active Hermes runs before aborting run event streams on client disconnect.
+- Add live-provider testing guide, Docker healthcheck, CI Docker build, web demo syntax checks, and package smoke checks.
 - Add `hermes-live client "..."` for terminal smoke tests against a running gateway.

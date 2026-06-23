@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,7 +17,16 @@ try {
   }
 
   const pack = parsePackJson(result.stdout);
+  const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+  const cliSource = readFileSync("dist/cli.js", "utf8");
   const files = new Set(pack.files.map((file) => file.path));
+
+  if (packageJson.bin?.["hermes-live"] !== "./dist/cli.js") {
+    throw new Error('Package bin must expose "hermes-live" at ./dist/cli.js.');
+  }
+  if (!cliSource.startsWith("#!/usr/bin/env node\n")) {
+    throw new Error("dist/cli.js must keep its node shebang.");
+  }
 
   const required = [
     "package.json",
