@@ -28,4 +28,5 @@ Security-sensitive areas include:
 - Keep `HERMES_BASE_URL` private to the gateway network.
 - Do not put Gemini/OpenAI/Hermes credentials in mobile apps or browser code.
 - Terminate TLS before exposing the gateway beyond localhost.
+- Run the Docker image as the bundled non-root `node` user.
 - Put rate limits in front of public deployments.

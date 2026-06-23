@@ -33,3 +33,5 @@
 - Bound raw client WebSocket payload size from configured audio/text limits before JSON parsing.
 - Flush the web demo microphone worklet before sending `audio.end`.
 - Keep the web demo in a starting/error state until `session.ready` succeeds.
+- Include optional Hermes plugin syntax validation in `npm run verify`.
+- Run the Docker image as the non-root `node` user.
