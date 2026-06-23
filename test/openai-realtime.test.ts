@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { WebSocketServer } from "ws";
 import { describe, expect, it } from "vitest";
 import {
   buildOpenAIConversationItemTruncate,
@@ -5,6 +7,7 @@ import {
   buildOpenAIResponseCancel,
   buildOpenAISessionUpdate,
   normalizeOpenAIRealtimeEvent,
+  OpenAIRealtimeAdapter,
 } from "../src/openai/realtime.js";
 
 describe("OpenAI Realtime adapter helpers", () => {
@@ -84,6 +87,46 @@ describe("OpenAI Realtime adapter helpers", () => {
     expect(realtime15.session).toMatchObject({ model: "gpt-realtime-1.5" });
     expect(realtime15.session).not.toHaveProperty("reasoning");
   });
+
+  it("closes the provider socket when OpenAI rejects the initial session update", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      server.once("connection", (socket) => {
+        socket.once("message", (raw) => {
+          const message = JSON.parse(raw.toString("utf8"));
+          expect(message).toMatchObject({ type: "session.update" });
+          socket.send(JSON.stringify({ type: "error", error: { message: "invalid session" } }));
+        });
+        socket.once("close", (code, reason) => {
+          resolve({ code, reason: reason.toString("utf8") });
+        });
+      });
+    });
+    const adapter = new OpenAIRealtimeAdapter(
+      testOpenAIConfig({
+        apiKey: "test-key",
+        baseUrl: `ws://127.0.0.1:${port}/v1/realtime`,
+      }),
+    );
+
+    try {
+      await expect(
+        adapter.connect({
+          sessionId: "live_openai_test",
+          systemInstruction: "test",
+          callbacks: { onEvent: () => undefined },
+        }),
+      ).rejects.toEqual({ message: "invalid session" });
+      await expect(withTimeout(closed, 2_000, "Timed out waiting for failed OpenAI socket to close.")).resolves.toEqual({
+        code: 1011,
+        reason: "OpenAI Realtime session start failed",
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
 });
 
 function testOpenAIConfig(
@@ -99,4 +142,34 @@ function testOpenAIConfig(
     outputAudioFormat: "pcm16",
     ...overrides,
   };
+}
+
+function portOf(server: WebSocketServer): number {
+  const address = server.address();
+  if (!address || typeof address !== "object") {
+    throw new Error("WebSocket server did not expose a TCP port.");
+  }
+  return address.port;
+}
+
+function closeServer(server: WebSocketServer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
