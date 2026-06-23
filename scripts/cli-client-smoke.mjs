@@ -5,6 +5,7 @@ import { WebSocketServer } from "ws";
 const hermesPrompt = "hello from cli";
 const directPrompt = "hello direct from cli";
 const audioOnlyPrompt = "hello audio only from cli";
+const cleanClosePrompt = "hello clean close from cli";
 const expectedHermesOutput = "cli ok";
 const expectedDirectOutput = "direct cli ok";
 const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -29,6 +30,10 @@ server.on("connection", (socket) => {
         socket.send(JSON.stringify({ type: "realtime.message", message: { type: "response.done" } }));
         return;
       }
+      if (message.text === cleanClosePrompt) {
+        socket.close(1000, "clean close without terminal event");
+        return;
+      }
       socket.send(JSON.stringify({ type: "run.started", runId: "run_cli_smoke", sessionId: "live_cli_smoke" }));
       socket.send(JSON.stringify({ type: "run.completed", runId: "run_cli_smoke", output: expectedHermesOutput }));
     }
@@ -50,11 +55,15 @@ try {
     expectFailure: true,
     stderrIncludes: "Realtime provider completed without text output",
   });
+  await runClient(port, cleanClosePrompt, "", {
+    expectFailure: true,
+    stderrIncludes: "Gateway WebSocket closed before completing the request: 1000 clean close without terminal event",
+  });
 } finally {
   await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve(undefined))));
 }
 
-for (const expectedPrompt of [hermesPrompt, directPrompt, audioOnlyPrompt]) {
+for (const expectedPrompt of [hermesPrompt, directPrompt, audioOnlyPrompt, cleanClosePrompt]) {
   if (!receivedPrompts.has(expectedPrompt)) {
     throw new Error(`CLI smoke gateway did not receive prompt: ${expectedPrompt}`);
   }
