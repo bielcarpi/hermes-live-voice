@@ -50,3 +50,6 @@
 - Enforce gateway exposure checks in the exported server API, not only the CLI.
 - Fail fast on missing Hermes or realtime provider credentials when the exported server API creates default clients.
 - Document `HERMES_LIVE_MAX_AUDIO_BYTES` in the example environment and compose files.
+- Document every public server event in the client protocol guide.
+- Render streamed Hermes run deltas clearly in the web demo.
+- Send OpenAI truncation metadata for queued assistant audio even when the user has heard `0` ms.
