@@ -103,7 +103,8 @@ Expected evidence:
 - `run.completed` appears.
 - Assistant audio plays for live provider responses.
 - Starting a new text/mic turn cancels queued provider speech.
-- OpenAI interruptions include `conversation.item.truncate` when the client has audio item metadata and playback duration.
+- OpenAI interruptions include `conversation.item.truncate` when the client has audio item metadata and playback duration, including `0` ms for queued/unheard audio.
+- With OpenAI VAD enabled, provider speech-start events reach the client as `input.speech_started`, and the client stops/truncates queued assistant playback.
 - Approval requests render decision buttons.
 - Stop sends `run.stop` and the gateway forwards Hermes cancellation.
 
@@ -163,6 +164,8 @@ OpenAI Realtime model families currently include `gpt-realtime`, `gpt-realtime-1
 OpenAI Realtime can run with VAD or push-to-talk. In this repo, `OPENAI_REALTIME_TURN_DETECTION=disabled` means the client sends `audio.end`; `semantic_vad` and `server_vad` delegate turn boundaries to OpenAI.
 
 Clients can send `response.cancel` before a barge-in or new turn. The OpenAI adapter maps that to OpenAI Realtime's `response.cancel` event when a response is pending or active.
+
+When OpenAI VAD reports speech start, the gateway emits `input.speech_started`. Browser and mobile clients should stop local assistant playback immediately and send `response.cancel` with `truncate` when they have audio item metadata for queued or partially heard assistant audio.
 
 Gemini Live expects raw PCM input and returns raw PCM output. The gateway normalizes PCM sample rates for the provider adapters, so clients should report the true capture sample rate in the audio MIME type.
 
