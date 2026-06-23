@@ -477,6 +477,54 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("rejects oversized text input before forwarding to the provider", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { maxTextChars: 4 } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+
+    send(socket, { type: "text.input", text: "12345" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: "Text input exceeds HERMES_LIVE_MAX_TEXT_CHARS.",
+    });
+  });
+
+  it("rejects oversized provider tool-call text before starting Hermes", async () => {
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig({ server: { maxTextChars: 4 } }),
+      hermes,
+      liveModel: new OversizedToolCallAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "ask" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "tool_call_failed",
+      message: "Hermes run message exceeds HERMES_LIVE_MAX_TEXT_CHARS.",
+      recoverable: true,
+    });
+    expect(hermes.startRun).not.toHaveBeenCalled();
+  });
+
   it("rejects odd-byte PCM frames", async () => {
     const server = await startServer({
       config: testConfig(),
@@ -633,6 +681,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       port: 0,
       sessionPrefix: "agent:main:hermes-live",
       maxAudioBytes: 2_000_000,
+      maxTextChars: 20_000,
       providerReadyTimeoutMs: 15_000,
       demoEnabled: true,
       ...overrides.server,
@@ -778,6 +827,36 @@ class CloseTrackingSession implements LiveModelSession {
   }
 
   async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
+}
+
+class OversizedToolCallAdapter implements LiveModelAdapter {
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return new OversizedToolCallSession(params.callbacks);
+  }
+}
+
+class OversizedToolCallSession implements LiveModelSession {
+  constructor(private readonly callbacks: LiveModelCallbacks) {}
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(_text: string): Promise<void> {
+    this.callbacks.onEvent({
+      type: "tool_call",
+      call: { id: "oversized", name: "start_hermes_run", args: { message: "12345" } },
+    });
+  }
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async cancelResponse(): Promise<boolean> {
+    return false;
+  }
+
+  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
+
+  async close(): Promise<void> {}
 }
 
 class CancelTrackingAdapter implements LiveModelAdapter {

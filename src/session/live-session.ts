@@ -229,6 +229,7 @@ export class LiveGatewaySession {
         await this.liveSession.sendAudioStreamEnd();
         break;
       case "text.input":
+        validateText(message.text, this.deps.config.server.maxTextChars, "Text input");
         await this.liveSession.sendText(message.text);
         break;
       case "response.cancel":
@@ -255,7 +256,11 @@ export class LiveGatewaySession {
         if (!message) {
           throw new Error("start_hermes_run requires message.");
         }
+        validateText(message, this.deps.config.server.maxTextChars, "Hermes run message");
         const recentContext = stringArg(call, "recent_voice_context");
+        if (recentContext) {
+          validateText(recentContext, this.deps.config.server.maxTextChars, "Recent voice context");
+        }
         const result = await this.startHermesRun(message, recentContext);
         await this.liveSession?.sendToolResponse(call, result);
         break;
@@ -476,6 +481,12 @@ function decodeBase64Audio(data: string): Buffer {
     throw new Error("Audio frame data must be base64 encoded.");
   }
   return Buffer.from(data, "base64");
+}
+
+function validateText(value: string, maxChars: number, label: string): void {
+  if (value.length > maxChars) {
+    throw new Error(`${label} exceeds HERMES_LIVE_MAX_TEXT_CHARS.`);
+  }
 }
 
 function errorToMessage(error: unknown): string {
