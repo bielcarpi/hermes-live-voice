@@ -7,6 +7,7 @@
 - Add Hermes run/event/approval/stop bridge.
 - Add browser demo, docs, examples, and optional plugin metadata.
 - Protect readiness/capabilities behind gateway auth when configured.
+- Restrict query-token auth to browser WebSocket upgrades.
 - Validate base64 audio frames and PCM16 byte alignment before provider forwarding.
 - Keep internal Hermes session keys server-side.
 - Add OpenAI push-to-talk/VAD turn detection configuration.

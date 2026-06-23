@@ -49,7 +49,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
       socket.destroy();
       return;
     }
-    if (!isAuthorized(req, config, url)) {
+    if (!isAuthorized(req, config, url, { allowQueryToken: true })) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -99,7 +99,7 @@ async function handleHttp(
     json(res, 200, { status: "ok", service: "hermes-live" });
     return;
   }
-  if (requiresHttpAuth(url.pathname) && !isAuthorized(req, options.config, url)) {
+  if (requiresHttpAuth(url.pathname) && !isAuthorized(req, options.config, url, { allowQueryToken: false })) {
     json(res, 401, { status: "unauthorized" });
     return;
   }
@@ -152,12 +152,12 @@ async function handleHttp(
   json(res, 404, { status: "not_found" });
 }
 
-function isAuthorized(req: IncomingMessage, config: AppConfig, url: URL): boolean {
+function isAuthorized(req: IncomingMessage, config: AppConfig, url: URL, options: { allowQueryToken: boolean }): boolean {
   if (!config.server.authToken) {
     return true;
   }
   const bearer = bearerToken(req.headers.authorization);
-  const queryToken = url.searchParams.get("token");
+  const queryToken = options.allowQueryToken ? url.searchParams.get("token") : undefined;
   return secureTokenEqual(bearer, config.server.authToken) || secureTokenEqual(queryToken, config.server.authToken);
 }
 
