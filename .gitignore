@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+*.tgz
+__pycache__
+*.pyc
+.DS_Store

@@ -1,0 +1,178 @@
+import { z } from "zod";
+
+const EnvSchema = z.object({
+  HERMES_LIVE_HOST: z.string().default("127.0.0.1"),
+  HERMES_LIVE_PORT: z.coerce.number().int().min(1).max(65535).default(8788),
+  PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  HERMES_LIVE_AUTH_TOKEN: z.string().optional(),
+  HERMES_LIVE_ALLOW_ORIGIN: z.string().optional(),
+  HERMES_LIVE_SESSION_PREFIX: z.string().default("agent:main:hermes-live"),
+  HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(2_000_000),
+
+  HERMES_BASE_URL: z.string().url().default("http://127.0.0.1:8642"),
+  HERMES_API_KEY: z.string().optional(),
+  HERMES_MODEL: z.string().default("hermes-agent"),
+  HERMES_LIVE_RUN_INSTRUCTIONS: z.string().optional(),
+
+  HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "mock"]).default("gemini"),
+  GEMINI_API_KEY: z.string().optional(),
+  GOOGLE_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default("gemini-3.1-flash-live-preview"),
+  GOOGLE_GENAI_USE_ENTERPRISE: z.string().optional(),
+  GOOGLE_CLOUD_PROJECT: z.string().optional(),
+  GOOGLE_CLOUD_LOCATION: z.string().default("us-central1"),
+  GOOGLE_GENAI_API_VERSION: z.string().optional(),
+
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_REALTIME_BASE_URL: z.string().url().default("wss://api.openai.com/v1/realtime"),
+  OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
+  OPENAI_REALTIME_VOICE: z.string().default("marin"),
+  OPENAI_REALTIME_REASONING_EFFORT: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).default("low"),
+  OPENAI_REALTIME_INPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
+  OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
+});
+
+export type RealtimeProvider = "gemini" | "openai" | "mock";
+
+export interface AppConfig {
+  server: {
+    host: string;
+    port: number;
+    authToken?: string;
+    allowOrigin?: string;
+    sessionPrefix: string;
+    maxAudioBytes: number;
+  };
+  hermes: {
+    baseUrl: string;
+    apiKey?: string;
+    model: string;
+    instructions?: string;
+  };
+  realtime: {
+    provider: RealtimeProvider;
+    model: string;
+  };
+  gemini: {
+    apiKey?: string;
+    model: string;
+    enterprise: boolean;
+    project?: string;
+    location: string;
+    apiVersion?: string;
+  };
+  openai: {
+    apiKey?: string;
+    baseUrl: string;
+    model: string;
+    voice: string;
+    reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    inputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
+    outputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
+  };
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const parsed = EnvSchema.parse(env);
+  const geminiApiKey = parsed.GEMINI_API_KEY || parsed.GOOGLE_API_KEY;
+  const enterprise = parseBool(parsed.GOOGLE_GENAI_USE_ENTERPRISE);
+  const realtimeModel = selectedRealtimeModel(parsed.HERMES_LIVE_PROVIDER, parsed.GEMINI_MODEL, parsed.OPENAI_REALTIME_MODEL);
+
+  return {
+    server: {
+      host: parsed.HERMES_LIVE_HOST,
+      port: parsed.PORT ?? parsed.HERMES_LIVE_PORT,
+      ...(parsed.HERMES_LIVE_AUTH_TOKEN ? { authToken: parsed.HERMES_LIVE_AUTH_TOKEN } : {}),
+      ...(parsed.HERMES_LIVE_ALLOW_ORIGIN ? { allowOrigin: parsed.HERMES_LIVE_ALLOW_ORIGIN } : {}),
+      sessionPrefix: parsed.HERMES_LIVE_SESSION_PREFIX,
+      maxAudioBytes: parsed.HERMES_LIVE_MAX_AUDIO_BYTES,
+    },
+    hermes: {
+      baseUrl: withoutTrailingSlash(parsed.HERMES_BASE_URL),
+      ...(parsed.HERMES_API_KEY ? { apiKey: parsed.HERMES_API_KEY } : {}),
+      model: parsed.HERMES_MODEL,
+      ...(parsed.HERMES_LIVE_RUN_INSTRUCTIONS ? { instructions: parsed.HERMES_LIVE_RUN_INSTRUCTIONS } : {}),
+    },
+    realtime: {
+      provider: parsed.HERMES_LIVE_PROVIDER,
+      model: realtimeModel,
+    },
+    gemini: {
+      ...(geminiApiKey ? { apiKey: geminiApiKey } : {}),
+      model: parsed.GEMINI_MODEL,
+      enterprise,
+      ...(parsed.GOOGLE_CLOUD_PROJECT ? { project: parsed.GOOGLE_CLOUD_PROJECT } : {}),
+      location: parsed.GOOGLE_CLOUD_LOCATION,
+      ...(parsed.GOOGLE_GENAI_API_VERSION ? { apiVersion: parsed.GOOGLE_GENAI_API_VERSION } : {}),
+    },
+    openai: {
+      ...(parsed.OPENAI_API_KEY ? { apiKey: parsed.OPENAI_API_KEY } : {}),
+      baseUrl: withoutTrailingSlash(parsed.OPENAI_REALTIME_BASE_URL),
+      model: parsed.OPENAI_REALTIME_MODEL,
+      voice: parsed.OPENAI_REALTIME_VOICE,
+      reasoningEffort: parsed.OPENAI_REALTIME_REASONING_EFFORT,
+      inputAudioFormat: parsed.OPENAI_REALTIME_INPUT_AUDIO_FORMAT,
+      outputAudioFormat: parsed.OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT,
+    },
+  };
+}
+
+export function assertRuntimeConfig(config: AppConfig): void {
+  if (realtimeProviderConfigured(config)) {
+    return;
+  }
+  if (config.realtime.provider === "openai") {
+    throw new Error("Set OPENAI_API_KEY or use HERMES_LIVE_PROVIDER=mock for local text-only development.");
+  }
+  if (config.realtime.provider === "gemini" && !config.gemini.enterprise && !config.gemini.apiKey) {
+    throw new Error(
+      "Set GEMINI_API_KEY or GOOGLE_API_KEY, enable GOOGLE_GENAI_USE_ENTERPRISE=true, or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
+    );
+  }
+  if (config.gemini.enterprise && !config.gemini.project) {
+    throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
+  }
+}
+
+export function realtimeProviderConfigured(config: AppConfig): boolean {
+  if (config.realtime.provider === "mock") {
+    return true;
+  }
+  if (config.realtime.provider === "openai") {
+    return Boolean(config.openai.apiKey);
+  }
+  return config.gemini.enterprise || Boolean(config.gemini.apiKey);
+}
+
+export function sanitizeSessionComponent(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+export function makeSessionKey(prefix: string, profileId: string, userLabel: string): string {
+  const safeProfile = sanitizeSessionComponent(profileId || "default") || "default";
+  const safeUser = sanitizeSessionComponent(userLabel || "anonymous") || "anonymous";
+  return `${prefix}:profile:${safeProfile}:user:${safeUser}`.slice(0, 256);
+}
+
+function parseBool(value: string | undefined): boolean {
+  return value ? ["1", "true", "yes", "on"].includes(value.trim().toLowerCase()) : false;
+}
+
+function withoutTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, openaiModel: string): string {
+  if (provider === "openai") {
+    return openaiModel;
+  }
+  if (provider === "mock") {
+    return "mock-live";
+  }
+  return geminiModel;
+}
