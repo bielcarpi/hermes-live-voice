@@ -126,6 +126,8 @@ function handleMessage(message) {
   } else if (message.type === "run.started") {
     activeRunId = message.runId;
     addLog("run", `started ${message.runId}`);
+  } else if (message.type === "run.event") {
+    handleRunEvent(message);
   } else if (message.type === "run.completed") {
     activeRunId = "";
     addLog("hermes", message.output ?? "");
@@ -146,6 +148,18 @@ function handleMessage(message) {
   } else if (message.type !== "realtime.message") {
     addLog(message.type, JSON.stringify(message, null, 2));
   }
+}
+
+function handleRunEvent(message) {
+  const event = message.event ?? {};
+  if (event.event === "message.delta" && typeof event.delta === "string") {
+    addLog("hermes", event.delta);
+    return;
+  }
+  if (event.event === "approval.request" || event.event === "run.completed" || event.event === "run.failed") {
+    return;
+  }
+  addLog("run.event", JSON.stringify(event, null, 2));
 }
 
 async function startMic() {
@@ -274,8 +288,8 @@ function clearPlayback() {
       : undefined;
   playbackItems.clear();
   lastPlaybackItem = undefined;
-  return truncate && truncate.playedMs > 0
-    ? { itemId: truncate.itemId, contentIndex: truncate.contentIndex, audioEndMs: Math.floor(truncate.playedMs) }
+  return truncate
+    ? { itemId: truncate.itemId, contentIndex: truncate.contentIndex, audioEndMs: Math.max(0, Math.floor(truncate.playedMs)) }
     : undefined;
 }
 

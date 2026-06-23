@@ -16,6 +16,16 @@ describe("protocol", () => {
       type: "response.cancel",
       truncate: { itemId: "item_1", contentIndex: 0, audioEndMs: 1200 },
     });
+    expect(
+      parseClientMessage({
+        type: "response.cancel",
+        reason: "queued audio interruption",
+        truncate: { itemId: "item_1", audioEndMs: 0 },
+      }),
+    ).toMatchObject({
+      type: "response.cancel",
+      truncate: { itemId: "item_1", contentIndex: 0, audioEndMs: 0 },
+    });
     expect(parseClientMessage({ type: "approval.respond", runId: "run_1", choice: "once" }).type).toBe("approval.respond");
   });
 

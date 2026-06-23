@@ -117,6 +117,7 @@ For OpenAI WebSocket playback, include truncation metadata when the user interru
 ```
 
 `audioEndMs` should be the number of milliseconds of that assistant audio item actually heard by the user. The gateway maps this to OpenAI's `conversation.item.truncate` event.
+Use `0` when the item has already been queued by the browser but none of that item has reached the user's speakers yet.
 
 ## Text Input
 
@@ -155,6 +156,19 @@ Transcript:
 }
 ```
 
+Raw realtime provider message:
+
+```json
+{
+  "type": "realtime.message",
+  "message": {
+    "type": "response.done"
+  }
+}
+```
+
+Clients usually do not need to show raw provider messages. They are useful for debugging and provider-specific telemetry.
+
 Hermes run started:
 
 ```json
@@ -185,6 +199,27 @@ Hermes completion:
   "type": "run.completed",
   "runId": "run_...",
   "output": "..."
+}
+```
+
+Hermes run failed:
+
+```json
+{
+  "type": "run.failed",
+  "runId": "run_...",
+  "error": "Hermes run failed."
+}
+```
+
+Session-level error:
+
+```json
+{
+  "type": "session.error",
+  "code": "provider_error",
+  "message": "Realtime provider failed before session ready.",
+  "recoverable": false
 }
 ```
 
@@ -219,6 +254,17 @@ Valid choices:
 - `always`
 - `deny`
 
+After the gateway submits the decision to Hermes, it emits:
+
+```json
+{
+  "type": "approval.responded",
+  "runId": "run_...",
+  "choice": "once",
+  "resolved": 1
+}
+```
+
 ## Stop
 
 Stop the active run:
@@ -237,6 +283,21 @@ The server emits:
   "type": "run.stopped",
   "runId": "run_...",
   "status": "stopping"
+}
+```
+
+## Logs
+
+The gateway can emit operational logs to help clients explain non-terminal events:
+
+```json
+{
+  "type": "log",
+  "level": "info",
+  "message": "Hermes run stop requested",
+  "data": {
+    "runId": "run_..."
+  }
 }
 ```
 
