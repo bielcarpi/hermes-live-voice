@@ -35,7 +35,7 @@ Gemini:
 HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=... npm run dev
 ```
 
-The default Gemini Live model is `gemini-live-2.5-flash-native-audio`.
+The default Gemini Live model is `gemini-3.1-flash-live-preview`.
 
 Gemini Enterprise / Vertex mode:
 
