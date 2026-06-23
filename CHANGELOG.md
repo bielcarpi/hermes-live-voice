@@ -45,4 +45,5 @@
 - Send Gemini text turns through `sendClientContent`.
 - Require `HERMES_API_KEY` before serving so Hermes auth failures fail fast.
 - Require stronger gateway auth tokens for network-accessible binds.
+- Enforce gateway exposure checks in the exported server API, not only the CLI.
 - Document `HERMES_LIVE_MAX_AUDIO_BYTES` in the example environment and compose files.

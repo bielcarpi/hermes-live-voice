@@ -143,15 +143,7 @@ export function assertRuntimeConfig(config: AppConfig): void {
   if (!config.hermes.apiKey) {
     throw new Error("Set HERMES_API_KEY to Hermes Agent's API_SERVER_KEY.");
   }
-  if (!config.server.authToken && isNetworkAccessibleHost(config.server.host) && !config.server.allowUnauthenticated) {
-    throw new Error(
-      "HERMES_LIVE_AUTH_TOKEN is required when HERMES_LIVE_HOST is network-accessible. " +
-        "Set HERMES_LIVE_ALLOW_UNAUTHENTICATED=true only for an isolated trusted network.",
-    );
-  }
-  if (config.server.authToken && isNetworkAccessibleHost(config.server.host) && config.server.authToken.length < 16) {
-    throw new Error("HERMES_LIVE_AUTH_TOKEN must be at least 16 characters when HERMES_LIVE_HOST is network-accessible.");
-  }
+  assertGatewayExposureConfig(config);
   if (config.realtime.provider === "gemini" && config.gemini.enterprise && !config.gemini.project) {
     throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
   }
@@ -165,6 +157,18 @@ export function assertRuntimeConfig(config: AppConfig): void {
     throw new Error(
       "Set GEMINI_API_KEY or GOOGLE_API_KEY, enable GOOGLE_GENAI_USE_ENTERPRISE=true, or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
     );
+  }
+}
+
+export function assertGatewayExposureConfig(config: Pick<AppConfig, "server">): void {
+  if (!config.server.authToken && isNetworkAccessibleHost(config.server.host) && !config.server.allowUnauthenticated) {
+    throw new Error(
+      "HERMES_LIVE_AUTH_TOKEN is required when HERMES_LIVE_HOST is network-accessible. " +
+        "Set HERMES_LIVE_ALLOW_UNAUTHENTICATED=true only for an isolated trusted network.",
+    );
+  }
+  if (config.server.authToken && isNetworkAccessibleHost(config.server.host) && config.server.authToken.length < 16) {
+    throw new Error("HERMES_LIVE_AUTH_TOKEN must be at least 16 characters when HERMES_LIVE_HOST is network-accessible.");
   }
 }
 

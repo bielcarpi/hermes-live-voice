@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { realtimeProviderConfigured, type AppConfig } from "../config.js";
+import { assertGatewayExposureConfig, realtimeProviderConfigured, type AppConfig } from "../config.js";
 import { HermesClient } from "../hermes/client.js";
 import type { Logger } from "../logger.js";
 import { createLiveModelAdapter } from "../realtime/factory.js";
@@ -23,6 +23,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
   close(): Promise<void>;
   url: string;
 }> {
+  assertGatewayExposureConfig(config);
   const hermes = providedHermes ?? new HermesClient(config.hermes);
   const liveModel = providedLiveModel ?? createLiveModelAdapter(config);
   const demoRoot = resolveDemoRoot();
