@@ -167,7 +167,15 @@ async function handleHermesRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === `/v1/runs/${runId}/events`) {
+    const sessionKey = String(req.headers["x-hermes-session-key"] ?? "");
+    const authorization = String(req.headers.authorization ?? "");
     observed.events = true;
+    if (authorization !== "Bearer hermes-smoke-secret") {
+      throw new Error(`Unexpected Hermes events authorization header: ${JSON.stringify(authorization)}.`);
+    }
+    if (sessionKey !== observed.sessionKey) {
+      throw new Error(`Unexpected Hermes events session key: ${JSON.stringify(sessionKey)}.`);
+    }
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",

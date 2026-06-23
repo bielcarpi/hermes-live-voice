@@ -121,7 +121,7 @@ For OpenAI Realtime, the gateway also sends a hashed privacy-preserving safety i
 
 The derived Hermes session key stays server-side. Clients receive the gateway session id, not the internal Hermes session key or Hermes base URL.
 
-When the Hermes client is authenticated, the gateway sends the derived session key on run creation and follow-up run-scoped Hermes calls. This keeps start, status, stop, and approval requests tied to the same server-side voice session without exposing that key to browser or mobile clients.
+When the Hermes client is authenticated, the gateway sends the derived session key on run creation and follow-up run-scoped Hermes calls. This keeps start, event streaming, status, stop, and approval requests tied to the same server-side voice session without exposing that key to browser or mobile clients.
 
 ## Failure Model
 

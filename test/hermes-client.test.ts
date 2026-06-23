@@ -143,7 +143,7 @@ describe("HermesClient", () => {
     await result;
   });
 
-  it("streams run events through SSE", async () => {
+  it("streams run events through SSE with the Hermes session key header", async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"event":"message.delta","delta":"hi"}\n\n'));
@@ -154,9 +154,10 @@ describe("HermesClient", () => {
     fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = hermesClient();
+    const sessionKey = "agent:main:hermes-live:profile:default:user:alice";
 
     const events = [];
-    for await (const event of client.streamRunEvents("run_123")) {
+    for await (const event of client.streamRunEvents("run_123", { sessionKey })) {
       events.push(event);
     }
 
@@ -168,7 +169,11 @@ describe("HermesClient", () => {
       "http://127.0.0.1:8642/v1/runs/run_123/events",
       expect.objectContaining({
         method: "GET",
-        headers: expect.objectContaining({ accept: "text/event-stream", authorization: "Bearer hermes-secret" }),
+        headers: expect.objectContaining({
+          accept: "text/event-stream",
+          authorization: "Bearer hermes-secret",
+          "X-Hermes-Session-Key": sessionKey,
+        }),
       }),
     );
   });

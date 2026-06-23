@@ -127,14 +127,19 @@ export class HermesClient {
     });
   }
 
-  async *streamRunEvents(runId: string, signal?: AbortSignal): AsyncGenerator<HermesRunEvent> {
+  async *streamRunEvents(runId: string, options?: AbortSignal | HermesRequestOptions): AsyncGenerator<HermesRunEvent> {
+    const requestOptions = normalizeHermesRequestOptions(options);
     const path = `/v1/runs/${encodeURIComponent(runId)}/events`;
-    const requestSignal = createRequestSignal(signal, this.timeoutMs, `Hermes events request timed out after ${this.timeoutMs}ms: ${path}`);
+    const requestSignal = createRequestSignal(
+      requestOptions.signal,
+      this.timeoutMs,
+      `Hermes events request timed out after ${this.timeoutMs}ms: ${path}`,
+    );
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
         method: "GET",
-        headers: this.headers({ accept: "text/event-stream" }),
+        headers: this.headers({ accept: "text/event-stream", ...this.sessionHeaders(requestOptions.sessionKey) }),
         signal: requestSignal.signal,
       });
       if (!response.ok) {
