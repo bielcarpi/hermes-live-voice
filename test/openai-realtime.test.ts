@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenAIRealtimeAudioAppend, buildOpenAISessionUpdate, normalizeOpenAIRealtimeEvent } from "../src/openai/realtime.js";
+import {
+  buildOpenAIRealtimeAudioAppend,
+  buildOpenAIResponseCancel,
+  buildOpenAISessionUpdate,
+  normalizeOpenAIRealtimeEvent,
+} from "../src/openai/realtime.js";
 
 describe("OpenAI Realtime adapter helpers", () => {
   it("normalizes audio and transcript deltas", () => {
@@ -40,6 +45,10 @@ describe("OpenAI Realtime adapter helpers", () => {
     expect(() =>
       buildOpenAIRealtimeAudioAppend({ data: "abc", mimeType: "audio/pcm;rate=24000" }, "g711_ulaw"),
     ).toThrow(/audio\/pcmu/);
+  });
+
+  it("builds response cancellation events", () => {
+    expect(buildOpenAIResponseCancel()).toEqual({ type: "response.cancel" });
   });
 
   it("builds session updates for push-to-talk and VAD modes", () => {

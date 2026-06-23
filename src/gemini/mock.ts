@@ -38,6 +38,10 @@ class MockLiveSession implements LiveModelSession {
 
   async sendAudioStreamEnd(): Promise<void> {}
 
+  async cancelResponse(): Promise<boolean> {
+    return false;
+  }
+
   async sendToolResponse(_call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
     const output = typeof response.output === "string" ? response.output : JSON.stringify(response);
     this.callbacks.onEvent({ type: "text", text: output });

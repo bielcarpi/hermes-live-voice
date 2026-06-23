@@ -162,10 +162,14 @@ export class LiveGatewaySession {
       case "text.input":
         await this.liveSession.sendText(message.text);
         break;
+      case "response.cancel":
+        await this.cancelRealtimeResponse(message.reason);
+        break;
       case "approval.respond":
         await this.handleApprovalResponse(message);
         break;
       case "run.stop":
+        await this.cancelRealtimeResponse(message.reason);
         await this.stopRun(message.runId, message.reason);
         break;
       case "session.close":
@@ -343,6 +347,24 @@ export class LiveGatewaySession {
     this.send({ type: "run.stopped", runId: target, status: result.status ?? "stopping" });
     this.send({ type: "log", level: "info", message: "Hermes run stop requested", data: { runId: target, reason } });
     return { ok: true, run_id: target, status: result.status ?? "stopping" };
+  }
+
+  private async cancelRealtimeResponse(reason?: string): Promise<void> {
+    try {
+      const cancelled = (await this.liveSession?.cancelResponse(reason)) ?? false;
+      this.send({
+        type: "log",
+        level: cancelled ? "info" : "debug",
+        message: cancelled ? "Realtime response cancellation requested" : "No active realtime response to cancel",
+        data: { reason },
+      });
+    } catch (error) {
+      this.deps.logger.warn("failed to cancel realtime response", {
+        sessionId: this.id,
+        error: errorToMessage(error),
+      });
+      this.send({ type: "log", level: "warn", message: "Realtime response cancellation failed", data: { reason } });
+    }
   }
 
   private async sendToolFailure(call: LiveToolCall, error: unknown): Promise<void> {

@@ -18,6 +18,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("audio.end"), id: z.string().optional() }),
   z.object({ type: z.literal("text.input"), id: z.string().optional(), text: z.string().min(1) }),
+  z.object({ type: z.literal("response.cancel"), id: z.string().optional(), reason: z.string().optional() }),
   z.object({
     type: z.literal("approval.respond"),
     id: z.string().optional(),

@@ -62,6 +62,8 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
 
 class OpenAIRealtimeSession implements LiveModelSession {
   private readonly handledToolCalls = new Set<string>();
+  private responseActive = false;
+  private responsePending = false;
 
   constructor(
     private readonly ws: WebSocket,
@@ -86,7 +88,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
     });
-    this.sendJson({ type: "response.create" });
+    this.createResponse();
   }
 
   async sendAudioStreamEnd(): Promise<void> {
@@ -94,7 +96,17 @@ class OpenAIRealtimeSession implements LiveModelSession {
       return;
     }
     this.sendJson({ type: "input_audio_buffer.commit" });
-    this.sendJson({ type: "response.create" });
+    this.createResponse();
+  }
+
+  async cancelResponse(): Promise<boolean> {
+    if (!this.responsePending && !this.responseActive) {
+      return false;
+    }
+    this.sendJson(buildOpenAIResponseCancel());
+    this.responsePending = false;
+    this.responseActive = false;
+    return true;
   }
 
   async sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
@@ -105,7 +117,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
       type: "conversation.item.create",
       item: { type: "function_call_output", call_id: call.id, output: JSON.stringify(response) },
     });
-    this.sendJson({ type: "response.create" });
+    this.createResponse();
   }
 
   async close(): Promise<void> {
@@ -120,6 +132,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
       this.callbacks.onError?.(new Error("OpenAI Realtime event was not valid JSON."));
       return;
     }
+    this.trackResponseState(event);
     if ((event as { type?: string }).type === "error") {
       this.callbacks.onError?.((event as { error?: unknown }).error ?? event);
     }
@@ -140,6 +153,28 @@ class OpenAIRealtimeSession implements LiveModelSession {
       throw new Error("OpenAI Realtime WebSocket is not open.");
     }
     this.ws.send(JSON.stringify(payload));
+  }
+
+  private createResponse(): void {
+    this.sendJson({ type: "response.create" });
+    this.responsePending = true;
+  }
+
+  private trackResponseState(event: any): void {
+    if (event?.type === "response.created") {
+      this.responsePending = false;
+      this.responseActive = true;
+    } else if (
+      event?.type === "response.done" ||
+      event?.type === "response.cancelled" ||
+      event?.type === "response.failed" ||
+      event?.response?.status === "completed" ||
+      event?.response?.status === "cancelled" ||
+      event?.response?.status === "failed"
+    ) {
+      this.responsePending = false;
+      this.responseActive = false;
+    }
   }
 }
 
@@ -178,6 +213,10 @@ export function buildOpenAIRealtimeAudioAppend(
     throw new Error(`OpenAI Realtime input format ${inputFormat} expects ${expected} audio.`);
   }
   return { type: "input_audio_buffer.append", audio: audio.data };
+}
+
+export function buildOpenAIResponseCancel(): { type: "response.cancel" } {
+  return { type: "response.cancel" };
 }
 
 export function buildOpenAISessionUpdate(

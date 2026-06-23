@@ -197,6 +197,30 @@ describe("live gateway WebSocket", () => {
     expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", expect.any(AbortSignal));
   });
 
+  it("routes realtime response cancellation to the provider session", async () => {
+    const liveModel = new CancelTrackingAdapter();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "response.cancel", reason: "barge-in" });
+
+    await expect(waitForMessage(socket, "log")).resolves.toMatchObject({
+      level: "info",
+      message: "Realtime response cancellation requested",
+    });
+    expect(liveModel.session.cancelResponse).toHaveBeenCalledWith("barge-in");
+  });
+
   it("requests Hermes stop before aborting the run event stream on socket close", async () => {
     const eventStreamAttached = deferred<void>();
     const stopped = deferred<void>();
@@ -531,9 +555,36 @@ class ToolEchoSession implements LiveModelSession {
 
   async sendAudioStreamEnd(): Promise<void> {}
 
+  async cancelResponse(): Promise<boolean> {
+    return false;
+  }
+
   async sendToolResponse(_call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
     this.callbacks.onEvent({ type: "text", text: typeof response.output === "string" ? response.output : JSON.stringify(response) });
   }
+
+  async close(): Promise<void> {}
+}
+
+class CancelTrackingAdapter implements LiveModelAdapter {
+  readonly session = new CancelTrackingSession();
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return this.session;
+  }
+}
+
+class CancelTrackingSession implements LiveModelSession {
+  readonly cancelResponse = vi.fn(async () => true);
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(_text: string): Promise<void> {}
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
 
   async close(): Promise<void> {}
 }
