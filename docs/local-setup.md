@@ -35,6 +35,8 @@ Gemini:
 HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=... npm run dev
 ```
 
+The default Gemini Live model is `gemini-live-2.5-flash-native-audio`.
+
 OpenAI:
 
 ```sh

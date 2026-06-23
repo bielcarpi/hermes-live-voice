@@ -229,7 +229,7 @@ function testConfig(): AppConfig {
     },
     hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent" },
     realtime: { provider: "mock", model: "mock-live" },
-    gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1" },
+    gemini: { model: "gemini-live-2.5-flash-native-audio", enterprise: false, location: "us-central1" },
     openai: {
       baseUrl: "wss://api.openai.com/v1/realtime",
       model: "gpt-realtime-2",

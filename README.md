@@ -189,5 +189,7 @@ The test suite uses mock providers and fake Hermes clients. Live provider tests 
 
 - OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime
 - OpenAI Realtime API reference: https://developers.openai.com/api/reference/resources/realtime
+- Gemini Live API overview: https://ai.google.dev/gemini-api/docs/live-api
+- Gemini 2.5 Flash Live model: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-live-api
 - Google Gen AI JavaScript SDK: https://github.com/googleapis/js-genai
 - Hermes Agent: https://github.com/NousResearch/hermes-agent
