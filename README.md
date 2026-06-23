@@ -258,7 +258,7 @@ hermes-live client "Summarize my current project state."
 
 Set `HERMES_LIVE_URL` when the gateway is not on `ws://127.0.0.1:8788/v1/live`. If `HERMES_LIVE_AUTH_TOKEN` is set, the client sends it as a bearer token.
 
-The terminal client prints Hermes run output when the provider calls Hermes. If the realtime provider answers directly, it prints the provider transcript when that realtime response completes.
+The terminal client prints Hermes run output when the provider calls Hermes. If the realtime provider answers directly, it prints the provider transcript when that realtime response completes. If the provider completes with audio but no text transcript, the terminal client exits with a clear error; use the web demo or another voice client for audio-only responses.
 
 ## Plugin or Sidecar?
 

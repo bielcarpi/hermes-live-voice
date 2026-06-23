@@ -40,6 +40,7 @@
 - Bound client protocol metadata fields before dispatch.
 - Only send OpenAI Realtime reasoning-only session fields to reasoning-capable models.
 - Let the terminal client complete on direct realtime provider transcript responses.
+- Fail the terminal client clearly when a direct realtime response has no text output.
 - Emit normalized provider transcript/audio/tool events before raw provider envelopes.
 - Send Gemini text turns through `sendClientContent`.
 - Require `HERMES_API_KEY` before serving so Hermes auth failures fail fast.
