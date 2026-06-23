@@ -63,11 +63,12 @@
     "dev": "tsx src/cli.ts dev",
     "start": "node dist/cli.js serve",
     "check": "tsx src/cli.ts check",
+    "check:web-demo": "node --check apps/web-demo/app.js && node --check apps/web-demo/mic-worklet.js",
     "print-config": "tsx src/cli.ts print-config",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify": "npm run typecheck && npm test && npm run build",
+    "verify": "npm run typecheck && npm run check:web-demo && npm test && npm run build",
     "prepack": "npm run build"
   },
   "dependencies": {

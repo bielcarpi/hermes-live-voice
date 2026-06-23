@@ -38,9 +38,10 @@ describe("live gateway WebSocket", () => {
 
     expect(ready).toMatchObject({
       type: "session.ready",
-      sessionKey: "agent:main:hermes-live:profile:default:user:alice-example",
       model: "mock-live",
     });
+    expect(ready.sessionKey).toBeUndefined();
+    expect(ready.hermes.baseUrl).toBeUndefined();
 
     send(socket, { type: "text.input", text: "What is my status?" });
     const completed = await waitForMessage(socket, "run.completed");
@@ -330,6 +331,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       model: "gpt-realtime-2",
       voice: "marin",
       reasoningEffort: "low",
+      turnDetection: "disabled",
       inputAudioFormat: "pcm16",
       outputAudioFormat: "pcm16",
     },

@@ -74,29 +74,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   configure(systemInstruction: string): void {
-    this.sendJson({
-      type: "session.update",
-      session: {
-        type: "realtime",
-        model: this.config.model,
-        instructions: systemInstruction,
-        output_modalities: ["audio"],
-        audio: {
-          input: {
-            format: openAiSessionAudioFormat(this.config.inputAudioFormat, "input"),
-            turn_detection: null,
-          },
-          output: {
-            format: openAiSessionAudioFormat(this.config.outputAudioFormat, "output"),
-            voice: this.config.voice,
-          },
-        },
-        ...(this.config.model.startsWith("gpt-realtime-2") ? { reasoning: { effort: this.config.reasoningEffort } } : {}),
-        parallel_tool_calls: false,
-        tools: OPENAI_HERMES_LIVE_TOOLS,
-        tool_choice: "auto",
-      },
-    });
+    this.sendJson(buildOpenAISessionUpdate(this.config, systemInstruction));
   }
 
   async sendRealtimeAudio(audio: LiveModelAudio): Promise<void> {
@@ -112,6 +90,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   async sendAudioStreamEnd(): Promise<void> {
+    if (this.config.turnDetection !== "disabled") {
+      return;
+    }
     this.sendJson({ type: "input_audio_buffer.commit" });
     this.sendJson({ type: "response.create" });
   }
@@ -199,6 +180,35 @@ export function buildOpenAIRealtimeAudioAppend(
   return { type: "input_audio_buffer.append", audio: audio.data };
 }
 
+export function buildOpenAISessionUpdate(
+  config: AppConfig["openai"],
+  systemInstruction: string,
+): { type: "session.update"; session: Record<string, unknown> } {
+  return {
+    type: "session.update",
+    session: {
+      type: "realtime",
+      model: config.model,
+      instructions: systemInstruction,
+      output_modalities: ["audio"],
+      audio: {
+        input: {
+          format: openAiSessionAudioFormat(config.inputAudioFormat, "input"),
+          turn_detection: openAiTurnDetection(config.turnDetection),
+        },
+        output: {
+          format: openAiSessionAudioFormat(config.outputAudioFormat, "output"),
+          voice: config.voice,
+        },
+      },
+      ...(config.model.startsWith("gpt-realtime-2") ? { reasoning: { effort: config.reasoningEffort } } : {}),
+      parallel_tool_calls: false,
+      tools: OPENAI_HERMES_LIVE_TOOLS,
+      tool_choice: "auto",
+    },
+  };
+}
+
 function parseOpenAIEvent(raw: WebSocket.RawData): any | undefined {
   try {
     return JSON.parse(raw.toString("utf8"));
@@ -244,6 +254,13 @@ function openAiAudioMimeType(format: AppConfig["openai"]["outputAudioFormat"]): 
     return "audio/pcm;rate=24000";
   }
   return format === "g711_ulaw" ? "audio/pcmu;rate=8000" : "audio/pcma;rate=8000";
+}
+
+function openAiTurnDetection(turnDetection: AppConfig["openai"]["turnDetection"]): null | { type: "semantic_vad" | "server_vad" } {
+  if (turnDetection === "disabled") {
+    return null;
+  }
+  return { type: turnDetection };
 }
 
 function openAiSessionAudioFormat(

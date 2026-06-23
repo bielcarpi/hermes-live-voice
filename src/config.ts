@@ -28,6 +28,7 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
   OPENAI_REALTIME_REASONING_EFFORT: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).default("low"),
+  OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),
   OPENAI_REALTIME_INPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
 });
@@ -67,6 +68,7 @@ export interface AppConfig {
     model: string;
     voice: string;
     reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    turnDetection: "disabled" | "semantic_vad" | "server_vad";
     inputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
     outputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
   };
@@ -111,6 +113,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       model: parsed.OPENAI_REALTIME_MODEL,
       voice: parsed.OPENAI_REALTIME_VOICE,
       reasoningEffort: parsed.OPENAI_REALTIME_REASONING_EFFORT,
+      turnDetection: parsed.OPENAI_REALTIME_TURN_DETECTION,
       inputAudioFormat: parsed.OPENAI_REALTIME_INPUT_AUDIO_FORMAT,
       outputAudioFormat: parsed.OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT,
     },

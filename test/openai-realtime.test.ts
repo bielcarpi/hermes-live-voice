@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenAIRealtimeAudioAppend, normalizeOpenAIRealtimeEvent } from "../src/openai/realtime.js";
+import { buildOpenAIRealtimeAudioAppend, buildOpenAISessionUpdate, normalizeOpenAIRealtimeEvent } from "../src/openai/realtime.js";
 
 describe("OpenAI Realtime adapter helpers", () => {
   it("normalizes audio and transcript deltas", () => {
@@ -41,4 +41,34 @@ describe("OpenAI Realtime adapter helpers", () => {
       buildOpenAIRealtimeAudioAppend({ data: "abc", mimeType: "audio/pcm;rate=24000" }, "g711_ulaw"),
     ).toThrow(/audio\/pcmu/);
   });
+
+  it("builds session updates for push-to-talk and VAD modes", () => {
+    const disabled = buildOpenAISessionUpdate(testOpenAIConfig({ turnDetection: "disabled" }), "hello");
+    const semanticVad = buildOpenAISessionUpdate(testOpenAIConfig({ turnDetection: "semantic_vad" }), "hello");
+
+    expect((disabled.session.audio as any).input.turn_detection).toBeNull();
+    expect((semanticVad.session.audio as any).input.turn_detection).toEqual({ type: "semantic_vad" });
+    expect(semanticVad.session).toMatchObject({
+      type: "realtime",
+      model: "gpt-realtime-2",
+      reasoning: { effort: "low" },
+      parallel_tool_calls: false,
+      tool_choice: "auto",
+    });
+  });
 });
+
+function testOpenAIConfig(
+  overrides: Partial<Parameters<typeof buildOpenAISessionUpdate>[0]> = {},
+): Parameters<typeof buildOpenAISessionUpdate>[0] {
+  return {
+    baseUrl: "wss://api.openai.com/v1/realtime",
+    model: "gpt-realtime-2",
+    voice: "marin",
+    reasoningEffort: "low",
+    turnDetection: "disabled",
+    inputAudioFormat: "pcm16",
+    outputAudioFormat: "pcm16",
+    ...overrides,
+  };
+}

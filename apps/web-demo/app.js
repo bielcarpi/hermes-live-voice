@@ -11,6 +11,8 @@ const logEl = document.querySelector("#log");
 let socket;
 let activeRunId = "";
 let audioContext;
+let playbackContext;
+let playbackCursor = 0;
 let mediaStream;
 let workletNode;
 
@@ -59,6 +61,7 @@ function connect() {
   socket.addEventListener("close", () => {
     setStatus("Disconnected");
     connectButton.textContent = "Connect";
+    if (workletNode) void stopMic({ notify: false });
   });
   socket.addEventListener("error", () => setStatus("WebSocket error"));
   socket.addEventListener("message", (event) => handleMessage(JSON.parse(event.data)));
@@ -78,8 +81,12 @@ function handleMessage(message) {
     activeRunId = "";
     addLog("hermes", message.output ?? "");
   } else if (message.type === "approval.request") {
-    addLog("approval", JSON.stringify(message.event, null, 2));
+    activeRunId = message.runId;
+    addApprovalRequest(message);
+  } else if (message.type === "approval.responded") {
+    addLog("approval", `submitted ${message.choice} for ${message.runId}`);
   } else if (message.type === "run.failed" || message.type === "session.error") {
+    if (message.type === "run.failed") activeRunId = "";
     addLog("error", JSON.stringify(message, null, 2));
   } else if (message.type === "run.stopped") {
     activeRunId = "";
@@ -96,16 +103,19 @@ async function startMic() {
   await audioContext.audioWorklet.addModule("/mic-worklet.js");
   const source = audioContext.createMediaStreamSource(mediaStream);
   workletNode = new AudioWorkletNode(audioContext, "pcm-capture");
+  const captureRate = Math.round(audioContext.sampleRate);
   workletNode.port.onmessage = (event) => {
-    send({ type: "audio.input", data: arrayBufferToBase64(event.data), mimeType: "audio/pcm;rate=24000" });
+    send({ type: "audio.input", data: arrayBufferToBase64(event.data), mimeType: `audio/pcm;rate=${captureRate}` });
   };
   source.connect(workletNode);
   micButton.textContent = "Stop mic";
   setStatus("Streaming microphone");
 }
 
-async function stopMic() {
-  send({ type: "audio.end" });
+async function stopMic({ notify = true } = {}) {
+  if (notify && socket?.readyState === WebSocket.OPEN) {
+    send({ type: "audio.end" });
+  }
   workletNode?.disconnect();
   workletNode = undefined;
   mediaStream?.getTracks().forEach((track) => track.stop());
@@ -124,13 +134,31 @@ async function playPcmAudio(base64, mimeType) {
   for (let i = 0; i < samples.length; i += 1) {
     samples[i] = view.getInt16(i * 2, true) / 32768;
   }
-  const ctx = audioContext && audioContext.state !== "closed" ? audioContext : new AudioContext({ sampleRate: rate });
+  if (!playbackContext || playbackContext.state === "closed" || playbackContext.sampleRate !== rate) {
+    playbackContext = new AudioContext({ sampleRate: rate });
+    playbackCursor = 0;
+  }
+  if (playbackContext.state === "suspended") {
+    await playbackContext.resume();
+  }
+  const ctx = playbackContext;
   const buffer = ctx.createBuffer(1, samples.length, rate);
   buffer.copyToChannel(samples, 0);
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   source.connect(ctx.destination);
-  source.start();
+  const startAt = Math.max(ctx.currentTime + 0.02, playbackCursor || 0);
+  source.start(startAt);
+  playbackCursor = startAt + buffer.duration;
+  source.addEventListener(
+    "ended",
+    () => {
+      if (playbackCursor <= ctx.currentTime) {
+        playbackCursor = 0;
+      }
+    },
+    { once: true },
+  );
 }
 
 function send(message) {
@@ -150,6 +178,34 @@ function addLog(kind, value) {
   entry.innerHTML = `<strong></strong><pre></pre>`;
   entry.querySelector("strong").textContent = kind;
   entry.querySelector("pre").textContent = value;
+  logEl.append(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function addApprovalRequest(message) {
+  const entry = document.createElement("div");
+  entry.className = "entry";
+  const title = document.createElement("strong");
+  title.textContent = "approval";
+  const body = document.createElement("pre");
+  body.textContent = JSON.stringify(message.event, null, 2);
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+
+  for (const choice of ["once", "session", "always", "deny"]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = choice;
+    button.addEventListener("click", () => {
+      send({ type: "approval.respond", runId: message.runId, choice });
+      for (const control of actions.querySelectorAll("button")) {
+        control.disabled = true;
+      }
+    });
+    actions.append(button);
+  }
+
+  entry.append(title, body, actions);
   logEl.append(entry);
   logEl.scrollTop = logEl.scrollHeight;
 }
