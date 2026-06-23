@@ -72,7 +72,7 @@ npm run check
 curl http://127.0.0.1:8788/ready
 ```
 
-Both commands report gateway, Hermes, and realtime provider readiness. A `503` response includes an `error` on the failing section.
+Both commands report gateway, Hermes, and realtime provider readiness. A `503` response includes an `error` on the failing section. Realtime readiness includes `sessionChecked: false` because these checks do not open a live Gemini/OpenAI session.
 
 If you bind the gateway to `0.0.0.0`, set a strong `HERMES_LIVE_AUTH_TOKEN`; otherwise startup will fail unless you explicitly opt out with `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 

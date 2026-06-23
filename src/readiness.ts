@@ -91,6 +91,7 @@ function realtimeCheckSummary(config: AppConfig): Record<string, unknown> {
   const base = {
     provider: config.realtime.provider,
     model: config.realtime.model,
+    sessionChecked: false,
   };
   if (config.realtime.provider === "gemini") {
     return {

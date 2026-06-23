@@ -23,6 +23,7 @@ describe("readiness", () => {
       ok: false,
       configured: false,
       provider: "openai",
+      sessionChecked: false,
       error: "Set OPENAI_API_KEY or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
     });
   });
@@ -53,7 +54,7 @@ describe("readiness", () => {
 
     expect(report.ok).toBe(true);
     expect(report.hermes).toMatchObject({ ok: true, baseUrl: "http://injected-hermes.local", model: "hermes-agent" });
-    expect(report.realtime).toMatchObject({ ok: true, configured: true, injected: true, provider: "openai" });
+    expect(report.realtime).toMatchObject({ ok: true, configured: true, injected: true, provider: "openai", sessionChecked: false });
     expect(hermes.assertRunsSupported).toHaveBeenCalledOnce();
   });
 });

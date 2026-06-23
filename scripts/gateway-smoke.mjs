@@ -73,6 +73,9 @@ try {
   if (readiness.checks?.realtime?.provider !== "mock" || readiness.checks?.realtime?.model !== "mock-live") {
     throw new Error(`Gateway readiness advertised unexpected realtime provider: ${JSON.stringify(readiness.checks?.realtime)}.`);
   }
+  if (readiness.checks?.realtime?.sessionChecked !== false) {
+    throw new Error(`Gateway readiness should disclose that provider sessions are not opened by /ready: ${JSON.stringify(readiness.checks?.realtime)}.`);
+  }
 
   const socket = new WebSocket(`ws://127.0.0.1:${gatewayPort}/v1/live`, {
     headers: { origin: `http://127.0.0.1:${gatewayPort}` },
