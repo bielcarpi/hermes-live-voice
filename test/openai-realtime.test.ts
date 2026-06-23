@@ -107,6 +107,12 @@ describe("OpenAI Realtime adapter helpers", () => {
     expect(realtime15.session).not.toHaveProperty("parallel_tool_calls");
   });
 
+  it("fails direct adapter connects with a clear credential error", async () => {
+    await expect(new OpenAIRealtimeAdapter(testOpenAIConfig({ apiKey: undefined })).connect(testConnectParams())).rejects.toThrow(
+      /OPENAI_API_KEY/,
+    );
+  });
+
   it("closes the provider socket when OpenAI rejects the initial session update", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await once(server, "listening");
@@ -160,6 +166,14 @@ function testOpenAIConfig(
     inputAudioFormat: "pcm16",
     outputAudioFormat: "pcm16",
     ...overrides,
+  };
+}
+
+function testConnectParams(): Parameters<OpenAIRealtimeAdapter["connect"]>[0] {
+  return {
+    sessionId: "live_openai_test",
+    systemInstruction: "test",
+    callbacks: { onEvent: () => undefined },
   };
 }
 

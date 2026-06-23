@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildGeminiRealtimeAudioInput, buildGeminiTextTurn, buildGeminiToolResponse, normalizeGeminiLiveMessage } from "../src/gemini/live.js";
+import {
+  buildGeminiRealtimeAudioInput,
+  buildGeminiTextTurn,
+  buildGeminiToolResponse,
+  GeminiLiveAdapter,
+  normalizeGeminiLiveMessage,
+} from "../src/gemini/live.js";
 
 describe("Gemini Live adapter helpers", () => {
   it("normalizes function calls from Gemini toolCall messages", () => {
@@ -77,4 +83,33 @@ describe("Gemini Live adapter helpers", () => {
     });
     expect(() => buildGeminiToolResponse({ name: "start_hermes_run", args: {} }, { ok: false })).toThrow(/did not include an id/);
   });
+
+  it("fails direct adapter connects with clear credential errors", async () => {
+    await expect(new GeminiLiveAdapter(testGeminiConfig({ apiKey: undefined })).connect(testConnectParams())).rejects.toThrow(
+      /GEMINI_API_KEY/,
+    );
+    await expect(
+      new GeminiLiveAdapter(testGeminiConfig({ enterprise: true, project: undefined })).connect(testConnectParams()),
+    ).rejects.toThrow(/GOOGLE_CLOUD_PROJECT/);
+  });
 });
+
+function testGeminiConfig(overrides: Partial<ConstructorParameters<typeof GeminiLiveAdapter>[0]> = {}): ConstructorParameters<
+  typeof GeminiLiveAdapter
+>[0] {
+  return {
+    apiKey: "test-key",
+    model: "gemini-3.1-flash-live-preview",
+    enterprise: false,
+    location: "us-central1",
+    ...overrides,
+  };
+}
+
+function testConnectParams(): Parameters<GeminiLiveAdapter["connect"]>[0] {
+  return {
+    sessionId: "live_gemini_test",
+    systemInstruction: "test",
+    callbacks: { onEvent: () => undefined },
+  };
+}

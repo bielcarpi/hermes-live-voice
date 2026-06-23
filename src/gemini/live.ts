@@ -8,6 +8,7 @@ export class GeminiLiveAdapter implements LiveModelAdapter {
   constructor(private readonly config: AppConfig["gemini"]) {}
 
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    this.assertConfigured();
     const ai = this.createClient();
     const session: any = await (ai as any).live.connect({
       model: this.config.model,
@@ -28,6 +29,15 @@ export class GeminiLiveAdapter implements LiveModelAdapter {
       },
     });
     return new GeminiLiveSession(session);
+  }
+
+  private assertConfigured(): void {
+    if (this.config.enterprise && !this.config.project) {
+      throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
+    }
+    if (!this.config.enterprise && !this.config.apiKey) {
+      throw new Error("GEMINI_API_KEY or GOOGLE_API_KEY is required when HERMES_LIVE_PROVIDER=gemini.");
+    }
   }
 
   private createClient(): GoogleGenAI {
