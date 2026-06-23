@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 
 const hermesPrompt = "hello from cli";
 const directPrompt = "hello direct from cli";
+const audioOnlyPrompt = "hello audio only from cli";
 const expectedHermesOutput = "cli ok";
 const expectedDirectOutput = "direct cli ok";
 const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -24,6 +25,10 @@ server.on("connection", (socket) => {
         socket.send(JSON.stringify({ type: "realtime.message", message: { type: "response.done" } }));
         return;
       }
+      if (message.text === audioOnlyPrompt) {
+        socket.send(JSON.stringify({ type: "realtime.message", message: { type: "response.done" } }));
+        return;
+      }
       socket.send(JSON.stringify({ type: "run.started", runId: "run_cli_smoke", sessionId: "live_cli_smoke" }));
       socket.send(JSON.stringify({ type: "run.completed", runId: "run_cli_smoke", output: expectedHermesOutput }));
     }
@@ -41,17 +46,21 @@ if (!port) {
 try {
   await runClient(port, hermesPrompt, expectedHermesOutput);
   await runClient(port, directPrompt, expectedDirectOutput);
+  await runClient(port, audioOnlyPrompt, "", {
+    expectFailure: true,
+    stderrIncludes: "Realtime provider completed without text output",
+  });
 } finally {
   await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve(undefined))));
 }
 
-for (const expectedPrompt of [hermesPrompt, directPrompt]) {
+for (const expectedPrompt of [hermesPrompt, directPrompt, audioOnlyPrompt]) {
   if (!receivedPrompts.has(expectedPrompt)) {
     throw new Error(`CLI smoke gateway did not receive prompt: ${expectedPrompt}`);
   }
 }
 
-async function runClient(port, prompt, expectedOutput) {
+async function runClient(port, prompt, expectedOutput, options = {}) {
   const child = spawn(process.execPath, ["dist/cli.js", "client", prompt], {
     env: {
       ...process.env,
@@ -77,6 +86,15 @@ async function runClient(port, prompt, expectedOutput) {
   const [code, signal] = await once(child, "exit");
   clearTimeout(timeout);
 
+  if (options.expectFailure) {
+    if (code === 0 || signal) {
+      throw new Error(`CLI smoke expected failure but got code ${code ?? "null"} signal ${signal ?? "null"}\n${stderr}`);
+    }
+    if (options.stderrIncludes && !stderr.includes(options.stderrIncludes)) {
+      throw new Error(`CLI smoke stderr mismatch. Expected it to include ${JSON.stringify(options.stderrIncludes)}, got:\n${stderr}`);
+    }
+    return;
+  }
   if (code !== 0 || signal) {
     throw new Error(`CLI smoke failed with code ${code ?? "null"} signal ${signal ?? "null"}\n${stderr}`);
   }

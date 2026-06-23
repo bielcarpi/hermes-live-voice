@@ -204,8 +204,10 @@ async function handleClientServerMessage(
         const output = state.directTranscript.join("").trim();
         if (output) {
           console.log(output);
+          finish();
+        } else {
+          finish(new Error("Realtime provider completed without text output. Use the web demo or a voice client for audio-only responses."));
         }
-        finish();
       }
       break;
     case "approval.request":
