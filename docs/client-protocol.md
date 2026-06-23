@@ -42,6 +42,18 @@ Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
 
 Client message metadata such as request IDs, profile IDs, user labels, run IDs, MIME types, cancellation reasons, and playback truncation fields is bounded by the protocol before dispatch. Text input and provider tool-call text use `HERMES_LIVE_MAX_TEXT_CHARS`; audio frames use `HERMES_LIVE_MAX_AUDIO_BYTES`.
 
+## Request IDs
+
+Every client message can include an optional `id` string. When that message causes a `session.error`, the gateway echoes it as `requestId` so browser, mobile, and terminal clients can correlate recoverable validation or session-state failures.
+
+```json
+{
+  "type": "text.input",
+  "id": "req_123",
+  "text": "What changed?"
+}
+```
+
 ## Start Session
 
 The first message must be `session.start`.
@@ -232,6 +244,7 @@ Session-level error:
   "type": "session.error",
   "code": "provider_error",
   "message": "Realtime provider failed before session ready.",
+  "requestId": "req_123",
   "recoverable": false
 }
 ```

@@ -73,12 +73,55 @@ describe("live gateway WebSocket", () => {
     openSockets.push(socket);
 
     await waitForOpen(socket);
-    send(socket, { type: "session.start" });
+    send(socket, { type: "session.start", id: "req_start_1" });
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "session_start_failed",
       message: "Hermes capabilities unavailable",
+      requestId: "req_start_1",
       recoverable: true,
+    });
+  });
+
+  it("echoes request IDs on recoverable client state errors", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "text.input", id: "req_before_start", text: "hello" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_not_started",
+      message: "Send session.start before streaming input.",
+      requestId: "req_before_start",
+      recoverable: true,
+    });
+  });
+
+  it("echoes request IDs on client schema errors when the raw id is valid", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "text.input", id: "req_empty_text", text: "" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      requestId: "req_empty_text",
     });
   });
 
@@ -595,16 +638,23 @@ describe("live gateway WebSocket", () => {
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
 
-    send(socket, { type: "audio.input", data: "%%%not-base64%%%", mimeType: "audio/pcm;rate=24000" });
+    send(socket, { type: "audio.input", id: "req_bad_audio", data: "%%%not-base64%%%", mimeType: "audio/pcm;rate=24000" });
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
       message: expect.stringContaining("base64"),
+      requestId: "req_bad_audio",
     });
 
-    send(socket, { type: "audio.input", data: Buffer.from([1, 2, 3, 4]).toString("base64"), mimeType: "audio/pcm;rate=24000" });
+    send(socket, {
+      type: "audio.input",
+      id: "req_big_audio",
+      data: Buffer.from([1, 2, 3, 4]).toString("base64"),
+      mimeType: "audio/pcm;rate=24000",
+    });
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
       message: expect.stringContaining("HERMES_LIVE_MAX_AUDIO_BYTES"),
+      requestId: "req_big_audio",
     });
   });
 

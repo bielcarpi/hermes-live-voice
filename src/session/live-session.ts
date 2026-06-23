@@ -43,7 +43,7 @@ export class LiveGatewaySession {
 
   bind(): void {
     this.socket.on("message", (data) => {
-      void this.handleRawMessage(data).catch((error) => this.fail("client_message_failed", error));
+      void this.handleRawMessage(data);
     });
     this.socket.on("close", () => {
       void this.close();
@@ -55,7 +55,7 @@ export class LiveGatewaySession {
 
   async start(message: Extract<ClientMessage, { type: "session.start" }>): Promise<void> {
     if (this.liveSession || this.starting) {
-      this.fail("session_already_started", new Error("Realtime session is already started."), true);
+      this.fail("session_already_started", new Error("Realtime session is already started."), true, message.id);
       return;
     }
 
@@ -182,7 +182,7 @@ export class LiveGatewaySession {
         this.liveSession = undefined;
       }
       if (!this.closing) {
-        this.fail("session_start_failed", error, true);
+        this.fail("session_start_failed", error, true, message.id);
       }
     } finally {
       this.starting = false;
@@ -202,13 +202,19 @@ export class LiveGatewaySession {
   }
 
   private async handleRawMessage(raw: WebSocket.RawData): Promise<void> {
-    if (typeof raw !== "string" && !Buffer.isBuffer(raw)) {
-      this.fail("unsupported_frame", new Error("Only JSON text frames are supported in v1."));
-      return;
+    let requestId: string | undefined;
+    try {
+      if (typeof raw !== "string" && !Buffer.isBuffer(raw)) {
+        this.fail("unsupported_frame", new Error("Only JSON text frames are supported in v1."));
+        return;
+      }
+      const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : raw;
+      const parsed = JSON.parse(text) as unknown;
+      requestId = requestIdFromUnknown(parsed);
+      await this.handleClientMessage(parseClientMessage(parsed));
+    } catch (error) {
+      this.fail("client_message_failed", error, false, requestId);
     }
-    const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : raw;
-    const parsed = JSON.parse(text) as unknown;
-    await this.handleClientMessage(parseClientMessage(parsed));
   }
 
   private async handleClientMessage(message: ClientMessage): Promise<void> {
@@ -217,7 +223,7 @@ export class LiveGatewaySession {
       return;
     }
     if (!this.liveSession) {
-      this.fail("session_not_started", new Error("Send session.start before streaming input."), true);
+      this.fail("session_not_started", new Error("Send session.start before streaming input."), true, message.id);
       return;
     }
     switch (message.type) {
@@ -468,10 +474,10 @@ export class LiveGatewaySession {
     }
   }
 
-  private fail(code: string, error: unknown, recoverable = false): void {
+  private fail(code: string, error: unknown, recoverable = false, requestId?: string): void {
     const message = errorToMessage(error);
     this.deps.logger.warn("live session error", { sessionId: this.id, code, message });
-    this.send({ type: "session.error", code, message, recoverable });
+    this.send({ type: "session.error", code, message, recoverable, ...(requestId ? { requestId } : {}) });
   }
 }
 
@@ -500,6 +506,14 @@ function validateText(value: string, maxChars: number, label: string): void {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function requestIdFromUnknown(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const id = (value as { id?: unknown }).id;
+  return typeof id === "string" && id.length > 0 && id.length <= 128 ? id : undefined;
 }
 
 function safetyIdentifierForSessionKey(sessionKey: string): string {

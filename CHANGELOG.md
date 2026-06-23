@@ -55,3 +55,4 @@
 - Send OpenAI truncation metadata for queued assistant audio even when the user has heard `0` ms.
 - Forward OpenAI VAD speech-start events as `input.speech_started` and make the web demo stop/truncate queued playback.
 - Cancel provider output on web-demo speech-start even when no truncation metadata is available yet.
+- Echo client message IDs as `requestId` on related `session.error` responses.
