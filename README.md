@@ -65,7 +65,7 @@ npm install -g hermes-live
 Or run the Docker example:
 
 ```sh
-HERMES_API_KEY=... HERMES_LIVE_AUTH_TOKEN=... \
+HERMES_API_KEY=... HERMES_LIVE_AUTH_TOKEN=$(openssl rand -hex 32) \
 docker compose -f examples/docker-compose.yml up
 ```
 
@@ -139,6 +139,7 @@ For local gateway development without a realtime provider:
 
 ```sh
 HERMES_LIVE_PROVIDER=mock
+HERMES_API_KEY=...
 ```
 
 The mock provider still requires a Hermes API Server with run endpoints unless tests inject a fake Hermes client.
@@ -147,11 +148,11 @@ When binding beyond loopback, protect the gateway:
 
 ```sh
 HERMES_LIVE_HOST=0.0.0.0
-HERMES_LIVE_AUTH_TOKEN=...
+HERMES_LIVE_AUTH_TOKEN=$(openssl rand -hex 32)
 HERMES_LIVE_ALLOW_ORIGIN=https://your-app.example
 ```
 
-`hermes-live` refuses network-accessible binds without `HERMES_LIVE_AUTH_TOKEN` unless you explicitly set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
+`hermes-live` refuses network-accessible binds without a strong `HERMES_LIVE_AUTH_TOKEN` unless you explicitly set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 
 ## Run
 
@@ -256,6 +257,8 @@ hermes-live client "Summarize my current project state."
 ```
 
 Set `HERMES_LIVE_URL` when the gateway is not on `ws://127.0.0.1:8788/v1/live`. If `HERMES_LIVE_AUTH_TOKEN` is set, the client sends it as a bearer token.
+
+The terminal client prints Hermes run output when the provider calls Hermes. If the realtime provider answers directly, it prints the provider transcript when that realtime response completes.
 
 ## Plugin or Sidecar?
 

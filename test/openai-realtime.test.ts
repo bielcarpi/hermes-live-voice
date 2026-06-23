@@ -12,10 +12,13 @@ import {
 
 describe("OpenAI Realtime adapter helpers", () => {
   it("normalizes audio and transcript deltas", () => {
-    expect(normalizeOpenAIRealtimeEvent({ type: "response.output_audio.delta", delta: "abc", item_id: "item_1", content_index: 0 })).toContainEqual({
+    const audioEvents = normalizeOpenAIRealtimeEvent({ type: "response.output_audio.delta", delta: "abc", item_id: "item_1", content_index: 0 });
+
+    expect(audioEvents).toContainEqual({
       type: "audio",
       audio: { data: "abc", mimeType: "audio/pcm;rate=24000", itemId: "item_1", contentIndex: 0 },
     });
+    expect(audioEvents.at(-1)).toMatchObject({ type: "raw" });
     expect(normalizeOpenAIRealtimeEvent({ type: "response.audio.delta", delta: "legacy-audio" })).toContainEqual({
       type: "audio",
       audio: { data: "legacy-audio", mimeType: "audio/pcm;rate=24000" },
@@ -86,6 +89,7 @@ describe("OpenAI Realtime adapter helpers", () => {
     const realtime15 = buildOpenAISessionUpdate(testOpenAIConfig({ model: "gpt-realtime-1.5" }), "hello");
     expect(realtime15.session).toMatchObject({ model: "gpt-realtime-1.5" });
     expect(realtime15.session).not.toHaveProperty("reasoning");
+    expect(realtime15.session).not.toHaveProperty("parallel_tool_calls");
   });
 
   it("closes the provider socket when OpenAI rejects the initial session update", async () => {

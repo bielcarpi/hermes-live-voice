@@ -54,14 +54,11 @@ class GeminiLiveSession implements LiveModelSession {
   }
 
   async sendText(text: string): Promise<void> {
-    if (typeof this.session.sendRealtimeInput === "function") {
-      await this.session.sendRealtimeInput({ text });
+    if (typeof this.session.sendClientContent === "function") {
+      await this.session.sendClientContent(buildGeminiTextTurn(text));
       return;
     }
-    await this.session.sendClientContent({
-      turns: [{ role: "user", parts: [{ text }] }],
-      turnComplete: true,
-    });
+    await this.session.sendRealtimeInput({ text });
   }
 
   async sendAudioStreamEnd(): Promise<void> {
@@ -92,8 +89,15 @@ export function buildGeminiRealtimeAudioInput(audio: LiveModelAudio): { audio: {
   return { audio: { data: normalized.data, mimeType: normalized.mimeType } };
 }
 
+export function buildGeminiTextTurn(text: string): { turns: Array<{ role: "user"; parts: Array<{ text: string }> }>; turnComplete: true } {
+  return {
+    turns: [{ role: "user", parts: [{ text }] }],
+    turnComplete: true,
+  };
+}
+
 export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
-  const events: LiveModelEvent[] = [{ type: "raw", message }];
+  const events: LiveModelEvent[] = [];
   const root = unwrapMessage(message);
 
   for (const call of extractFunctionCalls(root)) {
@@ -113,6 +117,7 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
       });
     }
   }
+  events.push({ type: "raw", message });
   return events;
 }
 

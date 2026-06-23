@@ -36,7 +36,7 @@ Users can run the gateway directly:
 
 ```sh
 npm install -g hermes-live
-HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_LIVE_PROVIDER=mock hermes-live serve
+HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock hermes-live serve
 ```
 
 or with Docker:
