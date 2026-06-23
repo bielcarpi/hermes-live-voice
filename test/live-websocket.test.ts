@@ -469,7 +469,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       demoEnabled: true,
       ...overrides.server,
     },
-    hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent" },
+    hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent", timeoutMs: 30_000 },
     realtime: { provider: "mock", model: "mock-live" },
     gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1" },
     openai: {

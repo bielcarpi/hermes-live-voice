@@ -15,6 +15,7 @@ const EnvSchema = z.object({
   HERMES_API_KEY: z.string().optional(),
   HERMES_MODEL: z.string().default("hermes-agent"),
   HERMES_LIVE_RUN_INSTRUCTIONS: z.string().optional(),
+  HERMES_LIVE_HERMES_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 
   HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "mock"]).default("gemini"),
   GEMINI_API_KEY: z.string().optional(),
@@ -52,6 +53,7 @@ export interface AppConfig {
     apiKey?: string;
     model: string;
     instructions?: string;
+    timeoutMs: number;
   };
   realtime: {
     provider: RealtimeProvider;
@@ -101,6 +103,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(parsed.HERMES_API_KEY ? { apiKey: parsed.HERMES_API_KEY } : {}),
       model: parsed.HERMES_MODEL,
       ...(parsed.HERMES_LIVE_RUN_INSTRUCTIONS ? { instructions: parsed.HERMES_LIVE_RUN_INSTRUCTIONS } : {}),
+      timeoutMs: parsed.HERMES_LIVE_HERMES_TIMEOUT_MS,
     },
     realtime: {
       provider: parsed.HERMES_LIVE_PROVIDER,

@@ -5,6 +5,7 @@ const fetchMock = vi.fn<typeof fetch>();
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   fetchMock.mockReset();
 });
 
@@ -57,6 +58,24 @@ describe("HermesClient", () => {
     await expect(client.capabilities()).rejects.toThrow("Hermes request failed: 401 nope");
   });
 
+  it("times out stalled JSON requests", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal | undefined;
+          signal?.addEventListener("abort", () => reject(signal.reason));
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient({ timeoutMs: 25 });
+    const result = expect(client.capabilities()).rejects.toThrow("Hermes request timed out after 25ms: /v1/capabilities");
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    await result;
+  });
+
   it("streams run events through SSE", async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -86,12 +105,50 @@ describe("HermesClient", () => {
       }),
     );
   });
+
+  it("does not apply the request timeout to an established run event stream", async () => {
+    vi.useFakeTimers();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode('data: {"event":"message.delta","delta":"late"}\n\n'));
+          controller.enqueue(new TextEncoder().encode('data: {"event":"run.completed","output":"done"}\n\n'));
+          controller.close();
+        }, 50);
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient({ timeoutMs: 10 });
+    const eventsPromise = collectEvents(client.streamRunEvents("run_123"));
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(eventsPromise).resolves.toEqual([
+      { event: "message.delta", delta: "late" },
+      { event: "run.completed", output: "done" },
+    ]);
+  });
 });
 
-function hermesClient(): HermesClient {
-  return new HermesClient({ baseUrl: "http://127.0.0.1:8642", apiKey: "hermes-secret", model: "hermes-agent" });
+function hermesClient(overrides: Partial<ConstructorParameters<typeof HermesClient>[0]> = {}): HermesClient {
+  return new HermesClient({
+    baseUrl: "http://127.0.0.1:8642",
+    apiKey: "hermes-secret",
+    model: "hermes-agent",
+    timeoutMs: 30_000,
+    ...overrides,
+  });
 }
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+async function collectEvents(events: AsyncGenerator<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
+  const collected = [];
+  for await (const event of events) {
+    collected.push(event);
+  }
+  return collected;
 }

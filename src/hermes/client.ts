@@ -37,11 +37,13 @@ export class HermesClient {
   readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly model: string;
+  private readonly timeoutMs: number;
 
   constructor(config: AppConfig["hermes"]) {
     this.baseUrl = config.baseUrl;
     this.apiKey = config.apiKey;
     this.model = config.model;
+    this.timeoutMs = config.timeoutMs;
   }
 
   async health(signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -116,29 +118,47 @@ export class HermesClient {
   }
 
   async *streamRunEvents(runId: string, signal?: AbortSignal): AsyncGenerator<HermesRunEvent> {
-    const response = await fetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/events`, {
-      method: "GET",
-      headers: this.headers({ accept: "text/event-stream" }),
-      ...signalInit(signal),
-    });
-    if (!response.ok) {
-      throw new Error(`Hermes events request failed: ${response.status} ${await response.text()}`);
+    const path = `/v1/runs/${encodeURIComponent(runId)}/events`;
+    const requestSignal = createRequestSignal(signal, this.timeoutMs, `Hermes events request timed out after ${this.timeoutMs}ms: ${path}`);
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        method: "GET",
+        headers: this.headers({ accept: "text/event-stream" }),
+        signal: requestSignal.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Hermes events request failed: ${response.status} ${await response.text()}`);
+      }
+      if (!response.body) {
+        throw new Error("Hermes events response did not include a body.");
+      }
+      requestSignal.clearTimeout();
+      yield* parseSseStream(response.body);
+    } catch (error) {
+      throw requestSignal.timedOut() ? new Error(`Hermes events request timed out after ${this.timeoutMs}ms: ${path}`) : error;
+    } finally {
+      requestSignal.cleanup();
     }
-    if (!response.body) {
-      throw new Error("Hermes events response did not include a body.");
-    }
-    yield* parseSseStream(response.body);
   }
 
   private async requestJson<T>(path: string, init: RequestInit & { headers?: Record<string, string> }): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      ...init,
-      headers: this.headers(init.headers),
-    });
-    if (!response.ok) {
-      throw new Error(`Hermes request failed: ${response.status} ${await response.text()}`);
+    const requestSignal = createRequestSignal(init.signal ?? undefined, this.timeoutMs, `Hermes request timed out after ${this.timeoutMs}ms: ${path}`);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        ...init,
+        signal: requestSignal.signal,
+        headers: this.headers(init.headers),
+      });
+      if (!response.ok) {
+        throw new Error(`Hermes request failed: ${response.status} ${await response.text()}`);
+      }
+      return (await response.json()) as T;
+    } catch (error) {
+      throw requestSignal.timedOut() ? new Error(`Hermes request timed out after ${this.timeoutMs}ms: ${path}`) : error;
+    } finally {
+      requestSignal.cleanup();
     }
-    return (await response.json()) as T;
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -157,4 +177,53 @@ function signalInit(signal: AbortSignal | undefined): Pick<RequestInit, "signal"
 
 function withSignal<T extends RequestInit>(init: T, signal: AbortSignal | undefined): T & Pick<RequestInit, "signal"> {
   return { ...init, ...signalInit(signal) };
+}
+
+function createRequestSignal(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number,
+  timeoutMessage: string,
+): {
+  signal: AbortSignal;
+  timedOut(): boolean;
+  clearTimeout(): void;
+  cleanup(): void;
+} {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+
+  const onParentAbort = () => {
+    controller.abort(parentSignal?.reason ?? new Error("Hermes request aborted."));
+  };
+
+  if (parentSignal?.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  }
+
+  if (timeoutMs > 0) {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new Error(timeoutMessage));
+    }, timeoutMs);
+  }
+
+  const clearRequestTimeout = () => {
+    if (timeout) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
+  };
+
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    clearTimeout: clearRequestTimeout,
+    cleanup: () => {
+      clearRequestTimeout();
+      parentSignal?.removeEventListener("abort", onParentAbort);
+    },
+  };
 }

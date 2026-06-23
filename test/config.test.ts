@@ -9,6 +9,7 @@ describe("config", () => {
     expect(config.server.port).toBe(8788);
     expect(config.server.demoEnabled).toBe(true);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
+    expect(config.hermes.timeoutMs).toBe(30_000);
     expect(config.realtime.provider).toBe("gemini");
     expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
     expect(config.realtime.model).toBe(config.gemini.model);
@@ -18,6 +19,12 @@ describe("config", () => {
     const config = loadConfig({ PORT: "9000", HERMES_LIVE_PORT: "8788" });
 
     expect(config.server.port).toBe(9000);
+  });
+
+  it("configures the Hermes request timeout", () => {
+    const config = loadConfig({ HERMES_LIVE_HERMES_TIMEOUT_MS: "1200" });
+
+    expect(config.hermes.timeoutMs).toBe(1200);
   });
 
   it("can disable the built-in browser demo", () => {

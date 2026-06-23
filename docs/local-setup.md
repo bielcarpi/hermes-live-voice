@@ -15,6 +15,8 @@ The gateway expects these feature flags to be true:
 - `run_stop`
 - `run_approval_response`
 
+Hermes JSON requests time out after 30 seconds by default. Set `HERMES_LIVE_HERMES_TIMEOUT_MS` if your local or remote Hermes API Server needs a different bound.
+
 ## 2. Install Gateway Dependencies
 
 ```sh
