@@ -1,13 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const cacheDir = mkdtempSync(join(tmpdir(), "hermes-live-npm-cache-"));
+const workDir = mkdtempSync(join(tmpdir(), "hermes-live-package-smoke-"));
+const cacheDir = join(workDir, "npm-cache");
+const installDir = join(workDir, "install");
+mkdirSync(cacheDir, { recursive: true });
+mkdirSync(installDir, { recursive: true });
 
 try {
-  const result = spawnSync(npm, ["pack", "--dry-run", "--json"], {
+  const result = spawnSync(npm, ["pack", "--json", "--pack-destination", workDir], {
     encoding: "utf8",
     env: { ...process.env, npm_config_cache: cacheDir, NPM_CONFIG_CACHE: cacheDir },
   });
@@ -70,9 +74,44 @@ try {
     throw new Error(`Package includes forbidden files:\n${forbidden.join("\n")}`);
   }
 
-  console.log(`Package smoke ok: ${pack.entryCount} files, ${pack.filename}`);
+  const tarball = join(workDir, pack.filename);
+  const install = spawnSync(npm, ["install", "--prefix", installDir, "--omit=dev", tarball], {
+    encoding: "utf8",
+    env: { ...process.env, npm_config_cache: cacheDir, NPM_CONFIG_CACHE: cacheDir },
+  });
+  if (install.status !== 0) {
+    throw new Error(`npm install of packed tarball failed with status ${install.status ?? "null"}\n${install.stdout}\n${install.stderr}`);
+  }
+
+  const bin = process.platform === "win32"
+    ? join(installDir, "node_modules", ".bin", "hermes-live.cmd")
+    : join(installDir, "node_modules", ".bin", "hermes-live");
+  const help = spawnSync(bin, ["--help"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HERMES_LIVE_PROVIDER: "mock",
+    },
+  });
+  if (help.status !== 0 || !help.stdout.includes("hermes-live") || !help.stdout.includes("HERMES_LIVE_PROVIDER")) {
+    throw new Error(`Installed CLI help failed with status ${help.status ?? "null"}\n${help.stdout}\n${help.stderr}`);
+  }
+
+  const imported = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "const m = await import('hermes-live'); if (typeof m.startServer !== 'function') process.exit(1);"],
+    {
+      cwd: installDir,
+      encoding: "utf8",
+    },
+  );
+  if (imported.status !== 0) {
+    throw new Error(`Installed package import failed with status ${imported.status ?? "null"}\n${imported.stdout}\n${imported.stderr}`);
+  }
+
+  console.log(`Package smoke ok: ${pack.entryCount} files, ${pack.filename}, install and CLI verified`);
 } finally {
-  rmSync(cacheDir, { recursive: true, force: true });
+  rmSync(workDir, { recursive: true, force: true });
 }
 
 function parsePackJson(stdout) {
