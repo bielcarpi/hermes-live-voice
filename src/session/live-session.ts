@@ -116,10 +116,10 @@ export class LiveGatewaySession {
       return;
     }
     this.closing = true;
-    this.abort.abort();
     if (this.activeRunId) {
       await this.deps.hermes.stopRun(this.activeRunId).catch(() => undefined);
     }
+    this.abort.abort();
     await this.liveSession?.close().catch(() => undefined);
   }
 
