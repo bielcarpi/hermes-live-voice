@@ -4,7 +4,8 @@ import type { AppConfig } from "../src/config.js";
 import { MockLiveAdapter } from "../src/gemini/mock.js";
 import { HermesClient } from "../src/hermes/client.js";
 import type { Logger } from "../src/logger.js";
-import type { ApprovalChoice } from "../src/protocol.js";
+import type { ApprovalChoice, LiveModelAudio, LiveToolCall } from "../src/protocol.js";
+import type { LiveModelAdapter, LiveModelCallbacks, LiveModelConnectParams, LiveModelSession } from "../src/realtime/live.js";
 import { startServer } from "../src/server/http.js";
 
 const openServers: Array<{ close(): Promise<void> }> = [];
@@ -54,6 +55,39 @@ describe("live gateway WebSocket", () => {
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("waits to announce ready until the provider session is assigned", async () => {
+    const providerOpened = deferred<void>();
+    const releaseProvider = deferred<void>();
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new DelayedOpenAdapter(providerOpened, releaseProvider.promise),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await providerOpened.promise;
+    await expectNoMessage(socket);
+
+    const ready = waitForMessage(socket, "session.ready");
+    const earlyTranscript = waitForMessage(socket, "transcript.delta");
+    releaseProvider.resolve();
+
+    await expect(ready).resolves.toMatchObject({ type: "session.ready" });
+    await expect(earlyTranscript).resolves.toMatchObject({ text: "Provider connected early." });
+
+    send(socket, { type: "text.input", text: "Now ask Hermes" });
+    await expect(waitForMessage(socket, "run.completed")).resolves.toMatchObject({
+      output: "Hermes says done.",
+    });
+    expect(hermes.startRun).toHaveBeenCalledWith(expect.objectContaining({ input: "Now ask Hermes" }), expect.any(AbortSignal));
   });
 
   it("reconstructs completed output from Hermes message deltas", async () => {
@@ -376,6 +410,24 @@ async function waitForMessage(socket: WebSocket, type: string): Promise<any> {
   });
 }
 
+async function expectNoMessage(socket: WebSocket, durationMs = 50): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, durationMs);
+    const onMessage = (raw: WebSocket.RawData) => {
+      cleanup();
+      reject(new Error(`Unexpected WebSocket message: ${raw.toString("utf8")}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off("message", onMessage);
+    };
+    socket.once("message", onMessage);
+  });
+}
+
 function toWebSocketUrl(url: string): string {
   const parsed = new URL(url);
   parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
@@ -448,6 +500,42 @@ function fakeLogger(): Logger {
     warn: vi.fn(),
     error: vi.fn(),
   };
+}
+
+class DelayedOpenAdapter implements LiveModelAdapter {
+  constructor(
+    private readonly providerOpened: ReturnType<typeof deferred<void>>,
+    private readonly releaseProvider: Promise<void>,
+  ) {}
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    params.callbacks.onOpen?.();
+    params.callbacks.onEvent({ type: "text", text: "Provider connected early." });
+    this.providerOpened.resolve();
+    await this.releaseProvider;
+    return new ToolEchoSession(params.callbacks);
+  }
+}
+
+class ToolEchoSession implements LiveModelSession {
+  constructor(private readonly callbacks: LiveModelCallbacks) {}
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(text: string): Promise<void> {
+    this.callbacks.onEvent({
+      type: "tool_call",
+      call: { id: "delayed_call", name: "start_hermes_run", args: { message: text } },
+    });
+  }
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async sendToolResponse(_call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
+    this.callbacks.onEvent({ type: "text", text: typeof response.output === "string" ? response.output : JSON.stringify(response) });
+  }
+
+  async close(): Promise<void> {}
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
