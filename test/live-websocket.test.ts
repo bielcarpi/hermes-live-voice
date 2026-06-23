@@ -281,6 +281,41 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("rejects approval responses for runs outside the active voice session", async () => {
+    const approvalSubmitted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "approval.request", run_id: "run_ws", approval_id: "approval_1" };
+        await approvalSubmitted.promise;
+        yield { event: "run.completed", output: "Approved." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Delete the stale build" });
+    await waitForMessage(socket, "approval.request");
+    send(socket, { type: "approval.respond", runId: "other_run", choice: "once" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: "Requested Hermes run is not active in this voice session.",
+    });
+    expect(hermes.submitApproval).not.toHaveBeenCalled();
+    approvalSubmitted.resolve();
+    await waitForMessage(socket, "run.completed");
+  });
+
   it("routes client stop requests to the active Hermes run", async () => {
     const stopped = deferred<void>();
     const hermes = fakeHermes({
@@ -312,6 +347,76 @@ describe("live gateway WebSocket", () => {
 
     await expect(waitForMessage(socket, "run.stopped")).resolves.toMatchObject({ runId: "run_ws", status: "stopping" });
     expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", expect.any(AbortSignal));
+  });
+
+  it("rejects client stop requests for runs outside the active voice session", async () => {
+    const releaseRun = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        await releaseRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run something long" });
+    await waitForMessage(socket, "run.started");
+    send(socket, { type: "run.stop", runId: "other_run", reason: "test" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: "Requested Hermes run is not active in this voice session.",
+    });
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.completed");
+  });
+
+  it("rejects provider stop tool calls for runs outside the active voice session", async () => {
+    const releaseRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        await releaseRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run something long" });
+    await waitForMessage(socket, "run.started");
+    liveModel.emitToolCall({ id: "stop_other", name: "stop_hermes_run", args: { run_id: "other_run" } });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "tool_call_failed",
+      message: "Requested Hermes run is not active in this voice session.",
+      recoverable: true,
+    });
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.completed");
   });
 
   it("routes realtime response cancellation to the provider session", async () => {
@@ -558,6 +663,7 @@ function fakeHermes(
   } = {},
 ): HermesClient & {
   startRun: ReturnType<typeof vi.fn>;
+  getRun: ReturnType<typeof vi.fn>;
   submitApproval: ReturnType<typeof vi.fn>;
   stopRun: ReturnType<typeof vi.fn>;
 } {
@@ -593,6 +699,7 @@ function fakeHermes(
   };
   return hermes as unknown as HermesClient & {
     startRun: ReturnType<typeof vi.fn>;
+    getRun: ReturnType<typeof vi.fn>;
     submitApproval: ReturnType<typeof vi.fn>;
     stopRun: ReturnType<typeof vi.fn>;
   };
@@ -845,6 +952,43 @@ class OversizedToolCallSession implements LiveModelSession {
     this.callbacks.onEvent({
       type: "tool_call",
       call: { id: "oversized", name: "start_hermes_run", args: { message: "12345" } },
+    });
+  }
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async cancelResponse(): Promise<boolean> {
+    return false;
+  }
+
+  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
+
+  async close(): Promise<void> {}
+}
+
+class ManualToolAdapter implements LiveModelAdapter {
+  private callbacks?: LiveModelCallbacks;
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    this.callbacks = params.callbacks;
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return new ManualToolSession(params.callbacks);
+  }
+
+  emitToolCall(call: LiveToolCall): void {
+    this.callbacks?.onEvent({ type: "tool_call", call });
+  }
+}
+
+class ManualToolSession implements LiveModelSession {
+  constructor(private readonly callbacks: LiveModelCallbacks) {}
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(text: string): Promise<void> {
+    this.callbacks.onEvent({
+      type: "tool_call",
+      call: { id: "manual_start", name: "start_hermes_run", args: { message: text } },
     });
   }
 

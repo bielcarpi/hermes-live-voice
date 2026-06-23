@@ -28,3 +28,4 @@
 - Close OpenAI Realtime sockets when initial session setup is rejected.
 - Fail session startup immediately when a provider errors or closes before readiness.
 - Add `HERMES_LIVE_MAX_TEXT_CHARS` to bound client text input and provider tool-call messages.
+- Scope run stop, status, and approval actions to the active Hermes run for the current voice session.

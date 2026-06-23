@@ -45,6 +45,8 @@ Use `wss://` for non-local clients. Terminate TLS at a trusted reverse proxy and
 
 Approval decisions should be rendered clearly in the client. The gateway only forwards choices; it does not decide whether a dangerous action should be approved.
 
+Run-scoped actions are limited to the active Hermes run for the current voice session. Client messages and realtime provider tool calls cannot stop, inspect, or approve arbitrary Hermes run IDs through the gateway.
+
 ## Abuse Handling
 
 The gateway sends a hashed session key as `OpenAI-Safety-Identifier` when using OpenAI Realtime. This is privacy-preserving and stable enough for provider-side abuse monitoring.
