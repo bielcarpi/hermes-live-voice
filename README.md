@@ -183,7 +183,7 @@ Useful commands:
 ```sh
 npm run dev
 node dist/cli.js client "What can Hermes do?"
-npm run check
+npm run check              # gateway, Hermes API, and provider readiness
 npm run check:cli-client
 npm run check:gateway
 npm run check:web-demo

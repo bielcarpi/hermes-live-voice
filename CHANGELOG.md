@@ -57,3 +57,4 @@
 - Cancel provider output on web-demo speech-start even when no truncation metadata is available yet.
 - Echo client message IDs as `requestId` on related `session.error` responses.
 - Fail direct provider adapter connects with clear credential/configuration errors.
+- Make `hermes-live check` report actionable gateway, Hermes, and realtime configuration failures.
