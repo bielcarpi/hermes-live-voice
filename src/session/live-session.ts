@@ -302,6 +302,13 @@ export class LiveGatewaySession {
         this.fail("tool_call_failed", error, true);
         await this.sendToolFailure(event.call, error);
       });
+    } else if (event.type === "input_speech_started") {
+      this.send({
+        type: "input.speech_started",
+        provider: event.provider,
+        ...(event.itemId ? { itemId: event.itemId } : {}),
+        ...(event.audioStartMs === undefined ? {} : { audioStartMs: event.audioStartMs }),
+      });
     } else {
       this.send({ type: "realtime.message", message: event.message });
     }

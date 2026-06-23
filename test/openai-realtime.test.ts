@@ -47,6 +47,21 @@ describe("OpenAI Realtime adapter helpers", () => {
     });
   });
 
+  it("normalizes speech-start events for VAD interruption handling", () => {
+    expect(
+      normalizeOpenAIRealtimeEvent({
+        type: "input_audio_buffer.speech_started",
+        item_id: "item_1",
+        audio_start_ms: 320,
+      }),
+    ).toContainEqual({
+      type: "input_speech_started",
+      provider: "openai",
+      itemId: "item_1",
+      audioStartMs: 320,
+    });
+  });
+
   it("builds PCM append events at 24 kHz", () => {
     const input = Buffer.alloc(48).toString("base64");
 

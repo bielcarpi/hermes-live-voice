@@ -224,6 +224,14 @@ export function normalizeOpenAIRealtimeEvent(
   ) {
     events.push({ type: "text", text: root.delta });
   }
+  if (root?.type === "input_audio_buffer.speech_started") {
+    events.push({
+      type: "input_speech_started",
+      provider: "openai",
+      ...(typeof root.item_id === "string" ? { itemId: root.item_id } : {}),
+      ...(typeof root.audio_start_ms === "number" ? { audioStartMs: root.audio_start_ms } : {}),
+    });
+  }
   for (const call of extractOpenAIFunctionCalls(root)) {
     events.push({ type: "tool_call", call });
   }

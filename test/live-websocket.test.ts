@@ -447,6 +447,32 @@ describe("live gateway WebSocket", () => {
     expect(liveModel.session.cancelResponse).toHaveBeenCalledWith("barge-in", { itemId: "item_1", contentIndex: 0, audioEndMs: 480 });
   });
 
+  it("forwards provider speech-start events for client interruption handling", async () => {
+    const liveModel = new SpeechStartedAdapter();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+
+    liveModel.emitSpeechStarted();
+
+    await expect(waitForMessage(socket, "input.speech_started")).resolves.toMatchObject({
+      type: "input.speech_started",
+      provider: "openai",
+      itemId: "item_1",
+      audioStartMs: 320,
+    });
+  });
+
   it("closes the client session when the realtime provider closes unexpectedly", async () => {
     const providerClosed = deferred<void>();
     const server = await startServer({
@@ -1047,6 +1073,20 @@ class CancelTrackingSession implements LiveModelSession {
   async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
 
   async close(): Promise<void> {}
+}
+
+class SpeechStartedAdapter implements LiveModelAdapter {
+  private callbacks?: LiveModelCallbacks;
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    this.callbacks = params.callbacks;
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return new CloseTrackingSession();
+  }
+
+  emitSpeechStarted(): void {
+    this.callbacks?.onEvent({ type: "input_speech_started", provider: "openai", itemId: "item_1", audioStartMs: 320 });
+  }
 }
 
 class ProviderCloseAdapter implements LiveModelAdapter {
