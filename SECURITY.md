@@ -22,7 +22,7 @@ Security-sensitive areas include:
 
 ## Baseline Deployment Guidance
 
-- Set `HERMES_LIVE_AUTH_TOKEN` outside local development.
+- Set `HERMES_LIVE_AUTH_TOKEN` to a high-entropy value outside local development.
 - Set `HERMES_LIVE_ALLOW_ORIGIN` to the exact app origin in browser deployments.
 - Leave `HERMES_LIVE_DEMO_ENABLED=false` in public production deployments unless the demo is intentionally exposed.
 - Keep `HERMES_BASE_URL` private to the gateway network.

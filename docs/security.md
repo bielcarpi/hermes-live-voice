@@ -23,7 +23,7 @@ Set `HERMES_API_KEY` to Hermes Agent's `API_SERVER_KEY`. Current Hermes API Serv
 
 When `HERMES_LIVE_AUTH_TOKEN` is set, `WS /v1/live`, `GET /ready`, and `GET /v1/capabilities` require authentication. `GET /health` intentionally stays public for health checks.
 
-When `HERMES_LIVE_HOST` is network-accessible, `hermes-live` refuses to start without `HERMES_LIVE_AUTH_TOKEN`. Set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` only for an isolated trusted network.
+When `HERMES_LIVE_HOST` is network-accessible, `hermes-live` refuses to start without a strong `HERMES_LIVE_AUTH_TOKEN`. Generate one with a command such as `openssl rand -hex 32`. Set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` only for an isolated trusted network.
 
 Use `Authorization: Bearer <token>` for HTTP endpoints and server-side clients. Query-token auth is accepted only for browser WebSocket clients that cannot set upgrade headers.
 
@@ -65,7 +65,7 @@ Add your own rate limiting before public deployment.
 
 ## Public Deployment Checklist
 
-- `HERMES_LIVE_AUTH_TOKEN` is set.
+- `HERMES_LIVE_AUTH_TOKEN` is set to a high-entropy value.
 - `HERMES_API_KEY` is set to Hermes Agent's `API_SERVER_KEY`.
 - `HERMES_LIVE_ALLOW_ORIGIN` is exact.
 - `HERMES_LIVE_DEMO_ENABLED=false` if the public browser demo is not intentionally exposed.

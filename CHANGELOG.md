@@ -38,3 +38,10 @@
 - Add defensive security headers to JSON and browser demo responses.
 - Close idle and active HTTP connections during explicit server shutdown.
 - Bound client protocol metadata fields before dispatch.
+- Only send OpenAI Realtime reasoning-only session fields to reasoning-capable models.
+- Let the terminal client complete on direct realtime provider transcript responses.
+- Emit normalized provider transcript/audio/tool events before raw provider envelopes.
+- Send Gemini text turns through `sendClientContent`.
+- Require `HERMES_API_KEY` before serving so Hermes auth failures fail fast.
+- Require stronger gateway auth tokens for network-accessible binds.
+- Document `HERMES_LIVE_MAX_AUDIO_BYTES` in the example environment and compose files.

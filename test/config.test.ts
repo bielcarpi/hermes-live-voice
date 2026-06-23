@@ -67,23 +67,31 @@ describe("config", () => {
     );
   });
 
-  it("accepts mock provider without external credentials", () => {
-    const config = loadConfig({ HERMES_LIVE_PROVIDER: "mock" });
+  it("accepts mock provider without realtime provider credentials", () => {
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_API_KEY: "hermes-secret" });
 
     expect(realtimeProviderConfigured(config)).toBe(true);
     expect(() => assertRuntimeConfig(config)).not.toThrow();
   });
 
+  it("requires Hermes API credentials before serving", () => {
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "mock" });
+
+    expect(() => assertRuntimeConfig(config)).toThrow(/HERMES_API_KEY/);
+  });
+
   it("requires gateway auth for network-accessible binds", () => {
-    const exposed = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_LIVE_HOST: "0.0.0.0" });
+    const exposed = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_LIVE_HOST: "0.0.0.0", HERMES_API_KEY: "hermes-secret" });
     const protectedConfig = loadConfig({
       HERMES_LIVE_PROVIDER: "mock",
       HERMES_LIVE_HOST: "0.0.0.0",
-      HERMES_LIVE_AUTH_TOKEN: "gateway-secret",
+      HERMES_API_KEY: "hermes-secret",
+      HERMES_LIVE_AUTH_TOKEN: "gateway-secret-token",
     });
     const explicitUnsafe = loadConfig({
       HERMES_LIVE_PROVIDER: "mock",
       HERMES_LIVE_HOST: "0.0.0.0",
+      HERMES_API_KEY: "hermes-secret",
       HERMES_LIVE_ALLOW_UNAUTHENTICATED: "true",
     });
 
@@ -92,18 +100,31 @@ describe("config", () => {
     expect(() => assertRuntimeConfig(explicitUnsafe)).not.toThrow();
   });
 
+  it("requires strong gateway auth tokens for network-accessible binds", () => {
+    const weak = loadConfig({
+      HERMES_LIVE_PROVIDER: "mock",
+      HERMES_LIVE_HOST: "0.0.0.0",
+      HERMES_API_KEY: "hermes-secret",
+      HERMES_LIVE_AUTH_TOKEN: "short",
+    });
+
+    expect(() => assertRuntimeConfig(weak)).toThrow(/at least 16 characters/);
+  });
+
   it("requires OpenAI credentials for OpenAI provider", () => {
-    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai" });
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", HERMES_API_KEY: "hermes-secret" });
 
     expect(realtimeProviderConfigured(config)).toBe(false);
     expect(() => assertRuntimeConfig(config)).toThrow(/OPENAI_API_KEY/);
   });
 
   it("supports Realtime 1 and Realtime 2 model selection through env", () => {
-    const realtime1 = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_MODEL: "gpt-realtime" });
+    const realtime1 = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_MODEL: "gpt-realtime-1.5" });
+    const realtimeAlias = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_MODEL: "gpt-realtime" });
     const realtime2 = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_MODEL: "gpt-realtime-2" });
 
-    expect(realtime1.realtime.model).toBe("gpt-realtime");
+    expect(realtime1.realtime.model).toBe("gpt-realtime-1.5");
+    expect(realtimeAlias.realtime.model).toBe("gpt-realtime");
     expect(realtime2.realtime.model).toBe("gpt-realtime-2");
   });
 
@@ -116,10 +137,12 @@ describe("config", () => {
   it("requires a Google Cloud project for Gemini Enterprise mode", () => {
     const missingProject = loadConfig({
       HERMES_LIVE_PROVIDER: "gemini",
+      HERMES_API_KEY: "hermes-secret",
       GOOGLE_GENAI_USE_ENTERPRISE: "true",
     });
     const withProject = loadConfig({
       HERMES_LIVE_PROVIDER: "gemini",
+      HERMES_API_KEY: "hermes-secret",
       GOOGLE_GENAI_USE_ENTERPRISE: "true",
       GOOGLE_CLOUD_PROJECT: "demo-project",
     });

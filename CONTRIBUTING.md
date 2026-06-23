@@ -11,7 +11,7 @@ npm run verify
 
 `npm run verify` includes TypeScript checks, web demo syntax checks, plugin syntax checks, unit tests, build, CLI/gateway smokes, and package install smoke.
 
-Use `HERMES_LIVE_PROVIDER=mock` for local gateway work unless you are testing a live provider contract.
+Use `HERMES_LIVE_PROVIDER=mock` with `HERMES_API_KEY` set for local gateway work unless you are testing a live provider contract.
 
 ## Pull Requests
 

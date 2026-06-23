@@ -141,6 +141,7 @@ async function runTextClient(config: AppConfig, text: string): Promise<void> {
   const headers = config.server.authToken ? { authorization: `Bearer ${config.server.authToken}` } : undefined;
   const ws = new WebSocket(url, { headers });
   const approvalReader = createInterface({ input, output: approvalOutput });
+  const state: TextClientState = { directTranscript: [], hermesRunStarted: false };
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -166,7 +167,7 @@ async function runTextClient(config: AppConfig, text: string): Promise<void> {
         }
       });
       ws.on("message", (raw) => {
-        void handleClientServerMessage(ws, raw, text, approvalReader, finish).catch((error) =>
+        void handleClientServerMessage(ws, raw, text, approvalReader, state, finish).catch((error) =>
           finish(error instanceof Error ? error : new Error(String(error))),
         );
       });
@@ -181,6 +182,7 @@ async function handleClientServerMessage(
   raw: WebSocket.RawData,
   text: string,
   approvalReader: ReturnType<typeof createInterface>,
+  state: TextClientState,
   finish: (error?: Error) => void,
 ): Promise<void> {
   const message = JSON.parse(raw.toString("utf8")) as any;
@@ -189,7 +191,22 @@ async function handleClientServerMessage(
       ws.send(JSON.stringify({ type: "text.input", text }));
       break;
     case "run.started":
+      state.hermesRunStarted = true;
       console.error(`Hermes run started: ${message.runId}`);
+      break;
+    case "transcript.delta":
+      if (!state.hermesRunStarted && typeof message.text === "string") {
+        state.directTranscript.push(message.text);
+      }
+      break;
+    case "realtime.message":
+      if (!state.hermesRunStarted && isRealtimeResponseComplete(message.message)) {
+        const output = state.directTranscript.join("").trim();
+        if (output) {
+          console.log(output);
+        }
+        finish();
+      }
       break;
     case "approval.request":
       await respondToApproval(ws, approvalReader, String(message.runId), message.event);
@@ -203,6 +220,29 @@ async function handleClientServerMessage(
       finish(new Error(message.message ?? message.error ?? "Gateway request failed."));
       break;
   }
+}
+
+interface TextClientState {
+  directTranscript: string[];
+  hermesRunStarted: boolean;
+}
+
+function isRealtimeResponseComplete(message: unknown): boolean {
+  const root = unwrapRealtimeMessage(message);
+  return (
+    root?.type === "response.done" ||
+    root?.serverContent?.turnComplete === true ||
+    root?.server_content?.turn_complete === true ||
+    root?.data?.serverContent?.turnComplete === true ||
+    root?.data?.server_content?.turn_complete === true
+  );
+}
+
+function unwrapRealtimeMessage(message: unknown): any {
+  if (message && typeof message === "object" && "data" in message) {
+    return (message as { data: unknown }).data;
+  }
+  return message;
 }
 
 async function respondToApproval(

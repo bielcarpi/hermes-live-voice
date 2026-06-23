@@ -201,7 +201,7 @@ export function normalizeOpenAIRealtimeEvent(
   event: unknown,
   outputAudioFormat: AppConfig["openai"]["outputAudioFormat"] = "pcm16",
 ): LiveModelEvent[] {
-  const events: LiveModelEvent[] = [{ type: "raw", message: event }];
+  const events: LiveModelEvent[] = [];
   const root = event as any;
 
   if ((root?.type === "response.output_audio.delta" || root?.type === "response.audio.delta") && typeof root.delta === "string") {
@@ -227,6 +227,7 @@ export function normalizeOpenAIRealtimeEvent(
   for (const call of extractOpenAIFunctionCalls(root)) {
     events.push({ type: "tool_call", call });
   }
+  events.push({ type: "raw", message: event });
   return events;
 }
 
@@ -284,12 +285,17 @@ export function buildOpenAISessionUpdate(
           voice: config.voice,
         },
       },
-      ...(config.model.startsWith("gpt-realtime-2") ? { reasoning: { effort: config.reasoningEffort } } : {}),
-      parallel_tool_calls: false,
+      ...(isOpenAIReasoningRealtimeModel(config.model)
+        ? { reasoning: { effort: config.reasoningEffort }, parallel_tool_calls: false }
+        : {}),
       tools: OPENAI_HERMES_LIVE_TOOLS,
       tool_choice: "auto",
     },
   };
+}
+
+function isOpenAIReasoningRealtimeModel(model: string): boolean {
+  return model.startsWith("gpt-realtime-2");
 }
 
 function parseOpenAIEvent(raw: WebSocket.RawData): any | undefined {

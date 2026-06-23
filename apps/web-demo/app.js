@@ -69,7 +69,9 @@ stopButton.addEventListener("click", () => {
   try {
     const truncate = clearPlayback();
     requestResponseCancel("demo user clicked stop", truncate);
-    send({ type: "run.stop", runId: activeRunId || undefined, reason: "demo user clicked stop" });
+    if (activeRunId) {
+      send({ type: "run.stop", runId: activeRunId, reason: "demo user clicked stop" });
+    }
   } catch (error) {
     showError(error);
   }

@@ -2,10 +2,12 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
 
-const prompt = "hello from cli";
-const expectedOutput = "cli ok";
+const hermesPrompt = "hello from cli";
+const directPrompt = "hello direct from cli";
+const expectedHermesOutput = "cli ok";
+const expectedDirectOutput = "direct cli ok";
 const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-let receivedPrompt = false;
+const receivedPrompts = new Set();
 
 server.on("connection", (socket) => {
   socket.on("message", (raw) => {
@@ -15,9 +17,15 @@ server.on("connection", (socket) => {
       return;
     }
     if (message.type === "text.input") {
-      receivedPrompt = message.text === prompt;
+      receivedPrompts.add(message.text);
+      if (message.text === directPrompt) {
+        socket.send(JSON.stringify({ type: "transcript.delta", speaker: "assistant", text: "direct " }));
+        socket.send(JSON.stringify({ type: "transcript.delta", speaker: "assistant", text: "cli ok" }));
+        socket.send(JSON.stringify({ type: "realtime.message", message: { type: "response.done" } }));
+        return;
+      }
       socket.send(JSON.stringify({ type: "run.started", runId: "run_cli_smoke", sessionId: "live_cli_smoke" }));
-      socket.send(JSON.stringify({ type: "run.completed", runId: "run_cli_smoke", output: expectedOutput }));
+      socket.send(JSON.stringify({ type: "run.completed", runId: "run_cli_smoke", output: expectedHermesOutput }));
     }
   });
 });
@@ -30,38 +38,49 @@ if (!port) {
   throw new Error("CLI smoke gateway did not bind a port.");
 }
 
-const child = spawn(process.execPath, ["dist/cli.js", "client", prompt], {
-  env: {
-    ...process.env,
-    HERMES_LIVE_PROVIDER: "mock",
-    HERMES_LIVE_URL: `ws://127.0.0.1:${port}/v1/live`,
-  },
-  stdio: ["ignore", "pipe", "pipe"],
-});
-
-let stdout = "";
-let stderr = "";
-child.stdout.on("data", (chunk) => {
-  stdout += chunk.toString("utf8");
-});
-child.stderr.on("data", (chunk) => {
-  stderr += chunk.toString("utf8");
-});
-
-const timeout = setTimeout(() => {
-  child.kill("SIGKILL");
-}, 5_000);
-
-const [code, signal] = await once(child, "exit");
-clearTimeout(timeout);
-await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve(undefined))));
-
-if (code !== 0 || signal) {
-  throw new Error(`CLI smoke failed with code ${code ?? "null"} signal ${signal ?? "null"}\n${stderr}`);
+try {
+  await runClient(port, hermesPrompt, expectedHermesOutput);
+  await runClient(port, directPrompt, expectedDirectOutput);
+} finally {
+  await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve(undefined))));
 }
-if (!receivedPrompt) {
-  throw new Error("CLI smoke gateway did not receive the expected text.input prompt.");
+
+for (const expectedPrompt of [hermesPrompt, directPrompt]) {
+  if (!receivedPrompts.has(expectedPrompt)) {
+    throw new Error(`CLI smoke gateway did not receive prompt: ${expectedPrompt}`);
+  }
 }
-if (stdout.trim() !== expectedOutput) {
-  throw new Error(`CLI smoke stdout mismatch. Expected ${JSON.stringify(expectedOutput)}, got ${JSON.stringify(stdout.trim())}.`);
+
+async function runClient(port, prompt, expectedOutput) {
+  const child = spawn(process.execPath, ["dist/cli.js", "client", prompt], {
+    env: {
+      ...process.env,
+      HERMES_LIVE_PROVIDER: "mock",
+      HERMES_LIVE_URL: `ws://127.0.0.1:${port}/v1/live`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+
+  const timeout = setTimeout(() => {
+    child.kill("SIGKILL");
+  }, 5_000);
+
+  const [code, signal] = await once(child, "exit");
+  clearTimeout(timeout);
+
+  if (code !== 0 || signal) {
+    throw new Error(`CLI smoke failed with code ${code ?? "null"} signal ${signal ?? "null"}\n${stderr}`);
+  }
+  if (stdout.trim() !== expectedOutput) {
+    throw new Error(`CLI smoke stdout mismatch. Expected ${JSON.stringify(expectedOutput)}, got ${JSON.stringify(stdout.trim())}.`);
+  }
 }
