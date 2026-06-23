@@ -99,7 +99,16 @@ try {
 
   const imported = spawnSync(
     process.execPath,
-    ["--input-type=module", "-e", "const m = await import('hermes-live'); if (typeof m.startServer !== 'function') process.exit(1);"],
+    [
+      "--input-type=module",
+      "-e",
+      [
+        "const m = await import('hermes-live');",
+        "const required = ['startServer','loadConfig','assertRuntimeConfig','assertHermesApiConfig','assertRealtimeProviderConfig','assertGatewayExposureConfig','realtimeProviderConfigured','HermesClient','OpenAIRealtimeAdapter','GeminiLiveAdapter','parseClientMessage'];",
+        "const missing = required.filter((name) => typeof m[name] !== 'function');",
+        "if (missing.length) { console.error('Missing exports: ' + missing.join(',')); process.exit(1); }",
+      ].join(" "),
+    ],
     {
       cwd: installDir,
       encoding: "utf8",

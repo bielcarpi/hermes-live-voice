@@ -203,6 +203,26 @@ describe("HTTP server", () => {
       }),
     ).rejects.toThrow(/HERMES_LIVE_AUTH_TOKEN/);
   });
+
+  it("rejects default Hermes clients without Hermes API credentials through the library API", async () => {
+    await expect(
+      startServer({
+        config: testConfig(),
+        liveModel: new MockLiveAdapter(),
+        logger: fakeLogger(),
+      }),
+    ).rejects.toThrow(/HERMES_API_KEY/);
+  });
+
+  it("rejects default realtime providers without provider credentials through the library API", async () => {
+    await expect(
+      startServer({
+        config: testConfig({ openai: { apiKey: undefined } }),
+        hermes: fakeHermes(),
+        logger: fakeLogger(),
+      }),
+    ).rejects.toThrow(/OPENAI_API_KEY/);
+  });
 });
 
 function fakeHermes(): HermesClient {
@@ -229,7 +249,15 @@ function fakeHermes(): HermesClient {
   } as unknown as HermesClient;
 }
 
-function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): AppConfig {
+function testConfig(
+  overrides: {
+    server?: Partial<AppConfig["server"]>;
+    hermes?: Partial<AppConfig["hermes"]>;
+    realtime?: Partial<AppConfig["realtime"]>;
+    gemini?: Partial<AppConfig["gemini"]>;
+    openai?: Partial<AppConfig["openai"]>;
+  } = {},
+): AppConfig {
   return {
     server: {
       host: "127.0.0.1",
@@ -242,9 +270,9 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       ...overrides.server,
       allowUnauthenticated: overrides.server?.allowUnauthenticated ?? false,
     },
-    hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent", timeoutMs: 30_000 },
-    realtime: { provider: "openai", model: "gpt-realtime-2" },
-    gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1" },
+    hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent", timeoutMs: 30_000, ...overrides.hermes },
+    realtime: { provider: "openai", model: "gpt-realtime-2", ...overrides.realtime },
+    gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1", ...overrides.gemini },
     openai: {
       apiKey: "test",
       baseUrl: "wss://api.openai.com/v1/realtime",
@@ -254,6 +282,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       turnDetection: "disabled",
       inputAudioFormat: "pcm16",
       outputAudioFormat: "pcm16",
+      ...overrides.openai,
     },
   };
 }

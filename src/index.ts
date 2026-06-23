@@ -1,4 +1,12 @@
-export { assertRuntimeConfig, loadConfig, makeSessionKey } from "./config.js";
+export {
+  assertGatewayExposureConfig,
+  assertHermesApiConfig,
+  assertRealtimeProviderConfig,
+  assertRuntimeConfig,
+  loadConfig,
+  makeSessionKey,
+  realtimeProviderConfigured,
+} from "./config.js";
 export type { AppConfig, RealtimeProvider } from "./config.js";
 export { GeminiLiveAdapter, normalizeGeminiLiveMessage } from "./gemini/live.js";
 export { MockLiveAdapter } from "./gemini/mock.js";
