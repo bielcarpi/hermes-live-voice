@@ -119,6 +119,7 @@ describe("HTTP server", () => {
           configured: true,
           injected: true,
           provider: "openai",
+          sessionChecked: false,
         },
       },
     });
@@ -147,6 +148,7 @@ describe("HTTP server", () => {
           injected: true,
           provider: "openai",
           model: "gpt-realtime-2",
+          sessionChecked: false,
         },
       },
     });

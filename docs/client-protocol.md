@@ -48,12 +48,19 @@ Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
   "checks": {
     "gateway": { "ok": true, "authRequired": true },
     "hermes": { "ok": true, "baseUrl": "http://127.0.0.1:8642" },
-    "realtime": { "ok": true, "configured": true, "provider": "openai", "model": "gpt-realtime-2" }
+    "realtime": {
+      "ok": true,
+      "configured": true,
+      "provider": "openai",
+      "model": "gpt-realtime-2",
+      "sessionChecked": false
+    }
   }
 }
 ```
 
 When any section is not ready, the endpoint returns `503` with that section's `error`.
+`sessionChecked: false` means readiness verified provider configuration, not a live Gemini/OpenAI session handshake.
 
 ## Client Limits
 

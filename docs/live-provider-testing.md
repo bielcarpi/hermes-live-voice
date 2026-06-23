@@ -41,6 +41,7 @@ Expected:
     "configured": true,
     "provider": "openai",
     "model": "gpt-realtime-2",
+    "sessionChecked": false,
     "baseUrl": "wss://api.openai.com/v1/realtime",
     "voice": "marin",
     "reasoningEffort": "low",
@@ -51,7 +52,7 @@ Expected:
 }
 ```
 
-The exact Hermes capability fields can vary by Hermes version. This proves gateway exposure configuration, provider credential configuration, and Hermes API capabilities. It does not open a realtime provider session.
+The exact Hermes capability fields can vary by Hermes version. This proves gateway exposure configuration, provider credential configuration, and Hermes API capabilities. `sessionChecked: false` is intentional: this step does not open a realtime provider session.
 
 ## Step 2: Start The Gateway
 

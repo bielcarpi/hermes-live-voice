@@ -59,3 +59,4 @@
 - Fail direct provider adapter connects with clear credential/configuration errors.
 - Make `hermes-live check` report actionable gateway, Hermes, and realtime configuration failures.
 - Align `/ready` with the same actionable readiness report used by the CLI.
+- Disclose that realtime readiness does not open a provider session handshake.
