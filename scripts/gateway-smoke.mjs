@@ -30,7 +30,7 @@ const gateway = spawn(process.execPath, ["dist/cli.js", "serve"], {
     ...process.env,
     HERMES_BASE_URL: `http://127.0.0.1:${hermesPort}`,
     HERMES_MODEL: "hermes-agent",
-    HERMES_API_KEY: "",
+    HERMES_API_KEY: "hermes-smoke-secret",
     HERMES_LIVE_ALLOW_ORIGIN: "",
     HERMES_LIVE_AUTH_TOKEN: "",
     HERMES_LIVE_DEMO_ENABLED: "false",
@@ -129,10 +129,14 @@ async function handleHermesRequest(req, res) {
   if (req.method === "POST" && url.pathname === "/v1/runs") {
     const body = await readJson(req);
     const sessionKey = String(req.headers["x-hermes-session-key"] ?? "");
+    const authorization = String(req.headers.authorization ?? "");
     observed.startRun = true;
     observed.sessionKey = sessionKey;
     observed.startRunBody = body;
 
+    if (authorization !== "Bearer hermes-smoke-secret") {
+      throw new Error(`Unexpected Hermes authorization header: ${JSON.stringify(authorization)}.`);
+    }
     if (!sessionKey.includes("agent:main:hermes-live:profile:smoke:user:gateway-smoke")) {
       throw new Error(`Unexpected Hermes session key: ${JSON.stringify(sessionKey)}.`);
     }

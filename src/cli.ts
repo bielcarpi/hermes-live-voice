@@ -120,13 +120,14 @@ Usage:
 
 Required environment:
   HERMES_BASE_URL           Hermes API Server URL, default http://127.0.0.1:8642
-  HERMES_API_KEY            Bearer token if Hermes API Server requires one
+  HERMES_API_KEY            Hermes API_SERVER_KEY bearer token
   GEMINI_API_KEY            Gemini Developer API key, unless using Enterprise auth
   OPENAI_API_KEY            OpenAI API key when HERMES_LIVE_PROVIDER=openai
 
 Optional:
   HERMES_LIVE_PORT          Gateway port, default 8788
   HERMES_LIVE_AUTH_TOKEN    Require auth for /v1/live, /ready, and /v1/capabilities
+  HERMES_LIVE_ALLOW_UNAUTHENTICATED  Unsafe opt-out for network-accessible binds
   HERMES_LIVE_MAX_TEXT_CHARS Text/tool-call character limit, default 20000
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000

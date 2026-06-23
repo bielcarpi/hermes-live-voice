@@ -77,10 +77,11 @@ export class HermesClient {
     if (params.conversationHistory?.length) {
       body.conversation_history = params.conversationHistory;
     }
+    const headers: Record<string, string> = this.apiKey ? { "X-Hermes-Session-Key": params.sessionKey } : {};
     const response = await this.requestJson<{ run_id?: string; runId?: string; status?: string }>("/v1/runs", {
       method: "POST",
       body: JSON.stringify(body),
-      headers: { "X-Hermes-Session-Key": params.sessionKey },
+      headers,
       ...signalInit(signal),
     });
     const runId = response.run_id ?? response.runId;

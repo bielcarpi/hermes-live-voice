@@ -208,6 +208,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       providerReadyTimeoutMs: 15_000,
       demoEnabled: true,
       ...overrides.server,
+      allowUnauthenticated: overrides.server?.allowUnauthenticated ?? false,
     },
     hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent", timeoutMs: 30_000 },
     realtime: { provider: "openai", model: "gpt-realtime-2" },

@@ -126,6 +126,7 @@ The derived Hermes session key stays server-side. Clients receive the gateway se
 The gateway should fail closed:
 
 - No realtime credentials: refuse to start except in mock mode.
+- Network-accessible gateway bind without gateway auth: refuse to start unless explicitly opted out.
 - Hermes missing run features: refuse session startup.
 - Invalid client frames: return `session.error`.
 - Stream ends without terminal run event: return `run.failed`.

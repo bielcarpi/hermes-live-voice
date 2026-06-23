@@ -6,6 +6,7 @@ const EnvSchema = z.object({
   HERMES_LIVE_PORT: z.coerce.number().int().min(1).max(65535).default(8788),
   PORT: z.coerce.number().int().min(1).max(65535).optional(),
   HERMES_LIVE_AUTH_TOKEN: z.string().optional(),
+  HERMES_LIVE_ALLOW_UNAUTHENTICATED: z.string().optional(),
   HERMES_LIVE_ALLOW_ORIGIN: z.string().optional(),
   HERMES_LIVE_SESSION_PREFIX: z.string().default("agent:main:hermes-live"),
   HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(2_000_000),
@@ -45,6 +46,7 @@ export interface AppConfig {
     host: string;
     port: number;
     authToken?: string;
+    allowUnauthenticated: boolean;
     allowOrigin?: string;
     sessionPrefix: string;
     maxAudioBytes: number;
@@ -94,6 +96,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       host: parsed.HERMES_LIVE_HOST,
       port: parsed.PORT ?? parsed.HERMES_LIVE_PORT,
       ...(parsed.HERMES_LIVE_AUTH_TOKEN ? { authToken: parsed.HERMES_LIVE_AUTH_TOKEN } : {}),
+      allowUnauthenticated: parseBool(parsed.HERMES_LIVE_ALLOW_UNAUTHENTICATED),
       ...(parsed.HERMES_LIVE_ALLOW_ORIGIN ? { allowOrigin: parsed.HERMES_LIVE_ALLOW_ORIGIN } : {}),
       sessionPrefix: parsed.HERMES_LIVE_SESSION_PREFIX,
       maxAudioBytes: parsed.HERMES_LIVE_MAX_AUDIO_BYTES,
@@ -137,6 +140,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 }
 
 export function assertRuntimeConfig(config: AppConfig): void {
+  if (!config.server.authToken && isNetworkAccessibleHost(config.server.host) && !config.server.allowUnauthenticated) {
+    throw new Error(
+      "HERMES_LIVE_AUTH_TOKEN is required when HERMES_LIVE_HOST is network-accessible. " +
+        "Set HERMES_LIVE_ALLOW_UNAUTHENTICATED=true only for an isolated trusted network.",
+    );
+  }
   if (config.realtime.provider === "gemini" && config.gemini.enterprise && !config.gemini.project) {
     throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
   }
@@ -197,4 +206,9 @@ function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, 
     return "mock-live";
   }
   return geminiModel;
+}
+
+function isNetworkAccessibleHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(normalized);
 }

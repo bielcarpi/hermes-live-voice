@@ -65,6 +65,7 @@ npm install -g hermes-live
 Or run the Docker example:
 
 ```sh
+HERMES_API_KEY=... HERMES_LIVE_AUTH_TOKEN=... \
 docker compose -f examples/docker-compose.yml up
 ```
 
@@ -82,7 +83,10 @@ For Gemini Live:
 HERMES_LIVE_PROVIDER=gemini
 GEMINI_API_KEY=...
 HERMES_BASE_URL=http://127.0.0.1:8642
+HERMES_API_KEY=...
 ```
+
+Set `HERMES_API_KEY` to the same value as Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth, and Hermes only accepts the long-term memory `X-Hermes-Session-Key` header from authenticated clients.
 
 Hermes JSON requests time out after 30 seconds by default. To tune that for a slower local or remote Hermes API Server:
 
@@ -118,6 +122,7 @@ OPENAI_API_KEY=...
 OPENAI_REALTIME_MODEL=gpt-realtime-2
 OPENAI_REALTIME_TURN_DETECTION=disabled
 HERMES_BASE_URL=http://127.0.0.1:8642
+HERMES_API_KEY=...
 ```
 
 For current OpenAI Realtime 1.x behavior, set:
@@ -137,6 +142,16 @@ HERMES_LIVE_PROVIDER=mock
 ```
 
 The mock provider still requires a Hermes API Server with run endpoints unless tests inject a fake Hermes client.
+
+When binding beyond loopback, protect the gateway:
+
+```sh
+HERMES_LIVE_HOST=0.0.0.0
+HERMES_LIVE_AUTH_TOKEN=...
+HERMES_LIVE_ALLOW_ORIGIN=https://your-app.example
+```
+
+`hermes-live` refuses network-accessible binds without `HERMES_LIVE_AUTH_TOKEN` unless you explicitly set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 
 ## Run
 
