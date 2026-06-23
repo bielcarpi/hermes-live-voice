@@ -43,6 +43,7 @@
 - Fail the terminal client clearly when a direct realtime response has no text output.
 - Emit normalized provider transcript/audio/tool events before raw provider envelopes.
 - Send Gemini text turns through `sendClientContent`.
+- Normalize Gemini Live top-level audio data messages and require tool-call IDs for Gemini tool responses.
 - Require `HERMES_API_KEY` before serving so Hermes auth failures fail fast.
 - Require stronger gateway auth tokens for network-accessible binds.
 - Enforce gateway exposure checks in the exported server API, not only the CLI.
