@@ -248,6 +248,12 @@ export class LiveGatewaySession {
           terminal = true;
           finalOutput = typeof event.output === "string" ? event.output : transcript.join("");
           usage = event.usage;
+          this.send({
+            type: "run.completed",
+            runId,
+            output: finalOutput || transcript.join(""),
+            ...(usage ? { usage } : {}),
+          });
         } else if (event.event === "run.failed") {
           terminal = true;
           return { ok: false, run_id: runId, status: "failed", output: transcript.join(""), error: String(event.error ?? "Hermes run failed.") };
@@ -284,13 +290,6 @@ export class LiveGatewaySession {
     this.send({ type: "run.event", runId, event });
     if (event.event === "approval.request") {
       this.send({ type: "approval.request", runId, event });
-    } else if (event.event === "run.completed") {
-      this.send({
-        type: "run.completed",
-        runId,
-        output: typeof event.output === "string" ? event.output : "",
-        ...(event.usage ? { usage: event.usage } : {}),
-      });
     } else if (event.event === "run.failed") {
       this.send({ type: "run.failed", runId, error: String(event.error ?? "Hermes run failed.") });
     } else if (event.event === "run.cancelled") {

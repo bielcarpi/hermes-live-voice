@@ -56,6 +56,36 @@ describe("live gateway WebSocket", () => {
     );
   });
 
+  it("reconstructs completed output from Hermes message deltas", async () => {
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "message.delta", delta: "streamed " };
+        yield { event: "message.delta", delta: "answer" };
+        yield { event: "run.completed" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Summarize from deltas" });
+
+    await expect(waitForMessage(socket, "run.completed")).resolves.toMatchObject({
+      type: "run.completed",
+      runId: "run_ws",
+      output: "streamed answer",
+    });
+  });
+
   it("bridges approval responses through the real gateway WebSocket", async () => {
     const approvalSubmitted = deferred<void>();
     const hermes = fakeHermes({
