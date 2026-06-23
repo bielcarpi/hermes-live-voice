@@ -192,6 +192,17 @@ describe("HTTP server", () => {
       }),
     ).rejects.toThrow(/Failed to start hermes-live on 127\.0\.0\.1:\d+/);
   });
+
+  it("rejects network-accessible starts without gateway auth even through the library API", async () => {
+    await expect(
+      startServer({
+        config: testConfig({ server: { host: "0.0.0.0" } }),
+        hermes: fakeHermes(),
+        liveModel: new MockLiveAdapter(),
+        logger: fakeLogger(),
+      }),
+    ).rejects.toThrow(/HERMES_LIVE_AUTH_TOKEN/);
+  });
 });
 
 function fakeHermes(): HermesClient {
