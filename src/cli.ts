@@ -2,7 +2,13 @@
 import { stdin as input, stderr as approvalOutput } from "node:process";
 import { createInterface } from "node:readline/promises";
 import WebSocket from "ws";
-import { assertRuntimeConfig, loadConfig, realtimeProviderConfigured } from "./config.js";
+import {
+  assertGatewayExposureConfig,
+  assertHermesApiConfig,
+  assertRealtimeProviderConfig,
+  assertRuntimeConfig,
+  loadConfig,
+} from "./config.js";
 import type { AppConfig } from "./config.js";
 import { HermesClient } from "./hermes/client.js";
 import { createLogger } from "./logger.js";
@@ -35,39 +41,9 @@ async function main(): Promise<void> {
   }
 
   if (command === "check") {
-    const hermes = new HermesClient(config.hermes);
-    const realtimeConfigured = realtimeProviderConfigured(config);
-    let hermesCheck: Record<string, unknown>;
-    try {
-      const capabilities = await hermes.assertRunsSupported();
-      hermesCheck = {
-        ok: true,
-        baseUrl: config.hermes.baseUrl,
-        ...(capabilities.model ? { model: capabilities.model } : {}),
-        ...(capabilities.features ? { features: capabilities.features } : {}),
-      };
-    } catch (error) {
-      hermesCheck = { ok: false, baseUrl: config.hermes.baseUrl, error: errorToMessage(error) };
-    }
-    const ok = realtimeConfigured && hermesCheck.ok === true;
-    console.log(
-      JSON.stringify(
-        {
-          ok,
-          hermes: hermesCheck,
-          realtime: {
-            configured: realtimeConfigured,
-            provider: config.realtime.provider,
-            model: config.realtime.model,
-            ...(config.realtime.provider === "gemini" ? { enterprise: config.gemini.enterprise } : {}),
-            ...(config.realtime.provider === "openai" ? { baseUrl: config.openai.baseUrl } : {}),
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    if (!ok) {
+    const report = await buildCheckReport(config);
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.ok) {
       process.exitCode = 1;
     }
     return;
@@ -106,6 +82,104 @@ function redact(value: string | undefined): string | undefined {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+interface CheckSection extends Record<string, unknown> {
+  ok: boolean;
+}
+
+interface CheckReport {
+  ok: boolean;
+  gateway: CheckSection;
+  hermes: CheckSection;
+  realtime: CheckSection;
+}
+
+async function buildCheckReport(config: AppConfig): Promise<CheckReport> {
+  const gateway = checkGatewayConfig(config);
+  const hermes = await checkHermesConfig(config);
+  const realtime = checkRealtimeConfig(config);
+  return {
+    ok: gateway.ok && hermes.ok && realtime.ok,
+    gateway,
+    hermes,
+    realtime,
+  };
+}
+
+function checkGatewayConfig(config: AppConfig): CheckSection {
+  const base = {
+    host: config.server.host,
+    port: config.server.port,
+    authRequired: Boolean(config.server.authToken),
+    demoEnabled: config.server.demoEnabled,
+  };
+  try {
+    assertGatewayExposureConfig(config);
+    return { ok: true, ...base };
+  } catch (error) {
+    return { ok: false, ...base, error: errorToMessage(error) };
+  }
+}
+
+async function checkHermesConfig(config: AppConfig): Promise<CheckSection> {
+  const base = { baseUrl: config.hermes.baseUrl };
+  try {
+    assertHermesApiConfig(config);
+  } catch (error) {
+    return { ok: false, ...base, error: errorToMessage(error) };
+  }
+
+  const hermes = new HermesClient(config.hermes);
+  try {
+    const capabilities = await hermes.assertRunsSupported();
+    return {
+      ok: true,
+      ...base,
+      ...(capabilities.model ? { model: capabilities.model } : {}),
+      ...(capabilities.features ? { features: capabilities.features } : {}),
+    };
+  } catch (error) {
+    return { ok: false, ...base, error: errorToMessage(error) };
+  }
+}
+
+function checkRealtimeConfig(config: AppConfig): CheckSection {
+  const base = realtimeCheckSummary(config);
+  try {
+    assertRealtimeProviderConfig(config);
+    return { ok: true, configured: true, ...base };
+  } catch (error) {
+    return { ok: false, configured: false, ...base, error: errorToMessage(error) };
+  }
+}
+
+function realtimeCheckSummary(config: AppConfig): Record<string, unknown> {
+  const base = {
+    provider: config.realtime.provider,
+    model: config.realtime.model,
+  };
+  if (config.realtime.provider === "gemini") {
+    return {
+      ...base,
+      enterprise: config.gemini.enterprise,
+      location: config.gemini.location,
+      projectConfigured: Boolean(config.gemini.project),
+      ...(config.gemini.apiVersion ? { apiVersion: config.gemini.apiVersion } : {}),
+    };
+  }
+  if (config.realtime.provider === "openai") {
+    return {
+      ...base,
+      baseUrl: config.openai.baseUrl,
+      voice: config.openai.voice,
+      reasoningEffort: config.openai.reasoningEffort,
+      turnDetection: config.openai.turnDetection,
+      inputAudioFormat: config.openai.inputAudioFormat,
+      outputAudioFormat: config.openai.outputAudioFormat,
+    };
+  }
+  return base;
 }
 
 function printHelp(): void {

@@ -23,11 +23,35 @@ Expected:
 
 ```json
 {
-  "ok": true
+  "ok": true,
+  "gateway": {
+    "ok": true,
+    "host": "127.0.0.1",
+    "port": 8788,
+    "authRequired": false,
+    "demoEnabled": true
+  },
+  "hermes": {
+    "ok": true,
+    "baseUrl": "http://127.0.0.1:8642",
+    "model": "hermes-agent"
+  },
+  "realtime": {
+    "ok": true,
+    "configured": true,
+    "provider": "openai",
+    "model": "gpt-realtime-2",
+    "baseUrl": "wss://api.openai.com/v1/realtime",
+    "voice": "marin",
+    "reasoningEffort": "low",
+    "turnDetection": "disabled",
+    "inputAudioFormat": "pcm16",
+    "outputAudioFormat": "pcm16"
+  }
 }
 ```
 
-This proves only configuration and Hermes capabilities. It does not open a realtime provider session.
+The exact Hermes capability fields can vary by Hermes version. This proves gateway exposure configuration, provider credential configuration, and Hermes API capabilities. It does not open a realtime provider session.
 
 ## Step 2: Start The Gateway
 
