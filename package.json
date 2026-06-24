@@ -1,7 +1,7 @@
 {
   "name": "hermes-live",
   "version": "0.1.0",
-  "description": "Realtime voice gateway for Hermes Agent powered by pluggable live providers.",
+  "description": "Hermes Agent plugin and realtime voice gateway powered by pluggable live providers.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,14 +13,14 @@
     "./package.json": "./package.json"
   },
   "license": "MIT",
-  "author": "Saturday Labs",
-  "homepage": "https://github.com/saturday-labs/hermes-live#readme",
+  "author": "Hermes Live contributors",
+  "homepage": "https://github.com/bielcarpi/hermes-live#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/saturday-labs/hermes-live.git"
+    "url": "git+https://github.com/bielcarpi/hermes-live.git"
   },
   "bugs": {
-    "url": "https://github.com/saturday-labs/hermes-live/issues"
+    "url": "https://github.com/bielcarpi/hermes-live/issues"
   },
   "keywords": [
     "hermes-agent",
@@ -28,13 +28,10 @@
     "openai-realtime",
     "realtime",
     "voice",
+    "hermes-plugin",
     "agent",
     "websocket"
   ],
-  "funding": {
-    "type": "github",
-    "url": "https://github.com/sponsors/saturday-labs"
-  },
   "engines": {
     "node": ">=20"
   },

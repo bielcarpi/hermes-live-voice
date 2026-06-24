@@ -1,6 +1,6 @@
 # Architecture
 
-`hermes-live` is a realtime voice sidecar for Hermes Agent.
+`hermes-live` is a Hermes Agent plugin package with a realtime voice gateway runtime.
 
 It is not a replacement for Hermes. It deliberately gives the realtime model one narrow way to use Hermes: call gateway tools that start, stop, inspect, and approve Hermes runs.
 
@@ -21,10 +21,22 @@ The client captures microphone audio, encodes frames as base64 PCM16, and sends 
 
 Clients may be:
 
-- Saturday mobile app.
+- A Hermes-focused web or mobile client.
 - A web demo.
 - A native desktop app.
 - A terminal/WebSocket test client.
+
+### Hermes Plugin
+
+The plugin owns the Hermes-facing discovery surface:
+
+- Gateway metadata.
+- Default local gateway URL.
+- WebSocket and capability paths.
+- Future local launch helpers.
+- Future Hermes-native voice tools.
+
+The plugin should remain small and Hermes-specific. It should not turn Hermes core into a public audio/WebSocket server.
 
 ### Gateway
 
@@ -78,11 +90,9 @@ The gateway depends on these Hermes API Server capabilities:
 - `POST /v1/runs/{run_id}/stop`
 - `POST /v1/runs/{run_id}/approval`
 
-## Why a Sidecar First
+## Why a Gateway Runtime
 
-Realtime voice is a network runtime more than a Hermes extension. It needs persistent sockets, audio frames, provider sessions, auth for app clients, barge-in handling, and latency-sensitive state. Those concerns are cleaner outside Hermes core.
-
-The optional plugin exists for discovery and convenience, not because the gateway has to be a plugin.
+Realtime voice needs persistent sockets, audio frames, provider sessions, auth for app clients, barge-in handling, and latency-sensitive state. `hermes-live` keeps those concerns in a gateway runtime while making the project installable and discoverable as a Hermes plugin.
 
 ## Tool Boundary
 

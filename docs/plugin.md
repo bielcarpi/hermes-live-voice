@@ -1,60 +1,54 @@
 # Hermes Plugin
 
-The gateway does not have to be a Hermes plugin.
+`hermes-live` is a Hermes plugin package that adds realtime voice access to Hermes Agent through a local gateway runtime.
 
-`hermes-live` is useful as a standalone sidecar because users can install it with npm, Docker, or a process manager and point it at an existing Hermes API Server.
+The plugin and gateway have different jobs:
 
-## Why Not Plugin-Only
+- The Hermes plugin gives Hermes installations a discoverable integration surface.
+- The gateway runtime owns WebSockets, audio frames, realtime provider sessions, client auth, and the browser demo.
+- Hermes remains responsible for memory, tools, skills, MCP, approvals, terminal/file access, and long-running work.
 
-A realtime voice gateway has concerns that do not fit cleanly as a normal Hermes tool plugin:
+This keeps the project Hermes-native without pushing a public audio server into Hermes core.
 
-- Public WebSocket listener.
-- Browser/mobile client auth.
-- Realtime provider credentials.
-- Long-lived audio sessions.
-- Static demo serving.
-- TLS/reverse proxy deployment.
-- Provider-specific reconnect/error handling.
+## What The Plugin Provides
 
-Those are gateway concerns, not agent skill concerns.
+The current plugin metadata describes:
 
-## Why Include a Plugin Stub
+- Gateway name.
+- Runtime mode.
+- Default local gateway URL.
+- WebSocket path.
+- Capabilities path.
 
-The optional plugin can still be useful for:
+Future plugin work can add local launch helpers or Hermes-native voice tools, but the network/audio gateway should remain a separate runtime process.
 
-- Letting Hermes installations discover `hermes-live`.
-- Exposing local metadata.
-- Showing the expected gateway URL.
-- Future local launch helpers.
-- Future Saturday-specific or voice-specific Hermes tools.
+## Runtime Usage
 
-The plugin should remain small. It should not embed the whole realtime server inside Hermes.
-
-## How People Use It Without Saturday
-
-Users can run the gateway directly:
+Run the gateway with npm:
 
 ```sh
 npm install -g hermes-live
 HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock hermes-live serve
 ```
 
-or with Docker:
+Or with Docker:
 
 ```sh
 docker compose -f examples/docker-compose.yml up
 ```
 
-Then they connect any client to:
+Then connect clients to:
 
 ```txt
 ws://localhost:8788/v1/live
 ```
 
-They can also send a one-shot text request from a terminal:
+For a terminal smoke test:
 
 ```sh
 hermes-live client "What should I work on next?"
 ```
 
-Saturday is one client. It is not required.
+## Boundary
+
+The realtime provider does not receive Hermes tools directly. It receives gateway tools that start, stop, inspect, and approve Hermes runs. That boundary is what lets Hermes stay the brain while realtime providers handle voice and turn-taking.

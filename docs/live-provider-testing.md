@@ -176,9 +176,7 @@ HTTP/1.1 200 OK
 ## What This Still Does Not Prove
 
 - Multi-tenant hosted auth.
-- Billing or account management.
 - Edge rate limiting.
-- Mobile app UX.
 - Long-duration session behavior beyond your manual test window.
 - Provider-side quota, latency, and regional availability under production load.
 

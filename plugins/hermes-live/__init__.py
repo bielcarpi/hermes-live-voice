@@ -1,8 +1,8 @@
-"""Optional Hermes plugin metadata for hermes-live.
+"""Hermes plugin metadata for hermes-live.
 
-The realtime gateway runs as a sidecar process. This plugin is intentionally
-small: it gives Hermes installations a discoverable description of the gateway
-without embedding a WebSocket/audio runtime inside Hermes.
+The realtime gateway runs as a companion runtime. This plugin gives Hermes
+installations a discoverable description of that gateway without embedding a
+public WebSocket/audio server inside Hermes core.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 @dataclass(frozen=True)
 class HermesLiveGateway:
     name: str = "hermes-live"
-    mode: str = "sidecar"
+    mode: str = "gateway"
     url: str = getenv("HERMES_LIVE_URL", "http://127.0.0.1:8788")
     websocket_path: str = "/v1/live"
     capabilities_path: str = "/v1/capabilities"

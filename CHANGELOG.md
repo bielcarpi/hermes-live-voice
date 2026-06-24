@@ -5,7 +5,7 @@
 - Initial public gateway shape.
 - Add Gemini Live, OpenAI Realtime, and mock live providers.
 - Add Hermes run/event/approval/stop bridge.
-- Add browser demo, docs, examples, and optional plugin metadata.
+- Add browser demo, docs, examples, and Hermes plugin metadata.
 - Protect readiness/capabilities behind gateway auth when configured.
 - Restrict query-token auth to browser WebSocket upgrades.
 - Add `HERMES_LIVE_DEMO_ENABLED=false` to disable the built-in browser demo, with production defaults closed.
@@ -34,7 +34,7 @@
 - Bound raw client WebSocket payload size from configured audio/text limits before JSON parsing.
 - Flush the web demo microphone worklet before sending `audio.end`.
 - Keep the web demo in a starting/error state until `session.ready` succeeds.
-- Include optional Hermes plugin syntax validation in `npm run verify`.
+- Include Hermes plugin syntax validation in `npm run verify`.
 - Run the Docker image as the non-root `node` user.
 - Add defensive security headers to JSON and browser demo responses.
 - Close idle and active HTTP connections during explicit server shutdown.

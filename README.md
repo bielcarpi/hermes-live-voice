@@ -1,13 +1,13 @@
 # hermes-live
 
-Realtime voice gateway for Hermes Agent.
+Hermes Agent plugin and realtime voice gateway.
 
-`hermes-live` lets browser, mobile, or desktop clients speak to a private Hermes Agent through a realtime speech model. The realtime provider handles low-latency audio and interruption. Hermes remains the brain: memory, tools, skills, terminal, files, MCP, approvals, and long-running work stay inside Hermes.
+`hermes-live` adds realtime voice to Hermes Agent. The Hermes plugin provides the discovery/integration surface, and the gateway runtime handles realtime WebSockets, audio frames, provider sessions, and app-client auth. Hermes remains the brain: memory, tools, skills, terminal, files, MCP, approvals, and long-running work stay inside Hermes.
 
 ```txt
 Client app
   -> WebSocket /v1/live
-  -> hermes-live
+  -> hermes-live plugin/gateway
   -> Gemini Live or OpenAI Realtime
   -> function call: start_hermes_run()
   -> Hermes API Server /v1/runs
@@ -16,11 +16,13 @@ Client app
 
 ## Why this exists
 
-Hermes already has the hard agent parts. Realtime voice has a different runtime shape: persistent WebSockets, audio frames, fast turn-taking, barge-in, provider sessions, mobile auth, and gateway-level safety. Keeping this as a sidecar means people can use it without forking Hermes or waiting for a native Hermes platform adapter.
+Hermes already has the hard agent parts. Realtime voice has a different runtime shape: persistent WebSockets, audio frames, fast turn-taking, barge-in, provider sessions, app-client auth, and gateway-level safety. Keeping that runtime as a plugin-managed gateway means people can use realtime voice without forking Hermes or waiting for a native Hermes platform adapter.
+
+The repo is intentionally Hermes-centered. It does not depend on any particular app, product, or hosted service.
 
 ## Status
 
-This repository is an early gateway. It is designed for self-hosted experimentation and integration work, not hosted multi-tenant production without additional hardening.
+This repository is an early Hermes plugin package with a realtime gateway runtime. It is designed for self-hosted Hermes installations and integration work.
 
 Implemented:
 
@@ -36,16 +38,7 @@ Implemented:
 - Run stop/interruption bridge
 - Approval response bridge
 - Static browser demo
-- Optional Hermes plugin metadata/stub
-
-Not implemented in this repo:
-
-- Hosted user accounts
-- Billing
-- Mobile app UX
-- Persistent gateway database
-- Public tunnel management
-- Production observability stack
+- Hermes plugin metadata and discovery helper
 
 ## Install
 
@@ -260,11 +253,13 @@ Set `HERMES_LIVE_URL` when the gateway is not on `ws://127.0.0.1:8788/v1/live`. 
 
 The terminal client prints Hermes run output when the provider calls Hermes. If the realtime provider answers directly, it prints the provider transcript when that realtime response completes. If the provider completes with audio but no text transcript, the terminal client exits with a clear error; use the web demo or another voice client for audio-only responses.
 
-## Plugin or Sidecar?
+## Hermes Plugin And Gateway
 
-`hermes-live` is primarily a sidecar gateway.
+`hermes-live` should be treated as a Hermes plugin package.
 
-That is intentional. Realtime voice needs long-lived WebSockets, provider sessions, browser/mobile auth, and audio IO. A Hermes plugin is useful for discovery and local convenience, but it should not be the only way to use the project. See [docs/plugin.md](docs/plugin.md).
+The plugin gives Hermes a stable discovery/integration surface. The gateway runtime is the network/audio process that the plugin points to. Keeping the WebSocket and provider sessions in that runtime avoids pushing long-lived audio sockets into Hermes core while still making the project installable and understandable as a Hermes extension.
+
+See [docs/plugin.md](docs/plugin.md).
 
 ## Security Model
 
