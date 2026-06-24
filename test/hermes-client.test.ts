@@ -67,6 +67,48 @@ describe("HermesClient", () => {
     );
   });
 
+  it("sends the Hermes session key header on run-scoped follow-up requests", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "running" }))
+      .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "stopping" }))
+      .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", choice: "once", resolved: 1 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+    const sessionKey = "agent:main:hermes-live:profile:default:user:alice";
+
+    await client.getRun("run_123", { sessionKey });
+    await client.stopRun("run_123", { sessionKey });
+    await client.submitApproval("run_123", "once", { sessionKey });
+
+    for (const call of fetchMock.mock.calls) {
+      expect(call[1]).toEqual(
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            authorization: "Bearer hermes-secret",
+            "X-Hermes-Session-Key": sessionKey,
+          }),
+        }),
+      );
+    }
+  });
+
+  it("keeps AbortSignal shorthand support for run-scoped follow-up requests", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "running" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+    const controller = new AbortController();
+
+    await client.getRun("run_123", controller.signal);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:8642/v1/runs/run_123");
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "GET",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
   it("rejects Hermes capabilities without required run features", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ features: { run_submission: true } }));
     vi.stubGlobal("fetch", fetchMock);
