@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -99,6 +99,23 @@ try {
   });
   if (help.status !== 0 || !help.stdout.includes("hermes-live") || !help.stdout.includes("HERMES_LIVE_PROVIDER")) {
     throw new Error(`Installed CLI help failed with status ${help.status ?? "null"}\n${help.stdout}\n${help.stderr}`);
+  }
+
+  const hermesPluginsDir = join(workDir, "hermes-plugins");
+  mkdirSync(hermesPluginsDir, { recursive: true });
+  const pluginInstall = spawnSync(bin, ["plugin", "install", "--dir", hermesPluginsDir], {
+    encoding: "utf8",
+    env: { ...process.env, HERMES_LIVE_PROVIDER: "mock" },
+  });
+  if (pluginInstall.status !== 0) {
+    throw new Error(`Installed CLI plugin install failed with status ${pluginInstall.status ?? "null"}\n${pluginInstall.stdout}\n${pluginInstall.stderr}`);
+  }
+  const pluginInstallReport = JSON.parse(pluginInstall.stdout);
+  if (!pluginInstallReport.installed || !pluginInstallReport.manifestFound) {
+    throw new Error(`Installed CLI plugin install returned an invalid report:\n${pluginInstall.stdout}`);
+  }
+  if (!existsSync(join(hermesPluginsDir, "hermes-live", "plugin.yaml"))) {
+    throw new Error("Installed CLI plugin install did not write plugin.yaml.");
   }
 
   const imported = spawnSync(

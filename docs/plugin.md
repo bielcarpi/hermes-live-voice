@@ -55,7 +55,19 @@ Run the gateway with npm:
 
 ```sh
 npm install -g hermes-live
+hermes-live plugin install
+hermes plugins enable hermes-live
 HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock hermes-live serve
+```
+
+Or from a clone:
+
+```sh
+npm install
+npm run build
+node dist/cli.js plugin install --symlink
+hermes plugins enable hermes-live
+HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock npm run dev
 ```
 
 Or with Docker:
@@ -85,17 +97,18 @@ The realtime provider does not receive Hermes tools directly. It receives gatewa
 Hermes discovers user plugins from `~/.hermes/plugins/<plugin-name>/`. Copy or symlink this directory there, then enable it:
 
 ```sh
-mkdir -p ~/.hermes/plugins
-ln -s /path/to/hermes-live/plugins/hermes-live ~/.hermes/plugins/hermes-live
+hermes-live plugin install
 hermes plugins enable hermes-live
 ```
 
-After a global npm install, the plugin directory is under the global package root:
+Useful installer options:
 
 ```sh
-mkdir -p ~/.hermes/plugins
-ln -s "$(npm root -g)/hermes-live/plugins/hermes-live" ~/.hermes/plugins/hermes-live
-hermes plugins enable hermes-live
+hermes-live plugin status
+hermes-live plugin path
+hermes-live plugin install --force
+hermes-live plugin install --symlink
+hermes-live plugin install --dir /custom/hermes/plugins
 ```
 
 Project-local plugins can also be used under `.hermes/plugins/` when `HERMES_ENABLE_PROJECT_PLUGINS=true` is set for trusted repositories.

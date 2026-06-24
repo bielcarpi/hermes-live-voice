@@ -1,6 +1,11 @@
 #!/usr/bin/env node
+import { constants as fsConstants } from "node:fs";
+import { access, cp, lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { stdin as input, stderr as approvalOutput } from "node:process";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { assertRuntimeConfig, loadConfig } from "./config.js";
 import type { AppConfig } from "./config.js";
@@ -13,9 +18,19 @@ const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info"
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";
-  const config = loadConfig();
+
+  if (command === "plugin") {
+    await runPluginCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "help" || command === "--help" || command === "-h") {
+    printHelp();
+    return;
+  }
 
   if (command === "serve" || command === "dev") {
+    const config = loadConfig();
     assertRuntimeConfig(config);
     const server = await startServer({ config, logger });
     process.on("SIGINT", () => void server.close().finally(() => process.exit(0)));
@@ -24,6 +39,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "client") {
+    const config = loadConfig();
     const text = process.argv.slice(3).join(" ").trim();
     if (!text) {
       console.error("Provide text to send, for example: hermes-live client \"summarize my project\".");
@@ -35,6 +51,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "check") {
+    const config = loadConfig();
     const report = await buildReadinessReport(config);
     console.log(JSON.stringify(report, null, 2));
     if (!report.ok) {
@@ -44,6 +61,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "print-config") {
+    const config = loadConfig();
     console.log(
       JSON.stringify(
         {
@@ -57,11 +75,6 @@ async function main(): Promise<void> {
         2,
       ),
     );
-    return;
-  }
-
-  if (command === "help" || command === "--help" || command === "-h") {
-    printHelp();
     return;
   }
 
@@ -87,6 +100,9 @@ Usage:
   hermes-live client "..."  Send one text prompt through a running gateway
   hermes-live check         Check Hermes capabilities and realtime provider config
   hermes-live print-config  Print resolved config with secrets redacted
+  hermes-live plugin install Install the Hermes plugin into ~/.hermes/plugins
+  hermes-live plugin status  Show Hermes plugin install status
+  hermes-live plugin path    Print this package's Hermes plugin directory
 
 Required environment:
   HERMES_BASE_URL           Hermes API Server URL, default http://127.0.0.1:8642
@@ -103,7 +119,148 @@ Optional:
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2; use gpt-realtime-1.5 for 1.x
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
+
+Plugin options:
+  --dir <path>              Hermes plugins directory, default ~/.hermes/plugins
+  --copy                    Copy plugin files, default
+  --symlink                 Symlink plugin directory instead of copying
+  --force                   Replace an existing hermes-live plugin install
 `);
+}
+
+async function runPluginCommand(args: string[]): Promise<void> {
+  const subcommand = args[0] ?? "status";
+  const options = parsePluginOptions(args.slice(1));
+  if (subcommand === "path") {
+    console.log(pluginSourceDir());
+    return;
+  }
+  if (subcommand === "status") {
+    console.log(JSON.stringify(await pluginInstallStatus(options), null, 2));
+    return;
+  }
+  if (subcommand === "install") {
+    const status = await installHermesPlugin(options);
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  console.error(`Unknown plugin command: ${subcommand}`);
+  printHelp();
+  process.exitCode = 1;
+}
+
+interface PluginOptions {
+  dir?: string;
+  mode: "copy" | "symlink";
+  force: boolean;
+}
+
+interface PluginInstallStatus {
+  source: string;
+  target: string;
+  installed: boolean;
+  manifestFound: boolean;
+  symlink: boolean;
+  symlinkTarget?: string;
+  mode?: "copy" | "symlink";
+  enabledHint: string;
+}
+
+function parsePluginOptions(args: string[]): PluginOptions {
+  const options: PluginOptions = { mode: "copy", force: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--copy") {
+      options.mode = "copy";
+    } else if (arg === "--symlink") {
+      options.mode = "symlink";
+    } else if (arg === "--force") {
+      options.force = true;
+    } else if (arg === "--dir") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error("--dir requires a path.");
+      }
+      options.dir = value;
+      index += 1;
+    } else if (arg?.startsWith("--dir=")) {
+      options.dir = arg.slice("--dir=".length);
+    } else if (arg) {
+      throw new Error(`Unknown plugin option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+async function installHermesPlugin(options: PluginOptions): Promise<PluginInstallStatus> {
+  const source = pluginSourceDir();
+  const target = pluginTargetDir(options);
+  await assertPluginSource(source);
+  await mkdir(dirname(target), { recursive: true });
+  const existing = await pluginInstallStatus(options);
+  if (existing.installed) {
+    if (!options.force) {
+      return { ...existing, mode: existing.symlink ? "symlink" : "copy" };
+    }
+    await rm(target, { recursive: true, force: true });
+  }
+
+  if (options.mode === "symlink") {
+    await symlink(source, target, process.platform === "win32" ? "junction" : "dir");
+  } else {
+    await cp(source, target, {
+      recursive: true,
+      filter: (path) => !path.includes("__pycache__") && !path.endsWith(".pyc"),
+    });
+  }
+  return { ...(await pluginInstallStatus(options)), mode: options.mode };
+}
+
+async function pluginInstallStatus(options: PluginOptions): Promise<PluginInstallStatus> {
+  const source = pluginSourceDir();
+  const target = pluginTargetDir(options);
+  const stat = await lstat(target).catch(() => undefined);
+  const symlinkTarget = stat?.isSymbolicLink() ? await readlink(target).catch(() => undefined) : undefined;
+  return {
+    source,
+    target,
+    installed: Boolean(stat),
+    manifestFound: await fileExists(join(target, "plugin.yaml")),
+    symlink: Boolean(stat?.isSymbolicLink()),
+    ...(symlinkTarget ? { symlinkTarget } : {}),
+    enabledHint: "Run `hermes plugins enable hermes-live` after installation.",
+  };
+}
+
+async function assertPluginSource(source: string): Promise<void> {
+  if (!(await fileExists(join(source, "plugin.yaml"))) || !(await fileExists(join(source, "__init__.py")))) {
+    throw new Error(`Hermes plugin source is incomplete: ${source}`);
+  }
+}
+
+function pluginTargetDir(options: PluginOptions): string {
+  return join(hermesPluginsDir(options), "hermes-live");
+}
+
+function hermesPluginsDir(options: PluginOptions): string {
+  return resolve(options.dir ?? process.env.HERMES_LIVE_HERMES_PLUGINS_DIR ?? join(homedir(), ".hermes", "plugins"));
+}
+
+function pluginSourceDir(): string {
+  return join(packageRoot(), "plugins", "hermes-live");
+}
+
+function packageRoot(): string {
+  return dirname(dirname(fileURLToPath(import.meta.url)));
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function runTextClient(config: AppConfig, text: string): Promise<void> {
