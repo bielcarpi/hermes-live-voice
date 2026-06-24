@@ -467,6 +467,32 @@ describe("live gateway WebSocket", () => {
     await waitForMessage(socket, "run.completed");
   });
 
+  it("rejects provider tool calls without ids before starting Hermes", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    liveModel.emitToolCall({ name: "start_hermes_run", args: { message: "side effect without call id" } });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "tool_call_failed",
+      message: "Realtime tool call start_hermes_run did not include an id.",
+      recoverable: true,
+    });
+    expect(hermes.startRun).not.toHaveBeenCalled();
+  });
+
   it("routes provider status tool calls with the Hermes session key", async () => {
     const releaseRun = deferred<void>();
     const liveModel = new ManualToolAdapter();

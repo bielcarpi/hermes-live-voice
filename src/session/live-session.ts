@@ -256,6 +256,9 @@ export class LiveGatewaySession {
   }
 
   private async handleToolCall(call: LiveToolCall): Promise<void> {
+    if (!call.id) {
+      throw new Error(`Realtime tool call ${call.name || "<unknown>"} did not include an id.`);
+    }
     switch (call.name) {
       case "start_hermes_run": {
         const message = stringArg(call, "message");
@@ -306,7 +309,9 @@ export class LiveGatewaySession {
     } else if (event.type === "tool_call") {
       void this.handleToolCall(event.call).catch(async (error) => {
         this.fail("tool_call_failed", error, true);
-        await this.sendToolFailure(event.call, error);
+        if (event.call.id) {
+          await this.sendToolFailure(event.call, error);
+        }
       });
     } else if (event.type === "input_speech_started") {
       this.send({

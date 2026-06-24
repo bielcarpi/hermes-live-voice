@@ -131,5 +131,6 @@ The gateway should fail closed:
 - Network-accessible gateway bind without gateway auth: refuse to start unless explicitly opted out.
 - Hermes missing run features: refuse session startup.
 - Invalid client frames: return `session.error`.
+- Provider tool calls without response ids: fail before Hermes side effects.
 - Stream ends without terminal run event: return `run.failed`.
 - Active run on socket close: request Hermes stop.
