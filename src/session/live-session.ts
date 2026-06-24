@@ -349,7 +349,7 @@ export class LiveGatewaySession {
       let usage: Record<string, unknown> | undefined;
       let terminal = false;
 
-      for await (const event of this.deps.hermes.streamRunEvents(runId, this.abort.signal)) {
+      for await (const event of this.deps.hermes.streamRunEvents(runId, this.hermesRequestOptions())) {
         this.forwardRunEvent(runId, event);
         if (event.event === "message.delta" && typeof event.delta === "string") {
           transcript.push(event.delta);

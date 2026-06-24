@@ -590,7 +590,9 @@ describe("live gateway WebSocket", () => {
     const stopped = deferred<void>();
     let eventStreamSignal: AbortSignal | undefined;
     const hermes = fakeHermes({
-      streamEvents: async function* (_runId: string, signal?: AbortSignal) {
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal; sessionKey?: string }) {
+        expect(options?.sessionKey).toBe(defaultSessionKey);
+        const signal = options?.signal;
         eventStreamSignal = signal;
         eventStreamAttached.resolve();
         await stopped.promise;
@@ -802,7 +804,10 @@ describe("live gateway WebSocket", () => {
 function fakeHermes(
   options: {
     assertRunsSupported?: ReturnType<typeof vi.fn>;
-    streamEvents?: (runId: string, signal?: AbortSignal) => AsyncGenerator<Record<string, unknown>>;
+    streamEvents?: (
+      runId: string,
+      options?: { signal?: AbortSignal; sessionKey?: string },
+    ) => AsyncGenerator<Record<string, unknown>>;
     stopRun?: ReturnType<typeof vi.fn>;
     submitApproval?: ReturnType<typeof vi.fn>;
   } = {},
