@@ -198,6 +198,8 @@ Gemini Live expects raw PCM input and returns raw PCM output. The gateway normal
 
 The default `GEMINI_MODEL` is the Gemini API Live preview model used by this repo. Gemini Enterprise / Vertex deployments can expose a narrower supported-model list, so override `GEMINI_MODEL` to an Enterprise-supported Live model if `session.start` returns a provider model error.
 
+For Gemini 3.1 Live, text updates during an active conversation go through `sendRealtimeInput({ text })`. `sendClientContent` is kept only as an SDK compatibility fallback because current Gemini 3.1 Live guidance limits client content to initial context history seeding.
+
 References:
 
 - OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime

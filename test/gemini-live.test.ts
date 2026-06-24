@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildGeminiRealtimeAudioInput,
+  buildGeminiRealtimeTextInput,
   buildGeminiTextTurn,
   buildGeminiToolResponse,
   GeminiLiveAdapter,
+  GeminiLiveSession,
   normalizeGeminiLiveMessage,
 } from "../src/gemini/live.js";
 
@@ -75,6 +77,20 @@ describe("Gemini Live adapter helpers", () => {
       turns: [{ role: "user", parts: [{ text: "hello" }] }],
       turnComplete: true,
     });
+  });
+
+  it("sends live text through realtime input before client-content history", async () => {
+    const sdkSession = {
+      sendRealtimeInput: vi.fn(async () => undefined),
+      sendClientContent: vi.fn(async () => undefined),
+    };
+    const session = new GeminiLiveSession(sdkSession);
+
+    await session.sendText("hello");
+
+    expect(buildGeminiRealtimeTextInput("hello")).toEqual({ text: "hello" });
+    expect(sdkSession.sendRealtimeInput).toHaveBeenCalledWith({ text: "hello" });
+    expect(sdkSession.sendClientContent).not.toHaveBeenCalled();
   });
 
   it("builds Gemini tool responses with the function call id", () => {

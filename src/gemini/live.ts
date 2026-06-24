@@ -56,7 +56,7 @@ export class GeminiLiveAdapter implements LiveModelAdapter {
   }
 }
 
-class GeminiLiveSession implements LiveModelSession {
+export class GeminiLiveSession implements LiveModelSession {
   constructor(private readonly session: any) {}
 
   async sendRealtimeAudio(audio: LiveModelAudio): Promise<void> {
@@ -64,11 +64,15 @@ class GeminiLiveSession implements LiveModelSession {
   }
 
   async sendText(text: string): Promise<void> {
+    if (typeof this.session.sendRealtimeInput === "function") {
+      await this.session.sendRealtimeInput(buildGeminiRealtimeTextInput(text));
+      return;
+    }
     if (typeof this.session.sendClientContent === "function") {
       await this.session.sendClientContent(buildGeminiTextTurn(text));
       return;
     }
-    await this.session.sendRealtimeInput({ text });
+    throw new Error("Gemini Live session does not support realtime text input.");
   }
 
   async sendAudioStreamEnd(): Promise<void> {
@@ -95,6 +99,10 @@ class GeminiLiveSession implements LiveModelSession {
 export function buildGeminiRealtimeAudioInput(audio: LiveModelAudio): { audio: { data: string; mimeType: string } } {
   const normalized = normalizePcm16Audio(audio, GEMINI_LIVE_INPUT_SAMPLE_RATE);
   return { audio: { data: normalized.data, mimeType: normalized.mimeType } };
+}
+
+export function buildGeminiRealtimeTextInput(text: string): { text: string } {
+  return { text };
 }
 
 export function buildGeminiTextTurn(text: string): { turns: Array<{ role: "user"; parts: Array<{ text: string }> }>; turnComplete: true } {
