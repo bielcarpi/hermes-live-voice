@@ -49,7 +49,11 @@ try {
     "docs/live-provider-testing.md",
     "examples/docker-compose.yml",
     "plugins/hermes-live/plugin.yaml",
+    "plugins/hermes-live/__init__.py",
+    "plugins/hermes-live/schemas.py",
+    "plugins/hermes-live/tools.py",
     "scripts/gateway-smoke.mjs",
+    "scripts/plugin-smoke.py",
   ];
 
   const missing = required.filter((file) => !files.has(file));

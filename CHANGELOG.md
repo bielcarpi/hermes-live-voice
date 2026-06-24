@@ -35,6 +35,7 @@
 - Flush the web demo microphone worklet before sending `audio.end`.
 - Keep the web demo in a starting/error state until `session.ready` succeeds.
 - Include Hermes plugin syntax validation in `npm run verify`.
+- Register the Hermes plugin's `hermes_live_status` tool and `/hermes-live` slash command.
 - Run the Docker image as the non-root `node` user.
 - Add defensive security headers to JSON and browser demo responses.
 - Close idle and active HTTP connections during explicit server shutdown.

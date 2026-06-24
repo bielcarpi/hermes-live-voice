@@ -31,8 +31,10 @@ Clients may be:
 The plugin owns the Hermes-facing discovery surface:
 
 - Gateway metadata.
+- `hermes_live_status` tool registration.
+- `/hermes-live` slash command.
 - Default local gateway URL.
-- WebSocket and capability paths.
+- WebSocket, readiness, and capability paths.
 - Future local launch helpers.
 - Future Hermes-native voice tools.
 

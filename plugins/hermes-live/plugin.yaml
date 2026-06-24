@@ -1,8 +1,15 @@
 name: hermes-live
 version: 0.1.0
 description: Hermes plugin metadata for the hermes-live realtime voice gateway.
+author: Hermes Live contributors
+provides_tools:
+  - hermes_live_status
+provides_commands:
+  - hermes-live
 entrypoint: __init__.py
 metadata:
   gateway_default_url: http://127.0.0.1:8788
   websocket_path: /v1/live
+  capabilities_path: /v1/capabilities
+  ready_path: /ready
   mode: gateway

@@ -7,16 +7,18 @@ public WebSocket/audio server inside Hermes core.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from os import getenv
 from typing import Any
+
+from . import schemas, tools
 
 
 @dataclass(frozen=True)
 class HermesLiveGateway:
     name: str = "hermes-live"
     mode: str = "gateway"
-    url: str = getenv("HERMES_LIVE_URL", "http://127.0.0.1:8788")
+    url: str = ""
     websocket_path: str = "/v1/live"
     capabilities_path: str = "/v1/capabilities"
 
@@ -25,4 +27,31 @@ class HermesLiveGateway:
 
 
 def get_gateway_info() -> dict[str, Any]:
-    return HermesLiveGateway().as_dict()
+    return HermesLiveGateway(url=_gateway_url()).as_dict()
+
+
+def register(ctx: Any) -> None:
+    """Register hermes-live discovery tools with Hermes."""
+    ctx.register_tool(
+        name="hermes_live_status",
+        toolset="hermes-live",
+        schema=schemas.HERMES_LIVE_STATUS,
+        handler=tools.gateway_status,
+        description="Inspect the configured hermes-live realtime voice gateway.",
+    )
+
+    if hasattr(ctx, "register_command"):
+        ctx.register_command(
+            "hermes-live",
+            _slash_command,
+            description="Show hermes-live gateway status and connection details.",
+        )
+
+
+def _slash_command(raw_args: str = "") -> str:
+    include_readiness = "ready" in raw_args.split()
+    return tools.gateway_status({"include_readiness": include_readiness})
+
+
+def _gateway_url() -> str:
+    return (getenv("HERMES_LIVE_URL") or tools.DEFAULT_GATEWAY_URL).rstrip("/")

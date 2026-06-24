@@ -65,7 +65,7 @@
     "check:cli-client": "node scripts/cli-client-smoke.mjs",
     "check:gateway": "node scripts/gateway-smoke.mjs",
     "check:package": "node scripts/package-smoke.mjs",
-    "check:plugin": "python3 -m py_compile plugins/hermes-live/__init__.py",
+    "check:plugin": "python3 scripts/plugin-smoke.py",
     "check:web-demo": "node --check apps/web-demo/app.js && node --check apps/web-demo/mic-worklet.js",
     "print-config": "tsx src/cli.ts print-config",
     "test": "vitest run",

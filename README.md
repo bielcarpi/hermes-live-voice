@@ -38,7 +38,7 @@ Implemented:
 - Run stop/interruption bridge
 - Approval response bridge
 - Static browser demo
-- Hermes plugin metadata and discovery helper
+- Hermes plugin registration, discovery helper, status tool, and slash command
 
 ## Install
 
@@ -257,7 +257,7 @@ The terminal client prints Hermes run output when the provider calls Hermes. If 
 
 `hermes-live` should be treated as a Hermes plugin package.
 
-The plugin gives Hermes a stable discovery/integration surface. The gateway runtime is the network/audio process that the plugin points to. Keeping the WebSocket and provider sessions in that runtime avoids pushing long-lived audio sockets into Hermes core while still making the project installable and understandable as a Hermes extension.
+The plugin gives Hermes a stable discovery/integration surface, registers a `hermes_live_status` tool, and adds a `/hermes-live` slash command for local gateway status. The gateway runtime is the network/audio process that the plugin points to. Keeping the WebSocket and provider sessions in that runtime avoids pushing long-lived audio sockets into Hermes core while still making the project installable and understandable as a Hermes extension.
 
 See [docs/plugin.md](docs/plugin.md).
 
