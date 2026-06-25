@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type WebSocket from "ws";
 import { isPcmMimeType } from "../domain/audio/pcm.js";
 import { makeSessionKey, type AppConfig } from "../config.js";
-import { HermesClient } from "../hermes/client.js";
 import type { Logger } from "../logger.js";
+import type { HermesRunsPort } from "../application/live-gateway/ports/hermes-runs.port.js";
 import {
   ApprovalChoiceSchema,
   parseClientMessage,
@@ -25,7 +25,7 @@ import { buildSystemInstruction } from "../application/live-gateway/system-instr
 
 export interface LiveGatewaySessionDeps {
   config: AppConfig;
-  hermes: HermesClient;
+  hermes: HermesRunsPort;
   liveModel: LiveModelAdapter;
   logger: Logger;
 }

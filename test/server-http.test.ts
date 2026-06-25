@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
-import { HermesClient } from "../src/hermes/client.js";
+import type { HermesRunsPort } from "../src/application/live-gateway/ports/hermes-runs.port.js";
 import type { Logger } from "../src/logger.js";
 import { MockLiveAdapter } from "../src/gemini/mock.js";
 import { startServer } from "../src/server/http.js";
@@ -266,7 +266,7 @@ describe("HTTP server", () => {
   });
 });
 
-function fakeHermes(): HermesClient {
+function fakeHermes(): HermesRunsPort {
   return {
     baseUrl: "http://127.0.0.1:8642",
     capabilities: vi.fn(async () => ({
@@ -287,7 +287,7 @@ function fakeHermes(): HermesClient {
         run_approval_response: true,
       },
     })),
-  } as unknown as HermesClient;
+  } as unknown as HermesRunsPort;
 }
 
 function testConfig(

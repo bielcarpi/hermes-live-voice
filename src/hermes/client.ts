@@ -1,45 +1,17 @@
 import type { AppConfig } from "../config.js";
 import type { ApprovalChoice } from "../domain/protocol/client-protocol.js";
 import type { HermesRunEvent } from "../domain/protocol/server-protocol.js";
+import type {
+  ApprovalResult,
+  HermesCapabilities,
+  HermesRequestOptions,
+  HermesRunsPort,
+  StartRunParams,
+  StartRunResult,
+} from "../application/live-gateway/ports/hermes-runs.port.js";
 import { parseSseStream } from "./sse.js";
 
-export interface HermesCapabilities {
-  object?: string;
-  platform?: string;
-  model?: string;
-  auth?: Record<string, unknown>;
-  features?: Record<string, unknown>;
-  endpoints?: Record<string, { method?: string; path?: string }>;
-  [key: string]: unknown;
-}
-
-export interface StartRunParams {
-  input: string;
-  sessionId: string;
-  sessionKey: string;
-  instructions?: string;
-  conversationHistory?: Array<{ role: string; content: string }>;
-}
-
-export interface StartRunResult {
-  runId: string;
-  status: string;
-}
-
-export interface HermesRequestOptions {
-  signal?: AbortSignal;
-  sessionKey?: string;
-}
-
-export interface ApprovalResult {
-  object?: string;
-  run_id?: string;
-  runId?: string;
-  choice?: ApprovalChoice;
-  resolved?: number;
-}
-
-export class HermesClient {
+export class HermesClient implements HermesRunsPort {
   readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly model: string;

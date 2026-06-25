@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { assertGatewayExposureConfig, assertHermesApiConfig, assertRealtimeProviderConfig, type AppConfig } from "../config.js";
+import type { HermesRunsPort } from "../application/live-gateway/ports/hermes-runs.port.js";
 import { HermesClient } from "../hermes/client.js";
 import type { Logger } from "../logger.js";
 import { buildReadinessReport } from "../readiness.js";
@@ -16,7 +17,7 @@ import { serveStatic } from "./static.js";
 export interface StartServerOptions {
   config: AppConfig;
   logger: Logger;
-  hermes?: HermesClient;
+  hermes?: HermesRunsPort;
   liveModel?: LiveModelAdapter;
 }
 
@@ -109,7 +110,7 @@ async function handleHttp(
   res: ServerResponse,
   options: {
     config: AppConfig;
-    hermes: HermesClient;
+    hermes: HermesRunsPort;
     demoRoot: string;
     requireHermesApiKey: boolean;
     requireRealtimeProviderConfig: boolean;

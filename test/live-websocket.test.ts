@@ -2,9 +2,9 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
 import { MockLiveAdapter } from "../src/gemini/mock.js";
-import { HermesClient } from "../src/hermes/client.js";
 import type { Logger } from "../src/logger.js";
 import type { ApprovalChoice } from "../src/domain/protocol/client-protocol.js";
+import type { HermesRunsPort } from "../src/application/live-gateway/ports/hermes-runs.port.js";
 import type {
   LiveModelAdapter,
   LiveModelAudio,
@@ -844,7 +844,7 @@ function fakeHermes(
     stopRun?: ReturnType<typeof vi.fn>;
     submitApproval?: ReturnType<typeof vi.fn>;
   } = {},
-): HermesClient & {
+): HermesRunsPort & {
   startRun: ReturnType<typeof vi.fn>;
   getRun: ReturnType<typeof vi.fn>;
   submitApproval: ReturnType<typeof vi.fn>;
@@ -880,7 +880,7 @@ function fakeHermes(
         resolved: 1,
       })),
   };
-  return hermes as unknown as HermesClient & {
+  return hermes as unknown as HermesRunsPort & {
     startRun: ReturnType<typeof vi.fn>;
     getRun: ReturnType<typeof vi.fn>;
     submitApproval: ReturnType<typeof vi.fn>;

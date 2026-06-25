@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
-import type { HermesClient } from "../src/hermes/client.js";
+import type { HermesRunsPort } from "../src/application/live-gateway/ports/hermes-runs.port.js";
 import { buildReadinessReport } from "../src/readiness.js";
 
 describe("readiness", () => {
@@ -40,7 +40,7 @@ describe("readiness", () => {
           run_approval_response: true,
         },
       })),
-    } as unknown as HermesClient;
+    } as unknown as HermesRunsPort;
     const report = await buildReadinessReport(
       loadConfig({
         HERMES_LIVE_PROVIDER: "openai",

@@ -4,6 +4,7 @@ import {
   assertRealtimeProviderConfig,
   type AppConfig,
 } from "./config.js";
+import type { HermesRunsPort } from "./application/live-gateway/ports/hermes-runs.port.js";
 import { HermesClient } from "./hermes/client.js";
 
 export interface ReadinessSection extends Record<string, unknown> {
@@ -18,7 +19,7 @@ export interface ReadinessReport {
 }
 
 export interface BuildReadinessReportOptions {
-  hermes?: HermesClient;
+  hermes?: HermesRunsPort;
   requireHermesApiKey?: boolean;
   requireRealtimeProviderConfig?: boolean;
 }
