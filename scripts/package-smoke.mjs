@@ -154,7 +154,7 @@ try {
       "--input-type=module",
       "-e",
       [
-        "const m = await import('hermes-live');",
+        `const m = await import(${JSON.stringify(packageJson.name)});`,
         "const required = ['startServer','loadConfig','assertRuntimeConfig','assertHermesApiConfig','assertRealtimeProviderConfig','assertGatewayExposureConfig','realtimeProviderConfigured','buildReadinessReport','HermesClient','OpenAIRealtimeAdapter','GeminiLiveAdapter','parseClientMessage'];",
         "const missing = required.filter((name) => typeof m[name] !== 'function');",
         "if (missing.length) { console.error('Missing exports: ' + missing.join(',')); process.exit(1); }",

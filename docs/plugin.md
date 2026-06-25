@@ -1,6 +1,8 @@
 # Hermes Plugin
 
-`hermes-live` is a Hermes plugin package that adds realtime voice access to Hermes Agent through a local gateway runtime.
+`hermes-live-voice` is a Hermes plugin package that adds realtime voice access to Hermes Agent through a local gateway runtime.
+
+The package/repository name is `hermes-live-voice`. The installed CLI command, Hermes plugin id, toolset, and slash command remain `hermes-live` so existing Hermes-facing names stay short and stable.
 
 The plugin and gateway have different jobs:
 
@@ -54,7 +56,7 @@ The `ready` argument includes the authenticated `/ready` probe when `HERMES_LIVE
 Run the gateway with npm:
 
 ```sh
-npm install -g hermes-live
+npm install -g hermes-live-voice
 hermes-live plugin install
 hermes plugins enable hermes-live
 HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock hermes-live serve

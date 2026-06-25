@@ -1,6 +1,6 @@
 # Architecture
 
-`hermes-live` is a Hermes Agent plugin package with a realtime voice gateway runtime.
+`hermes-live-voice` is a Hermes Agent plugin package with a realtime voice gateway runtime. It installs the `hermes-live` CLI and Hermes plugin.
 
 It is not a replacement for Hermes. It deliberately gives the realtime model one narrow way to use Hermes: call gateway tools that start, stop, inspect, and approve Hermes runs.
 
@@ -106,7 +106,7 @@ The gateway depends on these Hermes API Server capabilities:
 
 ## Why a Gateway Runtime
 
-Realtime voice needs persistent sockets, audio frames, provider sessions, auth for app clients, barge-in handling, and latency-sensitive state. `hermes-live` keeps those concerns in a gateway runtime while making the project installable and discoverable as a Hermes plugin.
+Realtime voice needs persistent sockets, audio frames, provider sessions, auth for app clients, barge-in handling, and latency-sensitive state. `hermes-live-voice` keeps those concerns in a gateway runtime while making the project installable and discoverable as a Hermes plugin.
 
 ## Tool Boundary
 

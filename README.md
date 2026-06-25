@@ -1,13 +1,15 @@
-# hermes-live
+# hermes-live-voice
 
-Hermes Agent plugin and realtime voice gateway.
+Realtime model voice gateway for Hermes Agent.
 
-`hermes-live` adds realtime voice to Hermes Agent. The Hermes plugin provides the discovery/integration surface, and the gateway runtime handles realtime WebSockets, audio frames, provider sessions, and app-client auth. Hermes remains the brain: memory, tools, skills, terminal, files, MCP, approvals, and long-running work stay inside Hermes.
+`hermes-live-voice` connects realtime speech models to Hermes Agent. It ships the `hermes-live` Hermes plugin plus a gateway runtime that handles WebSockets, audio frames, Gemini Live/OpenAI Realtime sessions, tool-call routing, interruption, approvals, and app-client auth.
+
+Hermes remains the brain: memory, tools, skills, terminal, files, MCP, approvals, and long-running work stay inside Hermes. Realtime providers are the ears, mouth, and turn-taking layer.
 
 ```txt
 Client app
   -> WebSocket /v1/live
-  -> hermes-live plugin/gateway
+  -> hermes-live gateway
   -> Gemini Live or OpenAI Realtime
   -> function call: start_hermes_run()
   -> Hermes API Server /v1/runs
@@ -32,7 +34,7 @@ adapters/outbound/realtime Gemini, OpenAI, and mock realtime providers
 
 ## Status
 
-This repository is an early Hermes plugin package with a realtime gateway runtime. It is designed for self-hosted Hermes installations and integration work.
+This repository is an early Hermes plugin package and realtime gateway runtime. It is designed for self-hosted Hermes installations and integration work.
 
 Implemented:
 
@@ -64,7 +66,7 @@ hermes plugins enable hermes-live
 After the package is published, users can install the CLI globally:
 
 ```sh
-npm install -g hermes-live
+npm install -g hermes-live-voice
 hermes-live plugin install
 hermes plugins enable hermes-live
 ```
@@ -271,7 +273,7 @@ The terminal client prints Hermes run output when the provider calls Hermes. If 
 
 ## Hermes Plugin And Gateway
 
-`hermes-live` should be treated as a Hermes plugin package.
+`hermes-live-voice` should be treated as a Hermes plugin package. The npm package/repository name is `hermes-live-voice`; the installed CLI command and Hermes plugin id are intentionally `hermes-live`.
 
 The plugin gives Hermes a stable discovery/integration surface, registers a `hermes_live_status` tool, and adds a `/hermes-live` slash command for local gateway status. Install it with `hermes-live plugin install`, then enable it with `hermes plugins enable hermes-live`. The gateway runtime is the network/audio process that the plugin points to. Keeping the WebSocket and provider sessions in that runtime avoids pushing long-lived audio sockets into Hermes core while still making the project installable and understandable as a Hermes extension.
 

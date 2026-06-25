@@ -1,6 +1,6 @@
 # Hexagonal Migration Plan
 
-`hermes-live` should use the useful part of the Onyze-style ports-and-adapters shape: clear boundaries without heavyweight ceremony.
+`hermes-live-voice` should use the useful part of the Onyze-style ports-and-adapters shape: clear boundaries without heavyweight ceremony.
 
 The target is not abstract enterprise DDD. The target is a gateway whose core session orchestration does not depend on WebSocket, HTTP, provider SDK, or Hermes HTTP details.
 

@@ -67,3 +67,4 @@
 - Send the derived Hermes session key on authenticated run event streams.
 - Reject realtime provider tool calls without call IDs before starting Hermes work.
 - Send Gemini Live text turns through realtime input before falling back to client-content history updates.
+- Rename the public package and repository positioning to `hermes-live-voice` while keeping the `hermes-live` CLI and Hermes plugin id stable.

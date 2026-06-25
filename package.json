@@ -1,7 +1,7 @@
 {
-  "name": "hermes-live",
+  "name": "hermes-live-voice",
   "version": "0.1.0",
-  "description": "Hermes Agent plugin and realtime voice gateway powered by pluggable live providers.",
+  "description": "Hermes Agent plugin and realtime voice gateway for integrating Gemini Live and OpenAI Realtime into Hermes.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,13 +14,13 @@
   },
   "license": "MIT",
   "author": "Hermes Live contributors",
-  "homepage": "https://github.com/bielcarpi/hermes-live#readme",
+  "homepage": "https://github.com/bielcarpi/hermes-live-voice#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bielcarpi/hermes-live.git"
+    "url": "git+https://github.com/bielcarpi/hermes-live-voice.git"
   },
   "bugs": {
-    "url": "https://github.com/bielcarpi/hermes-live/issues"
+    "url": "https://github.com/bielcarpi/hermes-live-voice/issues"
   },
   "keywords": [
     "hermes-agent",
