@@ -40,9 +40,22 @@ try {
     "dist/index.js",
     "dist/cli.js",
     "dist/config.js",
-    "dist/server/http.js",
-    "dist/openai/realtime.js",
-    "dist/gemini/live.js",
+    "dist/adapters/inbound/http/server.js",
+    "dist/adapters/inbound/http/static.js",
+    "dist/adapters/inbound/http/websocket-client-connection.js",
+    "dist/adapters/outbound/hermes/hermes-runs.client.js",
+    "dist/adapters/outbound/hermes/sse.js",
+    "dist/adapters/outbound/realtime/factory.js",
+    "dist/adapters/outbound/realtime/gemini-live.adapter.js",
+    "dist/adapters/outbound/realtime/mock-live.adapter.js",
+    "dist/adapters/outbound/realtime/openai-realtime.adapter.js",
+    "dist/application/live-gateway/live-gateway-session.js",
+    "dist/application/live-gateway/ports/client-connection.port.js",
+    "dist/application/live-gateway/ports/hermes-runs.port.js",
+    "dist/application/live-gateway/ports/realtime-model.port.js",
+    "dist/domain/audio/pcm.js",
+    "dist/domain/protocol/client-protocol.js",
+    "dist/domain/protocol/server-protocol.js",
     "apps/web-demo/index.html",
     "apps/web-demo/app.js",
     "docs/client-protocol.md",
@@ -76,6 +89,23 @@ try {
 
   if (forbidden.length > 0) {
     throw new Error(`Package includes forbidden files:\n${forbidden.join("\n")}`);
+  }
+
+  const staleCompiledPaths = pack.files
+    .map((file) => file.path)
+    .filter(
+      (file) =>
+        file.startsWith("dist/audio/") ||
+        file.startsWith("dist/gemini/") ||
+        file.startsWith("dist/hermes/") ||
+        file.startsWith("dist/openai/") ||
+        file.startsWith("dist/realtime/") ||
+        file.startsWith("dist/server/") ||
+        file.startsWith("dist/session/"),
+    );
+
+  if (staleCompiledPaths.length > 0) {
+    throw new Error(`Package includes pre-migration compiled paths:\n${staleCompiledPaths.join("\n")}`);
   }
 
   const tarball = join(workDir, pack.filename);

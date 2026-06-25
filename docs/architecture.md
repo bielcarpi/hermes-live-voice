@@ -53,6 +53,18 @@ The gateway owns:
 - Hermes run/event/approval/stop calls.
 - Static demo serving.
 
+The gateway code is organized as a small ports-and-adapters system:
+
+| Layer | Path | Responsibility |
+| --- | --- | --- |
+| Domain | `src/domain/*` | Client/server wire protocol and pure audio helpers. |
+| Application | `src/application/live-gateway/*` | Voice-session orchestration, gateway tool policy, and ports. |
+| Inbound adapters | `src/adapters/inbound/http/*` | HTTP endpoints, WebSocket upgrade/auth/origin checks, static demo serving, and WebSocket client adaptation. |
+| Hermes outbound adapter | `src/adapters/outbound/hermes/*` | Hermes API Server JSON/SSE calls behind the `HermesRunsPort`. |
+| Realtime outbound adapters | `src/adapters/outbound/realtime/*` | Gemini Live, OpenAI Realtime, and mock provider implementations behind the realtime model port. |
+
+`LiveGatewaySession` is the core use case. It depends on `ClientConnectionPort`, `HermesRunsPort`, and `LiveModelAdapter`, not on raw `ws`, provider SDKs, or Hermes HTTP details.
+
 ### Realtime Provider
 
 The provider owns:

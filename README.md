@@ -20,6 +20,16 @@ Hermes already has the hard agent parts. Realtime voice has a different runtime 
 
 The repo is intentionally Hermes-centered. It does not depend on any particular app, product, or hosted service.
 
+The TypeScript gateway uses a small ports-and-adapters layout:
+
+```txt
+domain/                  wire protocol and audio primitives
+application/live-gateway gateway session orchestration and ports
+adapters/inbound/http    HTTP, WebSocket, and static demo transport
+adapters/outbound/hermes Hermes API Server HTTP/SSE client
+adapters/outbound/realtime Gemini, OpenAI, and mock realtime providers
+```
+
 ## Status
 
 This repository is an early Hermes plugin package with a realtime gateway runtime. It is designed for self-hosted Hermes installations and integration work.

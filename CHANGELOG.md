@@ -37,6 +37,7 @@
 - Include Hermes plugin syntax validation in `npm run verify`.
 - Register the Hermes plugin's `hermes_live_status` tool and `/hermes-live` slash command.
 - Add `hermes-live plugin install/status/path` so npm installs can place the Hermes plugin under `~/.hermes/plugins`.
+- Move the TypeScript gateway into a ports-and-adapters layout with domain protocol/audio helpers, application ports, inbound HTTP/WebSocket adapters, and outbound Hermes/realtime adapters.
 - Run the Docker image as the non-root `node` user.
 - Add defensive security headers to JSON and browser demo responses.
 - Close idle and active HTTP connections during explicit server shutdown.

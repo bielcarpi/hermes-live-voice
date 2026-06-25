@@ -4,9 +4,9 @@
 
 The target is not abstract enterprise DDD. The target is a gateway whose core session orchestration does not depend on WebSocket, HTTP, provider SDK, or Hermes HTTP details.
 
-## Current Mapping
+## Original Mapping
 
-| Responsibility | Current files | Current issue |
+| Responsibility | Original files | Original issue |
 | --- | --- | --- |
 | Inbound HTTP/WebSocket | `src/server/http.ts`, `src/server/static.ts` | Mostly isolated, but it constructs sessions with raw `ws` sockets. |
 | Application use case | `src/session/live-session.ts` | Owns Hermes/provider orchestration, but also parses raw frames and writes JSON to WebSocket directly. |
@@ -16,7 +16,7 @@ The target is not abstract enterprise DDD. The target is a gateway whose core se
 | Domain/protocol | `src/protocol.ts`, `src/audio/pcm.ts` | Protocol concerns are mixed: client wire messages, server messages, provider events, and tool declarations. |
 | Runtime/CLI | `src/cli.ts`, `src/config.ts`, `src/readiness.ts` | Acceptable, but imports will need to follow the new boundaries. |
 
-## Target Shape
+## Implemented Shape
 
 ```txt
 src/domain/
@@ -63,7 +63,7 @@ src/readiness.ts
 
 ## Execution Slices
 
-1. Introduce the documented target and keep the current behavior unchanged.
+1. Document the target and keep the behavior unchanged.
 2. Move pure protocol/audio/realtime abstractions behind domain/application names.
 3. Add explicit ports for Hermes runs, realtime model sessions, and client connections.
 4. Move outbound Hermes and realtime providers under `adapters/outbound`.
@@ -82,7 +82,7 @@ src/readiness.ts
 
 ## Completion Evidence
 
-The migration is only complete when:
+The migration is complete only when:
 
 - `LiveGatewaySession` has no `ws` import and receives a client connection port.
 - `HermesClient` implements an application-facing Hermes runs port.
