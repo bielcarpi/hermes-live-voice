@@ -38,6 +38,6 @@ export type {
   LiveModelSession,
   LiveToolCall,
 } from "./application/live-gateway/ports/realtime-model.port.js";
-export { startServer } from "./server/http.js";
-export type { StartServerOptions } from "./server/http.js";
+export { startServer } from "./adapters/inbound/http/server.js";
+export type { StartServerOptions } from "./adapters/inbound/http/server.js";
 export * from "./protocol.js";

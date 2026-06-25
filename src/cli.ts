@@ -12,7 +12,7 @@ import type { AppConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { ApprovalChoiceSchema } from "./protocol.js";
 import { buildReadinessReport } from "./readiness.js";
-import { startServer } from "./server/http.js";
+import { startServer } from "./adapters/inbound/http/server.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
 

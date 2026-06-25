@@ -4,15 +4,16 @@ import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { assertGatewayExposureConfig, assertHermesApiConfig, assertRealtimeProviderConfig, type AppConfig } from "../config.js";
-import type { HermesRunsPort } from "../application/live-gateway/ports/hermes-runs.port.js";
-import { HermesClient } from "../adapters/outbound/hermes/hermes-runs.client.js";
-import type { Logger } from "../logger.js";
-import { buildReadinessReport } from "../readiness.js";
-import { createLiveModelAdapter } from "../adapters/outbound/realtime/factory.js";
-import type { LiveModelAdapter } from "../application/live-gateway/ports/realtime-model.port.js";
-import { LiveGatewaySession } from "../session/live-session.js";
+import { assertGatewayExposureConfig, assertHermesApiConfig, assertRealtimeProviderConfig, type AppConfig } from "../../../config.js";
+import type { HermesRunsPort } from "../../../application/live-gateway/ports/hermes-runs.port.js";
+import { LiveGatewaySession } from "../../../application/live-gateway/live-gateway-session.js";
+import type { LiveModelAdapter } from "../../../application/live-gateway/ports/realtime-model.port.js";
+import { HermesClient } from "../../outbound/hermes/hermes-runs.client.js";
+import { createLiveModelAdapter } from "../../outbound/realtime/factory.js";
+import type { Logger } from "../../../logger.js";
+import { buildReadinessReport } from "../../../readiness.js";
 import { serveStatic } from "./static.js";
+import { WebSocketClientConnection } from "./websocket-client-connection.js";
 
 export interface StartServerOptions {
   config: AppConfig;
@@ -70,7 +71,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      const session = new LiveGatewaySession(ws, { config, hermes, liveModel, logger });
+      const session = new LiveGatewaySession(new WebSocketClientConnection(ws), { config, hermes, liveModel, logger });
       sessions.add(session);
       ws.once("close", () => sessions.delete(session));
       session.bind();
@@ -290,7 +291,7 @@ function clientWebSocketMaxPayload(config: AppConfig): number {
 
 function resolveDemoRoot(): string {
   const current = dirname(fileURLToPath(import.meta.url));
-  return join(current, "..", "..", "apps", "web-demo");
+  return join(current, "..", "..", "..", "..", "apps", "web-demo");
 }
 
 function listenHttpServer(server: ReturnType<typeof createServer>, port: number, host: string): Promise<void> {

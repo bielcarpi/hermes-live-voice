@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveStaticPath } from "../src/server/static.js";
+import { resolveStaticPath } from "../src/adapters/inbound/http/static.js";
 
 describe("static file path resolution", () => {
   it("resolves root to index.html", () => {

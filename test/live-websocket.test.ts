@@ -13,7 +13,7 @@ import type {
   LiveModelSession,
   LiveToolCall,
 } from "../src/application/live-gateway/ports/realtime-model.port.js";
-import { startServer } from "../src/server/http.js";
+import { startServer } from "../src/adapters/inbound/http/server.js";
 
 const openServers: Array<{ close(): Promise<void> }> = [];
 const openSockets: WebSocket[] = [];

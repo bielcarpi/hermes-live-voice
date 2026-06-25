@@ -3,7 +3,7 @@ import type { AppConfig } from "../src/config.js";
 import type { HermesRunsPort } from "../src/application/live-gateway/ports/hermes-runs.port.js";
 import type { Logger } from "../src/logger.js";
 import { MockLiveAdapter } from "../src/adapters/outbound/realtime/mock-live.adapter.js";
-import { startServer } from "../src/server/http.js";
+import { startServer } from "../src/adapters/inbound/http/server.js";
 
 const openServers: Array<{ close(): Promise<void> }> = [];
 

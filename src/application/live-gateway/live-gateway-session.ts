@@ -1,27 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
-import type WebSocket from "ws";
-import { isPcmMimeType } from "../domain/audio/pcm.js";
-import { makeSessionKey, type AppConfig } from "../config.js";
-import type { Logger } from "../logger.js";
-import type { HermesRunsPort } from "../application/live-gateway/ports/hermes-runs.port.js";
+import { isPcmMimeType } from "../../domain/audio/pcm.js";
+import { makeSessionKey, type AppConfig } from "../../config.js";
+import type { Logger } from "../../logger.js";
 import {
   ApprovalChoiceSchema,
   parseClientMessage,
   type ClientMessage,
   type RealtimeResponseTruncation,
-} from "../domain/protocol/client-protocol.js";
+} from "../../domain/protocol/client-protocol.js";
 import {
   serverMessage,
   type HermesRunEvent,
   type ServerMessage,
-} from "../domain/protocol/server-protocol.js";
+} from "../../domain/protocol/server-protocol.js";
+import type { ClientConnectionPort, ClientInboundFrame } from "./ports/client-connection.port.js";
+import type { HermesRunsPort } from "./ports/hermes-runs.port.js";
 import {
   type LiveModelEvent,
   type LiveToolCall,
   type LiveModelAdapter,
   type LiveModelSession,
-} from "../application/live-gateway/ports/realtime-model.port.js";
-import { buildSystemInstruction } from "../application/live-gateway/system-instruction.js";
+} from "./ports/realtime-model.port.js";
+import { buildSystemInstruction } from "./system-instruction.js";
 
 export interface LiveGatewaySessionDeps {
   config: AppConfig;
@@ -43,19 +43,19 @@ export class LiveGatewaySession {
   private hermesRunActive = false;
 
   constructor(
-    private readonly socket: WebSocket,
+    private readonly client: ClientConnectionPort,
     private readonly deps: LiveGatewaySessionDeps,
   ) {}
 
   bind(): void {
-    this.socket.on("message", (data) => {
+    this.client.onMessage((data) => {
       void this.handleRawMessage(data);
     });
-    this.socket.on("close", () => {
+    this.client.onClose(() => {
       void this.close();
     });
-    this.socket.on("error", (error) => {
-      this.deps.logger.warn("client websocket error", { sessionId: this.id, error: String(error) });
+    this.client.onError((error) => {
+      this.deps.logger.warn("client connection error", { sessionId: this.id, error: String(error) });
     });
   }
 
@@ -148,7 +148,7 @@ export class LiveGatewaySession {
               this.send({ type: "log", level: "info", message: "Realtime provider session closed", data: event });
               if (!this.closing) {
                 this.fail("realtime_provider_closed", new Error("Realtime provider session closed."), true);
-                void this.close().finally(() => this.socket.close(1011, "realtime provider closed"));
+                void this.close().finally(() => this.client.close(1011, "realtime provider closed"));
               }
             },
             onError: (error) => {
@@ -207,14 +207,10 @@ export class LiveGatewaySession {
     await this.liveSession?.close().catch(() => undefined);
   }
 
-  private async handleRawMessage(raw: WebSocket.RawData): Promise<void> {
+  private async handleRawMessage(raw: ClientInboundFrame): Promise<void> {
     let requestId: string | undefined;
     try {
-      if (typeof raw !== "string" && !Buffer.isBuffer(raw)) {
-        this.fail("unsupported_frame", new Error("Only JSON text frames are supported in v1."));
-        return;
-      }
-      const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : raw;
+      const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
       const parsed = JSON.parse(text) as unknown;
       requestId = requestIdFromUnknown(parsed);
       await this.handleClientMessage(parseClientMessage(parsed));
@@ -256,7 +252,7 @@ export class LiveGatewaySession {
         break;
       case "session.close":
         await this.close();
-        this.socket.close(1000, "session closed");
+        this.client.close(1000, "session closed");
         break;
     }
   }
@@ -484,9 +480,7 @@ export class LiveGatewaySession {
   }
 
   private send(message: ServerMessage): void {
-    if (this.socket.readyState === this.socket.OPEN) {
-      this.socket.send(serverMessage(message));
-    }
+    this.client.sendText(serverMessage(message));
   }
 
   private fail(code: string, error: unknown, recoverable = false, requestId?: string): void {
