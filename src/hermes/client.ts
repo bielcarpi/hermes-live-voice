@@ -1,5 +1,6 @@
 import type { AppConfig } from "../config.js";
-import type { ApprovalChoice, HermesRunEvent } from "../protocol.js";
+import type { ApprovalChoice } from "../domain/protocol/client-protocol.js";
+import type { HermesRunEvent } from "../domain/protocol/server-protocol.js";
 import { parseSseStream } from "./sse.js";
 
 export interface HermesCapabilities {

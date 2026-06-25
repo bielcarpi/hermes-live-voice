@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizePcm16Audio, parsePcmSampleRate, pcmMimeType, resamplePcm16Base64 } from "../src/audio/pcm.js";
+import { normalizePcm16Audio, parsePcmSampleRate, pcmMimeType, resamplePcm16Base64 } from "../src/domain/audio/pcm.js";
 
 describe("PCM audio helpers", () => {
   it("parses PCM sample rates", () => {

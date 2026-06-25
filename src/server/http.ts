@@ -9,7 +9,7 @@ import { HermesClient } from "../hermes/client.js";
 import type { Logger } from "../logger.js";
 import { buildReadinessReport } from "../readiness.js";
 import { createLiveModelAdapter } from "../realtime/factory.js";
-import type { LiveModelAdapter } from "../realtime/live.js";
+import type { LiveModelAdapter } from "../application/live-gateway/ports/realtime-model.port.js";
 import { LiveGatewaySession } from "../session/live-session.js";
 import { serveStatic } from "./static.js";
 

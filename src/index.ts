@@ -17,8 +17,16 @@ export { buildOpenAISessionUpdate, OpenAIRealtimeAdapter, normalizeOpenAIRealtim
 export { buildReadinessReport } from "./readiness.js";
 export type { BuildReadinessReportOptions, ReadinessReport, ReadinessSection } from "./readiness.js";
 export { createLiveModelAdapter } from "./realtime/factory.js";
-export { buildSystemInstruction } from "./realtime/live.js";
-export type { LiveModelAdapter, LiveModelCallbacks, LiveModelConnectParams, LiveModelSession } from "./realtime/live.js";
+export { buildSystemInstruction } from "./application/live-gateway/system-instruction.js";
+export type {
+  LiveModelAdapter,
+  LiveModelAudio,
+  LiveModelCallbacks,
+  LiveModelConnectParams,
+  LiveModelEvent,
+  LiveModelSession,
+  LiveToolCall,
+} from "./application/live-gateway/ports/realtime-model.port.js";
 export { startServer } from "./server/http.js";
 export type { StartServerOptions } from "./server/http.js";
 export * from "./protocol.js";

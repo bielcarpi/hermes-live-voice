@@ -4,8 +4,15 @@ import type { AppConfig } from "../src/config.js";
 import { MockLiveAdapter } from "../src/gemini/mock.js";
 import { HermesClient } from "../src/hermes/client.js";
 import type { Logger } from "../src/logger.js";
-import type { ApprovalChoice, LiveModelAudio, LiveToolCall } from "../src/protocol.js";
-import type { LiveModelAdapter, LiveModelCallbacks, LiveModelConnectParams, LiveModelSession } from "../src/realtime/live.js";
+import type { ApprovalChoice } from "../src/domain/protocol/client-protocol.js";
+import type {
+  LiveModelAdapter,
+  LiveModelAudio,
+  LiveModelCallbacks,
+  LiveModelConnectParams,
+  LiveModelSession,
+  LiveToolCall,
+} from "../src/application/live-gateway/ports/realtime-model.port.js";
 import { startServer } from "../src/server/http.js";
 
 const openServers: Array<{ close(): Promise<void> }> = [];

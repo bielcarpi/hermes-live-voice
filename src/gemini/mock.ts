@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { LiveModelAudio, LiveToolCall } from "../protocol.js";
-import type { LiveModelAdapter, LiveModelCallbacks, LiveModelConnectParams, LiveModelSession } from "../realtime/live.js";
+import type {
+  LiveModelAdapter,
+  LiveModelAudio,
+  LiveModelCallbacks,
+  LiveModelConnectParams,
+  LiveModelSession,
+  LiveToolCall,
+} from "../application/live-gateway/ports/realtime-model.port.js";
 
 export class MockLiveAdapter implements LiveModelAdapter {
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {

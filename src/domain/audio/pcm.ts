@@ -1,18 +1,21 @@
-import type { LiveModelAudio } from "../protocol.js";
-
 export const GEMINI_LIVE_INPUT_SAMPLE_RATE = 16_000;
 export const CLIENT_CAPTURE_SAMPLE_RATE = 24_000;
 
-export function normalizePcm16Audio(audio: LiveModelAudio, targetRate: number): LiveModelAudio {
+export interface PcmAudioFrame {
+  data: string;
+  mimeType: string;
+}
+
+export function normalizePcm16Audio<T extends PcmAudioFrame>(audio: T, targetRate: number): T {
   if (!isPcmMimeType(audio.mimeType)) {
     throw new Error(`Unsupported audio mime type for PCM normalization: ${audio.mimeType}`);
   }
   const sourceRate = parsePcmSampleRate(audio.mimeType) ?? targetRate;
   const mimeType = pcmMimeType(targetRate);
   if (sourceRate === targetRate) {
-    return { data: audio.data, mimeType };
+    return { ...audio, mimeType };
   }
-  return { data: resamplePcm16Base64(audio.data, sourceRate, targetRate), mimeType };
+  return { ...audio, data: resamplePcm16Base64(audio.data, sourceRate, targetRate), mimeType };
 }
 
 export function parsePcmSampleRate(mimeType: string): number | undefined {

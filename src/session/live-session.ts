@@ -1,21 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
 import type WebSocket from "ws";
-import { isPcmMimeType } from "../audio/pcm.js";
+import { isPcmMimeType } from "../domain/audio/pcm.js";
 import { makeSessionKey, type AppConfig } from "../config.js";
 import { HermesClient } from "../hermes/client.js";
 import type { Logger } from "../logger.js";
 import {
   ApprovalChoiceSchema,
   parseClientMessage,
-  serverMessage,
   type ClientMessage,
+  type RealtimeResponseTruncation,
+} from "../domain/protocol/client-protocol.js";
+import {
+  serverMessage,
   type HermesRunEvent,
+  type ServerMessage,
+} from "../domain/protocol/server-protocol.js";
+import {
   type LiveModelEvent,
   type LiveToolCall,
-  type RealtimeResponseTruncation,
-  type ServerMessage,
-} from "../protocol.js";
-import { buildSystemInstruction, type LiveModelAdapter, type LiveModelSession } from "../realtime/live.js";
+  type LiveModelAdapter,
+  type LiveModelSession,
+} from "../application/live-gateway/ports/realtime-model.port.js";
+import { buildSystemInstruction } from "../application/live-gateway/system-instruction.js";
 
 export interface LiveGatewaySessionDeps {
   config: AppConfig;
