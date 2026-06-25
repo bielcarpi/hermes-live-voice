@@ -8,7 +8,7 @@ import {
   buildOpenAISessionUpdate,
   normalizeOpenAIRealtimeEvent,
   OpenAIRealtimeAdapter,
-} from "../src/openai/realtime.js";
+} from "../src/adapters/outbound/realtime/openai-realtime.adapter.js";
 
 describe("OpenAI Realtime adapter helpers", () => {
   it("normalizes audio and transcript deltas", () => {

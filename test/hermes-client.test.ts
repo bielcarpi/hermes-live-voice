@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HermesClient } from "../src/hermes/client.js";
+import { HermesClient } from "../src/adapters/outbound/hermes/hermes-runs.client.js";
 
 const fetchMock = vi.fn<typeof fetch>();
 

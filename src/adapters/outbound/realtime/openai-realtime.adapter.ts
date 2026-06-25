@@ -1,14 +1,19 @@
 import WebSocket from "ws";
-import { normalizePcm16Audio } from "../domain/audio/pcm.js";
-import type { AppConfig } from "../config.js";
+import { normalizePcm16Audio } from "../../../domain/audio/pcm.js";
+import type { AppConfig } from "../../../config.js";
 import {
   type LiveModelAudio,
   type LiveModelEvent,
   type LiveToolCall,
-} from "../application/live-gateway/ports/realtime-model.port.js";
-import type { RealtimeResponseTruncation } from "../domain/protocol/client-protocol.js";
-import { OPENAI_HERMES_LIVE_TOOLS } from "../application/live-gateway/tool-definitions.js";
-import type { LiveModelAdapter, LiveModelCallbacks, LiveModelConnectParams, LiveModelSession } from "../application/live-gateway/ports/realtime-model.port.js";
+} from "../../../application/live-gateway/ports/realtime-model.port.js";
+import type { RealtimeResponseTruncation } from "../../../domain/protocol/client-protocol.js";
+import { OPENAI_HERMES_LIVE_TOOLS } from "../../../application/live-gateway/tool-definitions.js";
+import type {
+  LiveModelAdapter,
+  LiveModelCallbacks,
+  LiveModelConnectParams,
+  LiveModelSession,
+} from "../../../application/live-gateway/ports/realtime-model.port.js";
 
 const OPENAI_REALTIME_PCM_INPUT_SAMPLE_RATE = 24_000;
 

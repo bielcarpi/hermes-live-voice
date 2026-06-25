@@ -6,7 +6,7 @@ import type {
   LiveModelConnectParams,
   LiveModelSession,
   LiveToolCall,
-} from "../application/live-gateway/ports/realtime-model.port.js";
+} from "../../../application/live-gateway/ports/realtime-model.port.js";
 
 export class MockLiveAdapter implements LiveModelAdapter {
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {

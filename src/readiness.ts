@@ -5,7 +5,7 @@ import {
   type AppConfig,
 } from "./config.js";
 import type { HermesRunsPort } from "./application/live-gateway/ports/hermes-runs.port.js";
-import { HermesClient } from "./hermes/client.js";
+import { HermesClient } from "./adapters/outbound/hermes/hermes-runs.client.js";
 
 export interface ReadinessSection extends Record<string, unknown> {
   ok: boolean;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSseEventBlock, parseSseStream } from "../src/hermes/sse.js";
+import { parseSseEventBlock, parseSseStream } from "../src/adapters/outbound/hermes/sse.js";
 
 describe("SSE parsing", () => {
   it("parses JSON data blocks", () => {

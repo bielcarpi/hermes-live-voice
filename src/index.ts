@@ -8,9 +8,9 @@ export {
   realtimeProviderConfigured,
 } from "./config.js";
 export type { AppConfig, RealtimeProvider } from "./config.js";
-export { GeminiLiveAdapter, normalizeGeminiLiveMessage } from "./gemini/live.js";
-export { MockLiveAdapter } from "./gemini/mock.js";
-export { HermesClient } from "./hermes/client.js";
+export { GeminiLiveAdapter, normalizeGeminiLiveMessage } from "./adapters/outbound/realtime/gemini-live.adapter.js";
+export { MockLiveAdapter } from "./adapters/outbound/realtime/mock-live.adapter.js";
+export { HermesClient } from "./adapters/outbound/hermes/hermes-runs.client.js";
 export type {
   ApprovalResult,
   HermesCapabilities,
@@ -19,11 +19,15 @@ export type {
   StartRunParams,
   StartRunResult,
 } from "./application/live-gateway/ports/hermes-runs.port.js";
-export { parseSseEventBlock, parseSseStream } from "./hermes/sse.js";
-export { buildOpenAISessionUpdate, OpenAIRealtimeAdapter, normalizeOpenAIRealtimeEvent } from "./openai/realtime.js";
+export { parseSseEventBlock, parseSseStream } from "./adapters/outbound/hermes/sse.js";
+export {
+  buildOpenAISessionUpdate,
+  OpenAIRealtimeAdapter,
+  normalizeOpenAIRealtimeEvent,
+} from "./adapters/outbound/realtime/openai-realtime.adapter.js";
 export { buildReadinessReport } from "./readiness.js";
 export type { BuildReadinessReportOptions, ReadinessReport, ReadinessSection } from "./readiness.js";
-export { createLiveModelAdapter } from "./realtime/factory.js";
+export { createLiveModelAdapter } from "./adapters/outbound/realtime/factory.js";
 export { buildSystemInstruction } from "./application/live-gateway/system-instruction.js";
 export type {
   LiveModelAdapter,

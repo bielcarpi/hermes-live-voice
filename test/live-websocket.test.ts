@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
-import { MockLiveAdapter } from "../src/gemini/mock.js";
+import { MockLiveAdapter } from "../src/adapters/outbound/realtime/mock-live.adapter.js";
 import type { Logger } from "../src/logger.js";
 import type { ApprovalChoice } from "../src/domain/protocol/client-protocol.js";
 import type { HermesRunsPort } from "../src/application/live-gateway/ports/hermes-runs.port.js";

@@ -1,6 +1,6 @@
-import type { AppConfig } from "../config.js";
-import type { ApprovalChoice } from "../domain/protocol/client-protocol.js";
-import type { HermesRunEvent } from "../domain/protocol/server-protocol.js";
+import type { AppConfig } from "../../../config.js";
+import type { ApprovalChoice } from "../../../domain/protocol/client-protocol.js";
+import type { HermesRunEvent } from "../../../domain/protocol/server-protocol.js";
 import type {
   ApprovalResult,
   HermesCapabilities,
@@ -8,7 +8,7 @@ import type {
   HermesRunsPort,
   StartRunParams,
   StartRunResult,
-} from "../application/live-gateway/ports/hermes-runs.port.js";
+} from "../../../application/live-gateway/ports/hermes-runs.port.js";
 import { parseSseStream } from "./sse.js";
 
 export class HermesClient implements HermesRunsPort {

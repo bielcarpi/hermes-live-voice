@@ -1,7 +1,7 @@
 import { GoogleGenAI, Modality } from "@google/genai";
-import { GEMINI_LIVE_INPUT_SAMPLE_RATE, normalizePcm16Audio } from "../domain/audio/pcm.js";
-import type { AppConfig } from "../config.js";
-import { HERMES_LIVE_TOOL_DECLARATIONS } from "../application/live-gateway/tool-definitions.js";
+import { GEMINI_LIVE_INPUT_SAMPLE_RATE, normalizePcm16Audio } from "../../../domain/audio/pcm.js";
+import type { AppConfig } from "../../../config.js";
+import { HERMES_LIVE_TOOL_DECLARATIONS } from "../../../application/live-gateway/tool-definitions.js";
 import type {
   LiveModelAdapter,
   LiveModelAudio,
@@ -9,7 +9,7 @@ import type {
   LiveModelEvent,
   LiveModelSession,
   LiveToolCall,
-} from "../application/live-gateway/ports/realtime-model.port.js";
+} from "../../../application/live-gateway/ports/realtime-model.port.js";
 
 export class GeminiLiveAdapter implements LiveModelAdapter {
   constructor(private readonly config: AppConfig["gemini"]) {}

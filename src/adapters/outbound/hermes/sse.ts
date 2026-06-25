@@ -1,4 +1,4 @@
-import type { HermesRunEvent } from "../domain/protocol/server-protocol.js";
+import type { HermesRunEvent } from "../../../domain/protocol/server-protocol.js";
 
 export function parseSseEventBlock(block: string): HermesRunEvent | null {
   const dataLines: string[] = [];

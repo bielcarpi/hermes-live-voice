@@ -7,7 +7,7 @@ import {
   GeminiLiveAdapter,
   GeminiLiveSession,
   normalizeGeminiLiveMessage,
-} from "../src/gemini/live.js";
+} from "../src/adapters/outbound/realtime/gemini-live.adapter.js";
 
 describe("Gemini Live adapter helpers", () => {
   it("normalizes function calls from Gemini toolCall messages", () => {
