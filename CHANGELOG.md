@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Rename the documented Hermes credential env to `HERMES_AGENT_API_SERVER_KEY` while keeping `HERMES_API_KEY` as a legacy alias.
+- Remove unsupported OpenAI Realtime reasoning effort value `none` and tighten clone-first setup docs.
+- Add `hermes-live provider-smoke` and `npm run check:live-provider` for optional real Gemini Live/OpenAI Realtime session handshakes.
+
 ## 0.1.0
 
 - Initial public gateway shape.

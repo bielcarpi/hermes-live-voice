@@ -7,7 +7,7 @@ Use this page before claiming a hosted gateway is ready.
 ## Prerequisites
 
 - Hermes API Server running with run endpoints enabled.
-- `HERMES_API_KEY` set to Hermes Agent's `API_SERVER_KEY`.
+- `HERMES_AGENT_API_SERVER_KEY` set to Hermes Agent's `API_SERVER_KEY`.
 - A realtime provider key or authenticated Vertex/Gemini environment.
 - `HERMES_LIVE_AUTH_TOKEN` set for any non-local gateway.
 - `HERMES_LIVE_ALLOW_ORIGIN` set to your app origin for browser clients.
@@ -54,7 +54,34 @@ Expected:
 
 The exact Hermes capability fields can vary by Hermes version. This proves gateway exposure configuration, provider credential configuration, and Hermes API capabilities. `sessionChecked: false` is intentional: this step does not open a realtime provider session.
 
-## Step 2: Start The Gateway
+## Step 2: Open A Real Provider Session
+
+After setting `HERMES_LIVE_PROVIDER` and the provider credentials, run:
+
+```sh
+npm run check:live-provider
+```
+
+For an installed package or Docker image, run the CLI directly:
+
+```sh
+hermes-live provider-smoke
+```
+
+Expected:
+
+```json
+{
+  "ok": true,
+  "provider": "openai",
+  "model": "gpt-realtime-2",
+  "connected": true
+}
+```
+
+This command opens and closes a Gemini Live or OpenAI Realtime session with the same adapter the gateway uses. It does not require Hermes to be running, does not send user audio/text, and does not start a Hermes run. Set `HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS` if your provider or network needs a longer startup bound.
+
+## Step 3: Start The Gateway
 
 Gemini Live:
 
@@ -62,7 +89,7 @@ Gemini Live:
 HERMES_LIVE_PROVIDER=gemini \
 GEMINI_API_KEY=... \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
-HERMES_API_KEY=... \
+HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
@@ -75,7 +102,7 @@ GOOGLE_GENAI_USE_ENTERPRISE=true \
 GOOGLE_CLOUD_PROJECT=... \
 GOOGLE_CLOUD_LOCATION=us-central1 \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
-HERMES_API_KEY=... \
+HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
@@ -88,7 +115,7 @@ OPENAI_API_KEY=... \
 OPENAI_REALTIME_MODEL=gpt-realtime-2 \
 OPENAI_REALTIME_TURN_DETECTION=disabled \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
-HERMES_API_KEY=... \
+HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
@@ -109,7 +136,7 @@ OPENAI_REALTIME_TURN_DETECTION=semantic_vad
 
 The included web demo defaults to a push-to-talk style mic toggle, so `disabled` is the simplest first smoke test.
 
-## Step 3: Use The Web Demo
+## Step 4: Use The Web Demo
 
 Open:
 
@@ -133,7 +160,7 @@ Expected evidence:
 - Approval requests render decision buttons.
 - Stop sends `run.stop` and the gateway forwards Hermes cancellation.
 
-## Step 4: Test Negative Cases
+## Step 5: Test Negative Cases
 
 Auth:
 
@@ -187,6 +214,8 @@ OpenAI documents WebSockets as appropriate for server-to-server Realtime integra
 OpenAI Realtime model families currently include `gpt-realtime`, `gpt-realtime-1.5`, `gpt-realtime-mini`, and `gpt-realtime-2`. Use `gpt-realtime-2` when you want reasoning-capable voice behavior; use `gpt-realtime-1.5` when explicitly testing the current Realtime 1.x behavior.
 
 OpenAI Realtime can run with VAD or push-to-talk. In this repo, `OPENAI_REALTIME_TURN_DETECTION=disabled` means the client sends `audio.end`; `semantic_vad` and `server_vad` delegate turn boundaries to OpenAI.
+
+For `gpt-realtime-2`, `OPENAI_REALTIME_REASONING_EFFORT` accepts `minimal`, `low`, `medium`, `high`, or `xhigh`. Keep `low` until live testing proves the workflow needs deeper reasoning.
 
 Clients can send `response.cancel` before a barge-in or new turn. The OpenAI adapter maps that to OpenAI Realtime's `response.cancel` event when a response is pending or active.
 

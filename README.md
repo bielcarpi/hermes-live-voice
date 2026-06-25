@@ -43,6 +43,25 @@ Client app
 
 This repo is Hermes-centered only. It is not tied to any hosted product, app, billing system, or private assistant UX.
 
+## How Hermes Talks To You
+
+The gateway gives the realtime model one job: be the live voice interface. It does not hand Gemini or OpenAI your full Hermes toolbelt.
+
+1. Your client streams microphone audio or text to `WS /v1/live`.
+2. `hermes-live` opens a Gemini Live or OpenAI Realtime session from the server.
+3. The realtime model listens and speaks naturally.
+4. When the user asks for real work, the model calls `start_hermes_run`.
+5. The gateway starts a Hermes `/v1/runs` task, streams progress back, forwards approvals, and stops the run if the user interrupts.
+6. The realtime model turns the Hermes result into a short spoken response.
+
+That split is the product:
+
+```txt
+Realtime model = ears, mouth, turn-taking
+Hermes         = brain, memory, tools, actions
+hermes-live    = secure translator between them
+```
+
 ## Why It Exists
 
 Hermes already has the hard agent layer. Realtime voice has a different runtime shape: persistent WebSockets, audio frames, provider sessions, fast barge-in, client auth, and gateway-level safety. Keeping that runtime in a plugin-managed gateway lets people add voice to Hermes without forking Hermes core.
@@ -89,10 +108,27 @@ node dist/cli.js plugin install --symlink
 hermes plugins enable hermes-live
 ```
 
+Start the gateway:
+
+```sh
+HERMES_BASE_URL=http://127.0.0.1:8642 \
+HERMES_AGENT_API_SERVER_KEY=... \
+HERMES_LIVE_PROVIDER=mock \
+npm run dev
+```
+
+Then open the browser demo:
+
+```txt
+http://127.0.0.1:8788
+```
+
+`HERMES_LIVE_PROVIDER=mock` is the zero-credential path for checking that the gateway, browser demo, terminal client, and Hermes run bridge are wired correctly. To hear real realtime speech, switch `HERMES_LIVE_PROVIDER` to `gemini` or `openai` and add the matching provider key below.
+
 Or run the Docker example from a clone:
 
 ```sh
-HERMES_API_KEY=... HERMES_LIVE_AUTH_TOKEN=$(openssl rand -hex 32) \
+HERMES_AGENT_API_SERVER_KEY=... HERMES_LIVE_AUTH_TOKEN=$(openssl rand -hex 32) \
 docker compose -f examples/docker-compose.yml up
 ```
 
@@ -108,10 +144,12 @@ Hermes API Server:
 
 ```sh
 HERMES_BASE_URL=http://127.0.0.1:8642
-HERMES_API_KEY=...
+HERMES_AGENT_API_SERVER_KEY=...
 ```
 
-Set `HERMES_API_KEY` to the same value as Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth, and Hermes only accepts the long-term memory `X-Hermes-Session-Key` header from authenticated clients. `hermes-live` keeps that session key server-side and sends it to Hermes on run creation and follow-up run-scoped calls.
+Set `HERMES_AGENT_API_SERVER_KEY` to the same value as Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth, and Hermes only accepts the long-term memory `X-Hermes-Session-Key` header from authenticated clients. `hermes-live` keeps that session key server-side and sends it to Hermes on run creation and follow-up run-scoped calls.
+
+`HERMES_API_KEY` remains supported as a legacy alias, but new installs should use `HERMES_AGENT_API_SERVER_KEY`.
 
 Gemini Live:
 
@@ -136,11 +174,27 @@ For current OpenAI Realtime 1.x behavior:
 OPENAI_REALTIME_MODEL=gpt-realtime-1.5
 ```
 
+Realtime 2 reasoning effort defaults to `low`. You can set `OPENAI_REALTIME_REASONING_EFFORT` to `minimal`, `low`, `medium`, `high`, or `xhigh`.
+
+After setting real provider credentials, run an optional live session handshake:
+
+```sh
+npm run check:live-provider
+```
+
+This wraps the CLI command:
+
+```sh
+node dist/cli.js provider-smoke
+```
+
+Both commands open and close a Gemini Live or OpenAI Realtime session with the same adapter the gateway uses. They do not require Hermes to be running, send user audio/text, or start a Hermes run.
+
 Local mock provider:
 
 ```sh
 HERMES_LIVE_PROVIDER=mock
-HERMES_API_KEY=...
+HERMES_AGENT_API_SERVER_KEY=...
 ```
 
 Network-exposed gateway:
@@ -170,6 +224,7 @@ Useful commands:
 ```sh
 npm run dev
 node dist/cli.js client "What can Hermes do?"
+node dist/cli.js provider-smoke
 node dist/cli.js plugin install
 node dist/cli.js plugin status
 npm run check              # gateway, Hermes API, and provider readiness
@@ -269,6 +324,8 @@ npm run verify
 The test suite uses mock providers and fake Hermes clients. Live provider tests require external credentials and are intentionally not part of the default CI gate.
 
 `npm run check:gateway` builds confidence in the packaged path by starting `dist/cli.js serve`, opening `/v1/live`, and driving a fake Hermes run over HTTP/SSE.
+
+`npm run check:live-provider` and `node dist/cli.js provider-smoke` are optional and only run when you set `HERMES_LIVE_PROVIDER=gemini` or `HERMES_LIVE_PROVIDER=openai` with valid provider credentials.
 
 Use [docs/live-provider-testing.md](docs/live-provider-testing.md) before claiming a real Gemini Live or OpenAI Realtime deployment is ready.
 

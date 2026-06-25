@@ -10,7 +10,7 @@ Hermes may have terminal, file, browser, memory, and MCP capabilities. Do not pu
 
 Server-side only:
 
-- `HERMES_API_KEY`
+- `HERMES_AGENT_API_SERVER_KEY`
 - `GEMINI_API_KEY`
 - `OPENAI_API_KEY`
 - Vertex/Google Cloud credentials
@@ -19,7 +19,9 @@ Client-side allowed:
 
 - `HERMES_LIVE_AUTH_TOKEN` only if it is scoped/revocable for gateway access.
 
-Set `HERMES_API_KEY` to Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth for every deployment, including loopback, and `hermes-live` only sends `X-Hermes-Session-Key` memory scope headers when the Hermes client is authenticated. The gateway includes that server-side session key on run creation and follow-up run-scoped calls such as event streaming, status, stop, and approval.
+Set `HERMES_AGENT_API_SERVER_KEY` to Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth for every deployment, including loopback, and `hermes-live` only sends `X-Hermes-Session-Key` memory scope headers when the Hermes client is authenticated. The gateway includes that server-side session key on run creation and follow-up run-scoped calls such as event streaming, status, stop, and approval.
+
+`HERMES_API_KEY` remains supported as a legacy alias for existing deployments.
 
 When `HERMES_LIVE_AUTH_TOKEN` is set, `WS /v1/live`, `GET /ready`, and `GET /v1/capabilities` require authentication. `GET /health` intentionally stays public for health checks.
 
@@ -66,7 +68,7 @@ Add your own rate limiting before public deployment.
 ## Public Deployment Checklist
 
 - `HERMES_LIVE_AUTH_TOKEN` is set to a high-entropy value.
-- `HERMES_API_KEY` is set to Hermes Agent's `API_SERVER_KEY`.
+- `HERMES_AGENT_API_SERVER_KEY` is set to Hermes Agent's `API_SERVER_KEY`.
 - `HERMES_LIVE_ALLOW_ORIGIN` is exact.
 - `HERMES_LIVE_DEMO_ENABLED=false` if the public browser demo is not intentionally exposed.
 - Hermes API Server is private to the gateway network.

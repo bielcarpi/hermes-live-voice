@@ -68,7 +68,7 @@ describe("config", () => {
   });
 
   it("accepts mock provider without realtime provider credentials", () => {
-    const config = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_API_KEY: "hermes-secret" });
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_AGENT_API_SERVER_KEY: "hermes-secret" });
 
     expect(realtimeProviderConfigured(config)).toBe(true);
     expect(() => assertRuntimeConfig(config)).not.toThrow();
@@ -77,21 +77,37 @@ describe("config", () => {
   it("requires Hermes API credentials before serving", () => {
     const config = loadConfig({ HERMES_LIVE_PROVIDER: "mock" });
 
-    expect(() => assertRuntimeConfig(config)).toThrow(/HERMES_API_KEY/);
+    expect(() => assertRuntimeConfig(config)).toThrow(/HERMES_AGENT_API_SERVER_KEY/);
+  });
+
+  it("keeps HERMES_API_KEY as a legacy Hermes API credential alias", () => {
+    const legacy = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_API_KEY: "legacy-secret" });
+    const preferred = loadConfig({
+      HERMES_LIVE_PROVIDER: "mock",
+      HERMES_AGENT_API_SERVER_KEY: "primary-secret",
+      HERMES_API_KEY: "legacy-secret",
+    });
+
+    expect(legacy.hermes.apiKey).toBe("legacy-secret");
+    expect(preferred.hermes.apiKey).toBe("primary-secret");
   });
 
   it("requires gateway auth for network-accessible binds", () => {
-    const exposed = loadConfig({ HERMES_LIVE_PROVIDER: "mock", HERMES_LIVE_HOST: "0.0.0.0", HERMES_API_KEY: "hermes-secret" });
+    const exposed = loadConfig({
+      HERMES_LIVE_PROVIDER: "mock",
+      HERMES_LIVE_HOST: "0.0.0.0",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
+    });
     const protectedConfig = loadConfig({
       HERMES_LIVE_PROVIDER: "mock",
       HERMES_LIVE_HOST: "0.0.0.0",
-      HERMES_API_KEY: "hermes-secret",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
       HERMES_LIVE_AUTH_TOKEN: "gateway-secret-token",
     });
     const explicitUnsafe = loadConfig({
       HERMES_LIVE_PROVIDER: "mock",
       HERMES_LIVE_HOST: "0.0.0.0",
-      HERMES_API_KEY: "hermes-secret",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
       HERMES_LIVE_ALLOW_UNAUTHENTICATED: "true",
     });
 
@@ -104,7 +120,7 @@ describe("config", () => {
     const weak = loadConfig({
       HERMES_LIVE_PROVIDER: "mock",
       HERMES_LIVE_HOST: "0.0.0.0",
-      HERMES_API_KEY: "hermes-secret",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
       HERMES_LIVE_AUTH_TOKEN: "short",
     });
 
@@ -112,7 +128,7 @@ describe("config", () => {
   });
 
   it("requires OpenAI credentials for OpenAI provider", () => {
-    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", HERMES_API_KEY: "hermes-secret" });
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", HERMES_AGENT_API_SERVER_KEY: "hermes-secret" });
 
     expect(realtimeProviderConfigured(config)).toBe(false);
     expect(() => assertRuntimeConfig(config)).toThrow(/OPENAI_API_KEY/);
@@ -128,6 +144,13 @@ describe("config", () => {
     expect(realtime2.realtime.model).toBe("gpt-realtime-2");
   });
 
+  it("accepts documented Realtime 2 reasoning efforts and rejects stale values", () => {
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_REASONING_EFFORT: "minimal" });
+
+    expect(config.openai.reasoningEffort).toBe("minimal");
+    expect(() => loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_REASONING_EFFORT: "none" })).toThrow();
+  });
+
   it("configures OpenAI Realtime turn detection explicitly", () => {
     const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_TURN_DETECTION: "semantic_vad" });
 
@@ -137,12 +160,12 @@ describe("config", () => {
   it("requires a Google Cloud project for Gemini Enterprise mode", () => {
     const missingProject = loadConfig({
       HERMES_LIVE_PROVIDER: "gemini",
-      HERMES_API_KEY: "hermes-secret",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
       GOOGLE_GENAI_USE_ENTERPRISE: "true",
     });
     const withProject = loadConfig({
       HERMES_LIVE_PROVIDER: "gemini",
-      HERMES_API_KEY: "hermes-secret",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
       GOOGLE_GENAI_USE_ENTERPRISE: "true",
       GOOGLE_CLOUD_PROJECT: "demo-project",
     });

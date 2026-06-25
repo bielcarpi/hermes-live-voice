@@ -11,7 +11,7 @@ Use `wss://` behind TLS in production.
 For a one-shot terminal smoke test, use:
 
 ```sh
-hermes-live client "What is the current status?"
+node dist/cli.js client "What is the current status?"
 ```
 
 ## Authentication
@@ -40,7 +40,7 @@ Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
 
 ## HTTP Readiness
 
-`GET /ready` returns the same gateway, Hermes, and realtime readiness sections as `hermes-live check`.
+`GET /ready` returns the same gateway, Hermes, and realtime readiness sections as `node dist/cli.js check`.
 
 ```json
 {

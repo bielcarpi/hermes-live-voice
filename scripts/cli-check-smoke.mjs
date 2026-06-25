@@ -8,6 +8,7 @@ const result = spawnSync(process.execPath, ["dist/cli.js", "check"], {
   env: {
     ...process.env,
     HERMES_BASE_URL: "http://127.0.0.1:9",
+    HERMES_AGENT_API_SERVER_KEY: "",
     HERMES_API_KEY: "",
     HERMES_LIVE_HOST: "127.0.0.1",
     HERMES_LIVE_PROVIDER: "openai",
@@ -35,7 +36,7 @@ try {
 assertEqual(report.ok, false, "report.ok");
 assertEqual(report.gateway?.ok, true, "gateway.ok");
 assertEqual(report.hermes?.ok, false, "hermes.ok");
-assertIncludes(report.hermes?.error, "HERMES_API_KEY", "hermes.error");
+assertIncludes(report.hermes?.error, "HERMES_AGENT_API_SERVER_KEY", "hermes.error");
 assertEqual(report.realtime?.ok, false, "realtime.ok");
 assertEqual(report.realtime?.configured, false, "realtime.configured");
 assertEqual(report.realtime?.provider, "openai", "realtime.provider");

@@ -13,6 +13,7 @@ import { createLogger } from "./logger.js";
 import { ApprovalChoiceSchema } from "./protocol.js";
 import { buildReadinessReport } from "./readiness.js";
 import { startServer } from "./adapters/inbound/http/server.js";
+import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
 
@@ -60,6 +61,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "provider-smoke" || command === "check-live-provider") {
+    const config = loadConfig();
+    try {
+      const report = await runLiveProviderSmoke(config, {
+        timeoutMs: positiveInt(process.env.HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS, config.server.providerReadyTimeoutMs),
+      });
+      console.log(JSON.stringify(report, null, 2));
+    } catch (error) {
+      console.error(errorToMessage(error));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (command === "print-config") {
     const config = loadConfig();
     console.log(
@@ -87,6 +102,11 @@ function redact(value: string | undefined): string | undefined {
   return value ? "***" : undefined;
 }
 
+function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -99,6 +119,7 @@ Usage:
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one text prompt through a running gateway
   hermes-live check         Check Hermes capabilities and realtime provider config
+  hermes-live provider-smoke Open and close a real Gemini/OpenAI provider session
   hermes-live print-config  Print resolved config with secrets redacted
   hermes-live plugin install Install the Hermes plugin into ~/.hermes/plugins
   hermes-live plugin status  Show Hermes plugin install status
@@ -106,7 +127,7 @@ Usage:
 
 Required environment:
   HERMES_BASE_URL           Hermes API Server URL, default http://127.0.0.1:8642
-  HERMES_API_KEY            Hermes API_SERVER_KEY bearer token
+  HERMES_AGENT_API_SERVER_KEY Hermes Agent API_SERVER_KEY bearer token
   GEMINI_API_KEY            Gemini Developer API key, unless using Enterprise auth
   OPENAI_API_KEY            OpenAI API key when HERMES_LIVE_PROVIDER=openai
 
@@ -117,6 +138,7 @@ Optional:
   HERMES_LIVE_MAX_TEXT_CHARS Text/tool-call character limit, default 20000
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
+  HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2; use gpt-realtime-1.5 for 1.x
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
 

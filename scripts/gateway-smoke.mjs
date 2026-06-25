@@ -30,7 +30,7 @@ const gateway = spawn(process.execPath, ["dist/cli.js", "serve"], {
     ...process.env,
     HERMES_BASE_URL: `http://127.0.0.1:${hermesPort}`,
     HERMES_MODEL: "hermes-agent",
-    HERMES_API_KEY: "hermes-smoke-secret",
+    HERMES_AGENT_API_SERVER_KEY: "hermes-smoke-secret",
     HERMES_LIVE_ALLOW_ORIGIN: "",
     HERMES_LIVE_AUTH_TOKEN: "",
     HERMES_LIVE_DEMO_ENABLED: "false",

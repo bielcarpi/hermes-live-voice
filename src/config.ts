@@ -15,6 +15,7 @@ const EnvSchema = z.object({
   HERMES_LIVE_DEMO_ENABLED: z.string().optional(),
 
   HERMES_BASE_URL: z.string().url().default("http://127.0.0.1:8642"),
+  HERMES_AGENT_API_SERVER_KEY: z.string().optional(),
   HERMES_API_KEY: z.string().optional(),
   HERMES_MODEL: z.string().default("hermes-agent"),
   HERMES_LIVE_RUN_INSTRUCTIONS: z.string().optional(),
@@ -33,7 +34,7 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_BASE_URL: z.string().url().default("wss://api.openai.com/v1/realtime"),
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
-  OPENAI_REALTIME_REASONING_EFFORT: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).default("low"),
+  OPENAI_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("low"),
   OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),
   OPENAI_REALTIME_INPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
@@ -78,7 +79,7 @@ export interface AppConfig {
     baseUrl: string;
     model: string;
     voice: string;
-    reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    reasoningEffort: "minimal" | "low" | "medium" | "high" | "xhigh";
     turnDetection: "disabled" | "semantic_vad" | "server_vad";
     inputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
     outputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
@@ -88,6 +89,7 @@ export interface AppConfig {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = EnvSchema.parse(env);
   const geminiApiKey = parsed.GEMINI_API_KEY || parsed.GOOGLE_API_KEY;
+  const hermesApiKey = parsed.HERMES_AGENT_API_SERVER_KEY || parsed.HERMES_API_KEY;
   const enterprise = parseBool(parsed.GOOGLE_GENAI_USE_ENTERPRISE);
   const realtimeModel = selectedRealtimeModel(parsed.HERMES_LIVE_PROVIDER, parsed.GEMINI_MODEL, parsed.OPENAI_REALTIME_MODEL);
 
@@ -109,7 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     hermes: {
       baseUrl: withoutTrailingSlash(parsed.HERMES_BASE_URL),
-      ...(parsed.HERMES_API_KEY ? { apiKey: parsed.HERMES_API_KEY } : {}),
+      ...(hermesApiKey ? { apiKey: hermesApiKey } : {}),
       model: parsed.HERMES_MODEL,
       ...(parsed.HERMES_LIVE_RUN_INSTRUCTIONS ? { instructions: parsed.HERMES_LIVE_RUN_INSTRUCTIONS } : {}),
       timeoutMs: parsed.HERMES_LIVE_HERMES_TIMEOUT_MS,
@@ -147,7 +149,7 @@ export function assertRuntimeConfig(config: AppConfig): void {
 
 export function assertHermesApiConfig(config: Pick<AppConfig, "hermes">): void {
   if (!config.hermes.apiKey) {
-    throw new Error("Set HERMES_API_KEY to Hermes Agent's API_SERVER_KEY.");
+    throw new Error("Set HERMES_AGENT_API_SERVER_KEY to Hermes Agent's API_SERVER_KEY.");
   }
 }
 

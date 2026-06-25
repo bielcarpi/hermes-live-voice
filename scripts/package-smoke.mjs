@@ -41,6 +41,7 @@ try {
     "dist/index.js",
     "dist/cli.js",
     "dist/config.js",
+    "dist/live-provider-smoke.js",
     "dist/adapters/inbound/http/server.js",
     "dist/adapters/inbound/http/static.js",
     "dist/adapters/inbound/http/websocket-client-connection.js",
@@ -67,6 +68,7 @@ try {
     "plugins/hermes-live/schemas.py",
     "plugins/hermes-live/tools.py",
     "scripts/gateway-smoke.mjs",
+    "scripts/live-provider-cli-smoke.mjs",
     "scripts/plugin-smoke.py",
   ];
 
@@ -128,7 +130,12 @@ try {
       HERMES_LIVE_PROVIDER: "mock",
     },
   });
-  if (help.status !== 0 || !help.stdout.includes("hermes-live") || !help.stdout.includes("HERMES_LIVE_PROVIDER")) {
+  if (
+    help.status !== 0 ||
+    !help.stdout.includes("hermes-live") ||
+    !help.stdout.includes("provider-smoke") ||
+    !help.stdout.includes("HERMES_LIVE_PROVIDER")
+  ) {
     throw new Error(`Installed CLI help failed with status ${help.status ?? "null"}\n${help.stdout}\n${help.stderr}`);
   }
 
@@ -156,7 +163,7 @@ try {
       "-e",
       [
         `const m = await import(${JSON.stringify(packageJson.name)});`,
-        "const required = ['startServer','loadConfig','assertRuntimeConfig','assertHermesApiConfig','assertRealtimeProviderConfig','assertGatewayExposureConfig','realtimeProviderConfigured','buildReadinessReport','HermesClient','OpenAIRealtimeAdapter','GeminiLiveAdapter','parseClientMessage'];",
+        "const required = ['startServer','loadConfig','assertRuntimeConfig','assertHermesApiConfig','assertRealtimeProviderConfig','assertGatewayExposureConfig','realtimeProviderConfigured','buildReadinessReport','runLiveProviderSmoke','HermesClient','OpenAIRealtimeAdapter','GeminiLiveAdapter','parseClientMessage'];",
         "const missing = required.filter((name) => typeof m[name] !== 'function');",
         "if (missing.length) { console.error('Missing exports: ' + missing.join(',')); process.exit(1); }",
       ].join(" "),

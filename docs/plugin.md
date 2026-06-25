@@ -60,13 +60,13 @@ npm install
 npm run build
 node dist/cli.js plugin install --symlink
 hermes plugins enable hermes-live
-HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock npm run dev
+HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_AGENT_API_SERVER_KEY=... HERMES_LIVE_PROVIDER=mock npm run dev
 ```
 
 Or run the built CLI directly:
 
 ```sh
-HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock node dist/cli.js serve
+HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_AGENT_API_SERVER_KEY=... HERMES_LIVE_PROVIDER=mock node dist/cli.js serve
 ```
 
 Or with Docker:

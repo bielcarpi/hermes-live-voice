@@ -29,6 +29,8 @@ export { buildReadinessReport } from "./readiness.js";
 export type { BuildReadinessReportOptions, ReadinessReport, ReadinessSection } from "./readiness.js";
 export { createLiveModelAdapter } from "./adapters/outbound/realtime/factory.js";
 export { buildSystemInstruction } from "./application/live-gateway/system-instruction.js";
+export { runLiveProviderSmoke } from "./live-provider-smoke.js";
+export type { LiveProviderSmokeOptions, LiveProviderSmokeReport } from "./live-provider-smoke.js";
 export type {
   LiveModelAdapter,
   LiveModelAudio,

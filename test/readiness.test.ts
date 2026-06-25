@@ -17,7 +17,7 @@ describe("readiness", () => {
     expect(report.hermes).toMatchObject({
       ok: false,
       baseUrl: "http://127.0.0.1:9",
-      error: "Set HERMES_API_KEY to Hermes Agent's API_SERVER_KEY.",
+      error: "Set HERMES_AGENT_API_SERVER_KEY to Hermes Agent's API_SERVER_KEY.",
     });
     expect(report.realtime).toMatchObject({
       ok: false,

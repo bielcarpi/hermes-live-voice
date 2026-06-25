@@ -252,7 +252,7 @@ describe("HTTP server", () => {
         liveModel: new MockLiveAdapter(),
         logger: fakeLogger(),
       }),
-    ).rejects.toThrow(/HERMES_API_KEY/);
+    ).rejects.toThrow(/HERMES_AGENT_API_SERVER_KEY/);
   });
 
   it("rejects default realtime providers without provider credentials through the library API", async () => {

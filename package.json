@@ -1,7 +1,7 @@
 {
   "name": "hermes-live-voice",
   "version": "0.1.0",
-  "description": "Hermes Agent plugin and realtime voice gateway for integrating Gemini Live and OpenAI Realtime into Hermes.",
+  "description": "Realtime voice for Hermes Agent: Gemini Live, OpenAI Realtime, WebSocket sessions, tools, memory, approvals, and barge-in.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -65,6 +65,8 @@
     "check:cli-check": "node scripts/cli-check-smoke.mjs",
     "check:cli-client": "node scripts/cli-client-smoke.mjs",
     "check:gateway": "node scripts/gateway-smoke.mjs",
+    "check:live-provider": "npm run build && node dist/cli.js provider-smoke",
+    "check:live-provider-cli": "node scripts/live-provider-cli-smoke.mjs",
     "check:package": "node scripts/package-smoke.mjs",
     "check:plugin": "python3 scripts/plugin-smoke.py",
     "check:web-demo": "node --check apps/web-demo/app.js && node --check apps/web-demo/mic-worklet.js",
@@ -72,7 +74,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify": "npm run typecheck && npm run check:web-demo && npm run check:plugin && npm test && npm run build && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
+    "verify": "npm run typecheck && npm run check:web-demo && npm run check:plugin && npm test && npm run build && npm run check:live-provider-cli && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
     "prepack": "npm run build"
   },
   "dependencies": {
