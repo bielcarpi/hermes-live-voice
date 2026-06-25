@@ -1,25 +1,27 @@
 name: Release
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 permissions:
-  contents: read
-  id-token: write
+  contents: write
 
 jobs:
-  publish:
+  github-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
       - run: npm run verify
       - run: npm audit --audit-level=moderate
-      - run: npm publish --provenance --access public
+      - run: mkdir -p release
+      - run: npm pack --pack-destination release
+      - run: gh release create "$GITHUB_REF_NAME" release/*.tgz --title "$GITHUB_REF_NAME" --notes-file CHANGELOG.md --verify-tag
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

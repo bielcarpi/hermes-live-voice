@@ -53,16 +53,7 @@ The `ready` argument includes the authenticated `/ready` probe when `HERMES_LIVE
 
 ## Runtime Usage
 
-Run the gateway with npm:
-
-```sh
-npm install -g hermes-live-voice
-hermes-live plugin install
-hermes plugins enable hermes-live
-HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock hermes-live serve
-```
-
-Or from a clone:
+Run the gateway from a GitHub clone:
 
 ```sh
 npm install
@@ -70,6 +61,12 @@ npm run build
 node dist/cli.js plugin install --symlink
 hermes plugins enable hermes-live
 HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock npm run dev
+```
+
+Or run the built CLI directly:
+
+```sh
+HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_API_KEY=... HERMES_LIVE_PROVIDER=mock node dist/cli.js serve
 ```
 
 Or with Docker:
@@ -87,7 +84,7 @@ ws://localhost:8788/v1/live
 For a terminal smoke test:
 
 ```sh
-hermes-live client "What should I work on next?"
+node dist/cli.js client "What should I work on next?"
 ```
 
 ## Boundary
@@ -99,18 +96,18 @@ The realtime provider does not receive Hermes tools directly. It receives gatewa
 Hermes discovers user plugins from `~/.hermes/plugins/<plugin-name>/`. Copy or symlink this directory there, then enable it:
 
 ```sh
-hermes-live plugin install
+node dist/cli.js plugin install
 hermes plugins enable hermes-live
 ```
 
 Useful installer options:
 
 ```sh
-hermes-live plugin status
-hermes-live plugin path
-hermes-live plugin install --force
-hermes-live plugin install --symlink
-hermes-live plugin install --dir /custom/hermes/plugins
+node dist/cli.js plugin status
+node dist/cli.js plugin path
+node dist/cli.js plugin install --force
+node dist/cli.js plugin install --symlink
+node dist/cli.js plugin install --dir /custom/hermes/plugins
 ```
 
 Project-local plugins can also be used under `.hermes/plugins/` when `HERMES_ENABLE_PROJECT_PLUGINS=true` is set for trusted repositories.

@@ -41,6 +41,7 @@
   "files": [
     "dist",
     "apps/web-demo",
+    "assets",
     "docs",
     "examples",
     "plugins/hermes-live",

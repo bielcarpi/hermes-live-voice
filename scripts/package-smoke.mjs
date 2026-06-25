@@ -37,6 +37,7 @@ try {
     "README.md",
     "LICENSE",
     ".env.example",
+    "assets/banner.svg",
     "dist/index.js",
     "dist/cli.js",
     "dist/config.js",

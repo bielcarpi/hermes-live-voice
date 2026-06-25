@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 260" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes Live Voice</title>
+  <desc id="desc">Retro pixel-style banner text reading HERMES LIVE-VOICE.</desc>
+  <defs>
+    <clipPath id="lowerStripe">
+      <rect x="0" y="145" width="1280" height="74" />
+    </clipPath>
+    <pattern id="scan" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="4" fill="#0b0f14" opacity="0.18" />
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="260" fill="#080d12" />
+  <rect x="26" y="26" width="1228" height="208" fill="#111820" stroke="#273441" stroke-width="2" />
+  <rect x="26" y="26" width="1228" height="208" fill="url(#scan)" />
+  <rect x="26" y="218" width="1228" height="16" fill="#0b0f14" opacity="0.75" />
+
+  <g font-family="Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" font-weight="900" letter-spacing="3">
+    <text x="66" y="154" font-size="80" fill="#05070a" opacity="0.9" transform="translate(11 15)">HERMES LIVE-VOICE</text>
+    <text x="66" y="154" font-size="80" fill="none" stroke="#05070a" stroke-width="13" stroke-linejoin="round">HERMES LIVE-VOICE</text>
+    <text x="66" y="154" font-size="80" fill="#ffb32c" transform="translate(7 8)">HERMES LIVE-VOICE</text>
+    <text x="66" y="154" font-size="80" fill="#ffd21a">HERMES LIVE-VOICE</text>
+    <g clip-path="url(#lowerStripe)">
+      <text x="66" y="154" font-size="80" fill="#d57921">HERMES LIVE-VOICE</text>
+    </g>
+    <text x="70" y="194" font-size="22" fill="#e7edf7" letter-spacing="5">REALTIME SPEECH MODELS FOR HERMES AGENT</text>
+  </g>
+
+  <g fill="#ffd21a" opacity="0.9">
+    <rect x="1122" y="52" width="34" height="10" />
+    <rect x="1168" y="52" width="10" height="34" />
+    <rect x="1194" y="52" width="34" height="10" />
+    <rect x="1218" y="76" width="10" height="34" />
+  </g>
+</svg>

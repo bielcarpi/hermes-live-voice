@@ -1,40 +1,63 @@
-# hermes-live-voice
+<p align="center">
+  <img src="assets/banner.svg" alt="Hermes Live Voice" width="100%">
+</p>
 
-Realtime model voice gateway for Hermes Agent.
+<h1 align="center">Hermes Live Voice</h1>
 
-`hermes-live-voice` connects realtime speech models to Hermes Agent. It ships the `hermes-live` Hermes plugin plus a gateway runtime that handles WebSockets, audio frames, Gemini Live/OpenAI Realtime sessions, tool-call routing, interruption, approvals, and app-client auth.
+<p align="center">
+  <strong>Realtime speech models for Hermes Agent.</strong>
+</p>
 
-Hermes remains the brain: memory, tools, skills, terminal, files, MCP, approvals, and long-running work stay inside Hermes. Realtime providers are the ears, mouth, and turn-taking layer.
+<p align="center">
+  <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>
+  |
+  <a href="docs/architecture.md">Architecture</a>
+  |
+  <a href="docs/plugin.md">Plugin</a>
+  |
+  <a href="docs/client-protocol.md">Client Protocol</a>
+  |
+  <a href="docs/live-provider-testing.md">Live Provider Testing</a>
+</p>
+
+<p align="center">
+  <img alt="Status: v0.1.0" src="https://img.shields.io/badge/status-v0.1.0-ffcc00?style=for-the-badge">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-16a34a?style=for-the-badge">
+  <img alt="Providers: Gemini Live and OpenAI Realtime" src="https://img.shields.io/badge/providers-Gemini%20Live%20%2B%20OpenAI%20Realtime-7c3aed?style=for-the-badge">
+  <img alt="Runtime: Node 20+" src="https://img.shields.io/badge/runtime-Node%2020%2B-334155?style=for-the-badge">
+</p>
+
+`hermes-live-voice` is an open-source Hermes Agent plugin and realtime voice gateway. It lets browsers, mobile apps, desktop clients, or terminal smoke tests talk to Hermes through realtime speech APIs.
+
+Gemini Live and OpenAI Realtime handle the voice loop: speech input, speech output, turn-taking, interruption, and low-latency conversational flow. Hermes remains the brain: memory, tools, skills, terminal/file access, MCP, approvals, and long-running runs stay inside Hermes.
 
 ```txt
 Client app
   -> WebSocket /v1/live
   -> hermes-live gateway
   -> Gemini Live or OpenAI Realtime
-  -> function call: start_hermes_run()
+  -> gateway tool call: start_hermes_run()
   -> Hermes API Server /v1/runs
   -> Hermes tools, memory, skills, MCP
 ```
 
-## Why this exists
+This repo is Hermes-centered only. It is not tied to any hosted product, app, billing system, or private assistant UX.
 
-Hermes already has the hard agent parts. Realtime voice has a different runtime shape: persistent WebSockets, audio frames, fast turn-taking, barge-in, provider sessions, app-client auth, and gateway-level safety. Keeping that runtime as a plugin-managed gateway means people can use realtime voice without forking Hermes or waiting for a native Hermes platform adapter.
+## Why It Exists
 
-The repo is intentionally Hermes-centered. It does not depend on any particular app, product, or hosted service.
+Hermes already has the hard agent layer. Realtime voice has a different runtime shape: persistent WebSockets, audio frames, provider sessions, fast barge-in, client auth, and gateway-level safety. Keeping that runtime in a plugin-managed gateway lets people add voice to Hermes without forking Hermes core.
 
-The TypeScript gateway uses a small ports-and-adapters layout:
-
-```txt
-domain/                  wire protocol and audio primitives
-application/live-gateway gateway session orchestration and ports
-adapters/inbound/http    HTTP, WebSocket, and static demo transport
-adapters/outbound/hermes Hermes API Server HTTP/SSE client
-adapters/outbound/realtime Gemini, OpenAI, and mock realtime providers
-```
+| What you get | How it works |
+| --- | --- |
+| Hermes plugin | Installs as `hermes-live`, registers `hermes_live_status`, and exposes a `/hermes-live` slash command. |
+| Realtime gateway | Owns `/v1/live`, provider sessions, audio frames, auth, origin checks, and static demo serving. |
+| Provider bridge | Supports Gemini Live, OpenAI Realtime, and a mock provider for local development. |
+| Hermes run bridge | Starts Hermes runs, streams events, forwards approvals, and stops active runs on interruption/disconnect. |
+| Client protocol | JSON over WebSocket with PCM16 audio frames, text smoke messages, run events, provider transcripts, and errors. |
 
 ## Status
 
-This repository is an early Hermes plugin package and realtime gateway runtime. It is designed for self-hosted Hermes installations and integration work.
+`v0.1.0` is the first GitHub release line. It is intended for self-hosted Hermes installations and integration work.
 
 Implemented:
 
@@ -52,26 +75,21 @@ Implemented:
 - Static browser demo
 - Hermes plugin registration, discovery helper, status tool, and slash command
 
-## Install
+## Install From GitHub
 
-From a clone:
+This project is not published to npm yet. Use the GitHub release/tag.
 
 ```sh
+git clone https://github.com/bielcarpi/hermes-live-voice.git
+cd hermes-live-voice
+git checkout v0.1.0
 npm install
 npm run build
 node dist/cli.js plugin install --symlink
 hermes plugins enable hermes-live
 ```
 
-After the package is published, users can install the CLI globally:
-
-```sh
-npm install -g hermes-live-voice
-hermes-live plugin install
-hermes plugins enable hermes-live
-```
-
-Or run the Docker example:
+Or run the Docker example from a clone:
 
 ```sh
 HERMES_API_KEY=... HERMES_LIVE_AUTH_TOKEN=$(openssl rand -hex 32) \
@@ -86,74 +104,46 @@ Copy `.env.example` and set the pieces you need.
 cp .env.example .env
 ```
 
-For Gemini Live:
+Hermes API Server:
 
 ```sh
-HERMES_LIVE_PROVIDER=gemini
-GEMINI_API_KEY=...
 HERMES_BASE_URL=http://127.0.0.1:8642
 HERMES_API_KEY=...
 ```
 
 Set `HERMES_API_KEY` to the same value as Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth, and Hermes only accepts the long-term memory `X-Hermes-Session-Key` header from authenticated clients. `hermes-live` keeps that session key server-side and sends it to Hermes on run creation and follow-up run-scoped calls.
 
-Hermes JSON requests time out after 30 seconds by default. To tune that for a slower local or remote Hermes API Server:
+Gemini Live:
 
 ```sh
-HERMES_LIVE_HERMES_TIMEOUT_MS=60000
+HERMES_LIVE_PROVIDER=gemini
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-3.1-flash-live-preview
 ```
 
-Realtime provider sessions must become ready within 15 seconds by default. To tune that for slower provider handshakes:
-
-```sh
-HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS=30000
-```
-
-Text inputs and provider tool-call messages are limited to 20,000 characters by default:
-
-```sh
-HERMES_LIVE_MAX_TEXT_CHARS=20000
-```
-
-For Vertex/Gemini Enterprise mode, also set:
-
-```sh
-GOOGLE_GENAI_USE_ENTERPRISE=true
-GOOGLE_CLOUD_PROJECT=...
-GOOGLE_CLOUD_LOCATION=us-central1
-```
-
-For OpenAI Realtime:
+OpenAI Realtime:
 
 ```sh
 HERMES_LIVE_PROVIDER=openai
 OPENAI_API_KEY=...
 OPENAI_REALTIME_MODEL=gpt-realtime-2
 OPENAI_REALTIME_TURN_DETECTION=disabled
-HERMES_BASE_URL=http://127.0.0.1:8642
-HERMES_API_KEY=...
 ```
 
-For current OpenAI Realtime 1.x behavior, set:
+For current OpenAI Realtime 1.x behavior:
 
 ```sh
 OPENAI_REALTIME_MODEL=gpt-realtime-1.5
 ```
 
-The older `gpt-realtime` alias is still accepted if your OpenAI account is pinned to that model family.
-
-`OPENAI_REALTIME_TURN_DETECTION=disabled` keeps push-to-talk behavior where clients send `audio.end`. Set it to `semantic_vad` or `server_vad` for OpenAI-managed turn detection.
-
-For local gateway development without a realtime provider:
+Local mock provider:
 
 ```sh
 HERMES_LIVE_PROVIDER=mock
 HERMES_API_KEY=...
 ```
 
-The mock provider still requires a Hermes API Server with run endpoints unless tests inject a fake Hermes client.
-
-When binding beyond loopback, protect the gateway:
+Network-exposed gateway:
 
 ```sh
 HERMES_LIVE_HOST=0.0.0.0
@@ -175,18 +165,6 @@ Then open:
 http://127.0.0.1:8788
 ```
 
-The built-in browser demo is enabled by default for local development and disabled by default when `NODE_ENV=production`. To force it off:
-
-```sh
-HERMES_LIVE_DEMO_ENABLED=false
-```
-
-To expose it intentionally in a production/container environment:
-
-```sh
-HERMES_LIVE_DEMO_ENABLED=true
-```
-
 Useful commands:
 
 ```sh
@@ -195,12 +173,10 @@ node dist/cli.js client "What can Hermes do?"
 node dist/cli.js plugin install
 node dist/cli.js plugin status
 npm run check              # gateway, Hermes API, and provider readiness
-npm run check:cli-client
-npm run check:gateway
-npm run check:web-demo
-npm run print-config
 npm run verify
 ```
+
+The built-in browser demo is enabled by default for local development and disabled by default when `NODE_ENV=production`.
 
 ## Client Protocol
 
@@ -253,33 +229,31 @@ Or send text for smoke testing:
 
 See [docs/client-protocol.md](docs/client-protocol.md).
 
-## Terminal Client
+## Architecture
 
-After starting the gateway, send one text prompt through it:
+The TypeScript gateway uses a small ports-and-adapters layout:
 
-```sh
-node dist/cli.js client "Summarize my current project state."
+```txt
+domain/                  wire protocol and audio primitives
+application/live-gateway gateway session orchestration and ports
+adapters/inbound/http    HTTP, WebSocket, and static demo transport
+adapters/outbound/hermes Hermes API Server HTTP/SSE client
+adapters/outbound/realtime Gemini, OpenAI, and mock realtime providers
 ```
 
-When installed globally:
+`LiveGatewaySession` depends on application ports, not raw WebSocket, provider SDK, or Hermes HTTP details.
 
-```sh
-hermes-live client "Summarize my current project state."
-```
+See [docs/architecture.md](docs/architecture.md).
 
-Set `HERMES_LIVE_URL` when the gateway is not on `ws://127.0.0.1:8788/v1/live`. If `HERMES_LIVE_AUTH_TOKEN` is set, the client sends it as a bearer token.
+## Hermes Plugin
 
-The terminal client prints Hermes run output when the provider calls Hermes. If the realtime provider answers directly, it prints the provider transcript when that realtime response completes. If the provider completes with audio but no text transcript, the terminal client exits with a clear error; use the web demo or another voice client for audio-only responses.
+The GitHub repo/package name is `hermes-live-voice`. The installed CLI command and Hermes plugin id are intentionally `hermes-live`.
 
-## Hermes Plugin And Gateway
-
-`hermes-live-voice` should be treated as a Hermes plugin package. The npm package/repository name is `hermes-live-voice`; the installed CLI command and Hermes plugin id are intentionally `hermes-live`.
-
-The plugin gives Hermes a stable discovery/integration surface, registers a `hermes_live_status` tool, and adds a `/hermes-live` slash command for local gateway status. Install it with `hermes-live plugin install`, then enable it with `hermes plugins enable hermes-live`. The gateway runtime is the network/audio process that the plugin points to. Keeping the WebSocket and provider sessions in that runtime avoids pushing long-lived audio sockets into Hermes core while still making the project installable and understandable as a Hermes extension.
+The plugin gives Hermes a stable discovery/integration surface, registers a `hermes_live_status` tool, and adds a `/hermes-live` slash command for local gateway status. Install it with `node dist/cli.js plugin install`, then enable it with `hermes plugins enable hermes-live`.
 
 See [docs/plugin.md](docs/plugin.md).
 
-## Security Model
+## Security
 
 Do not expose Hermes directly to untrusted mobile or browser clients. Expose `hermes-live`, require gateway auth, restrict origins, and keep provider and Hermes credentials server-side.
 
