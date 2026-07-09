@@ -17,7 +17,7 @@ export type LiveModelEvent =
   | { type: "audio"; audio: LiveModelAudio }
   | { type: "text"; text: string }
   | { type: "tool_call"; call: LiveToolCall }
-  | { type: "input_speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number }
+  | { type: "input_speech_started"; provider: "openai" | "local"; itemId?: string; audioStartMs?: number }
   | { type: "raw"; message: unknown };
 
 export interface LiveModelCallbacks {
@@ -33,6 +33,7 @@ export interface LiveModelSession {
   sendAudioStreamEnd(): Promise<void>;
   cancelResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean>;
   sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void>;
+  sendNarration(text: string): Promise<void>;
   close(): Promise<void>;
 }
 

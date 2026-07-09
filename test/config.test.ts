@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertRuntimeConfig, loadConfig, makeSessionKey, realtimeProviderConfigured, sanitizeSessionComponent } from "../src/config.js";
+import { assertRuntimeConfig, loadConfig, makeSessionKey, realtimeProviderConfigured, sanitizeSessionComponent, selectedRealtimeModel } from "../src/config.js";
 
 describe("config", () => {
   it("loads defaults and selects Gemini as the default provider", () => {
@@ -174,5 +174,53 @@ describe("config", () => {
     expect(() => assertRuntimeConfig(missingProject)).toThrow(/GOOGLE_CLOUD_PROJECT/);
     expect(realtimeProviderConfigured(withProject)).toBe(true);
     expect(() => assertRuntimeConfig(withProject)).not.toThrow();
+  });
+
+  describe("local provider", () => {
+    const baseEnv = {
+      HERMES_LIVE_PROVIDER: "local" as const,
+      HERMES_BASE_URL: "http://127.0.0.1:8642",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
+    };
+
+    it("populates local defaults when provider is local", () => {
+      const config = loadConfig(baseEnv);
+
+      expect(config.local.baseUrl).toBe("ws://127.0.0.1:8765/v1/realtime");
+      expect(config.local.voice).toBe("Aiden");
+    });
+
+    it("accepts custom local realtime base URL and voice", () => {
+      const config = loadConfig({
+        ...baseEnv,
+        HERMES_LOCAL_REALTIME_BASE_URL: "wss://my-server.local:8765/v1/realtime",
+        HERMES_LOCAL_REALTIME_VOICE: "Nova",
+      });
+
+      expect(config.local.baseUrl).toBe("wss://my-server.local:8765/v1/realtime");
+      expect(config.local.voice).toBe("Nova");
+    });
+
+    it("rejects a non-ws/wss scheme for HERMES_LOCAL_REALTIME_BASE_URL", () => {
+      expect(() =>
+        loadConfig({ ...baseEnv, HERMES_LOCAL_REALTIME_BASE_URL: "http://127.0.0.1:8765" }),
+      ).toThrow(/ws:\/\/ or wss:\/\//);
+    });
+
+    it("selectedRealtimeModel returns hf-realtime-voice for local provider", () => {
+      expect(selectedRealtimeModel("local", "gemini-model", "openai-model")).toBe("hf-realtime-voice");
+    });
+
+    it("realtimeProviderConfigured returns true when local baseUrl is set", () => {
+      const config = loadConfig(baseEnv);
+
+      expect(realtimeProviderConfigured(config)).toBe(true);
+    });
+
+    it("does not throw assertRuntimeConfig for local provider with defaults", () => {
+      const config = loadConfig(baseEnv);
+
+      expect(() => assertRuntimeConfig(config)).not.toThrow();
+    });
   });
 });

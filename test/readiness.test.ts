@@ -57,4 +57,27 @@ describe("readiness", () => {
     expect(report.realtime).toMatchObject({ ok: true, configured: true, injected: true, provider: "openai", sessionChecked: false });
     expect(hermes.assertRunsSupported).toHaveBeenCalledOnce();
   });
+
+  it("reports local realtime provider configuration without OpenAI-specific fields", async () => {
+    const report = await buildReadinessReport(
+      loadConfig({
+        HERMES_BASE_URL: "http://127.0.0.1:9",
+        HERMES_LIVE_PROVIDER: "local",
+        HERMES_LOCAL_REALTIME_BASE_URL: "ws://127.0.0.1:8765/v1/realtime",
+        HERMES_LOCAL_REALTIME_VOICE: "Aiden",
+      }),
+    );
+
+    expect(report.realtime).toMatchObject({
+      ok: true,
+      configured: true,
+      provider: "local",
+      model: "hf-realtime-voice",
+      sessionChecked: false,
+      baseUrl: "ws://127.0.0.1:8765/v1/realtime",
+      voice: "Aiden",
+    });
+    expect(report.realtime).not.toHaveProperty("reasoningEffort");
+    expect(report.realtime).not.toHaveProperty("turnDetection");
+  });
 });

@@ -43,7 +43,7 @@ Expected:
     "model": "gpt-realtime-2",
     "sessionChecked": false,
     "baseUrl": "wss://api.openai.com/v1/realtime",
-    "voice": "marin",
+    "voice": "echo",
     "reasoningEffort": "low",
     "turnDetection": "disabled",
     "inputAudioFormat": "pcm16",
@@ -119,6 +119,20 @@ HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
+
+Local Speech-to-Speech (hf-realtime-voice):
+
+```sh
+HERMES_LIVE_PROVIDER=local \
+HERMES_LOCAL_REALTIME_BASE_URL=ws://127.0.0.1:8765/v1/realtime \
+HERMES_LOCAL_REALTIME_VOICE=Aiden \
+HERMES_BASE_URL=http://127.0.0.1:8642 \
+HERMES_AGENT_API_SERVER_KEY=... \
+HERMES_LIVE_AUTH_TOKEN=local-test-token \
+npm run dev
+```
+
+Requires a separately-running `hf-realtime-voice` backend (its own `run.sh`, external process — not started by `hermes-live-voice`). Start it first, confirm it is listening on `HERMES_LOCAL_REALTIME_BASE_URL`, then start the gateway.
 
 For current Realtime 1.x sessions:
 
@@ -226,6 +240,16 @@ Gemini Live expects raw PCM input and returns raw PCM output. The gateway normal
 The default `GEMINI_MODEL` is the Gemini API Live preview model used by this repo. Gemini Enterprise / Vertex deployments can expose a narrower supported-model list, so override `GEMINI_MODEL` to an Enterprise-supported Live model if `session.start` returns a provider model error.
 
 For Gemini 3.1 Live, text updates during an active conversation go through `sendRealtimeInput({ text })`. `sendClientContent` is kept only as an SDK compatibility fallback because current Gemini 3.1 Live guidance limits client content to initial context history seeding.
+
+## Local Provider Notes
+
+The local provider talks to a reduced subset of the OpenAI Realtime WebSocket protocol implemented by the `hf-realtime-voice` speech-to-speech backend. Key differences from OpenAI Realtime:
+
+- **Single session at a time.** The backend accepts only one concurrent WebSocket connection; a second attempt is rejected with a clear "single-session limit" error from the gateway.
+- **No authentication.** The backend has no auth layer — keep it on a trusted/local network. The gateway warns at startup if `HERMES_LIVE_HOST` is network-accessible while the local backend URL is not loopback.
+- **Fixed 16kHz PCM16 audio**, both directions — no format negotiation.
+- **No push-to-talk.** Turn-taking is always VAD-driven by the backend; `audio.end` has no effect for this provider.
+- **No mid-response truncation.** Barge-in cancels the whole in-flight response (`response.cancel`) but does not trim previously-sent audio at a precise timestamp.
 
 References:
 

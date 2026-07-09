@@ -21,7 +21,7 @@ const EnvSchema = z.object({
   HERMES_LIVE_RUN_INSTRUCTIONS: z.string().optional(),
   HERMES_LIVE_HERMES_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 
-  HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "mock"]).default("gemini"),
+  HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "local", "mock"]).default("gemini"),
   GEMINI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-3.1-flash-live-preview"),
@@ -33,14 +33,21 @@ const EnvSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_REALTIME_BASE_URL: z.string().url().default("wss://api.openai.com/v1/realtime"),
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
-  OPENAI_REALTIME_VOICE: z.string().default("marin"),
+  OPENAI_REALTIME_VOICE: z.string().default("echo"),
   OPENAI_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("low"),
   OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),
   OPENAI_REALTIME_INPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
+
+  HERMES_LOCAL_REALTIME_BASE_URL: z
+    .string()
+    .url()
+    .default("ws://127.0.0.1:8765/v1/realtime")
+    .refine((v) => v.startsWith("ws://") || v.startsWith("wss://"), "must be a ws:// or wss:// URL"),
+  HERMES_LOCAL_REALTIME_VOICE: z.string().default("Aiden"),
 });
 
-export type RealtimeProvider = "gemini" | "openai" | "mock";
+export type RealtimeProvider = "gemini" | "openai" | "local" | "mock";
 
 export interface AppConfig {
   server: {
@@ -83,6 +90,10 @@ export interface AppConfig {
     turnDetection: "disabled" | "semantic_vad" | "server_vad";
     inputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
     outputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
+  };
+  local: {
+    baseUrl: string;
+    voice: string;
   };
 }
 
@@ -138,6 +149,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       inputAudioFormat: parsed.OPENAI_REALTIME_INPUT_AUDIO_FORMAT,
       outputAudioFormat: parsed.OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT,
     },
+    local: {
+      baseUrl: withoutTrailingSlash(parsed.HERMES_LOCAL_REALTIME_BASE_URL),
+      voice: parsed.HERMES_LOCAL_REALTIME_VOICE,
+    },
   };
 }
 
@@ -165,9 +180,30 @@ export function assertGatewayExposureConfig(config: Pick<AppConfig, "server">): 
   }
 }
 
-export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" | "gemini" | "openai">): void {
+export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" | "gemini" | "openai" | "local" | "server">): void {
   if (config.realtime.provider === "gemini" && config.gemini.enterprise && !config.gemini.project) {
     throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
+  }
+  if (config.realtime.provider === "local") {
+    const url = config.local.baseUrl;
+    if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
+      throw new Error("HERMES_LOCAL_REALTIME_BASE_URL must be a ws:// or wss:// URL.");
+    }
+    if (isNetworkAccessibleHost(config.server.host)) {
+      try {
+        const parsed = new URL(url);
+        const hostname = parsed.hostname;
+        if (!["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname)) {
+          console.warn(
+            "Warning: HERMES_LIVE_HOST is network-accessible but HERMES_LOCAL_REALTIME_BASE_URL points to a non-loopback host. " +
+              "Ensure the local realtime backend is properly secured.",
+          );
+        }
+      } catch {
+        // URL already validated by Zod; ignore parse errors here
+      }
+    }
+    return;
   }
   if (realtimeProviderConfigured(config)) {
     return;
@@ -182,9 +218,12 @@ export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" 
   }
 }
 
-export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | "gemini" | "openai">): boolean {
+export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | "gemini" | "openai" | "local">): boolean {
   if (config.realtime.provider === "mock") {
     return true;
+  }
+  if (config.realtime.provider === "local") {
+    return Boolean(config.local.baseUrl);
   }
   if (config.realtime.provider === "openai") {
     return Boolean(config.openai.apiKey);
@@ -218,7 +257,10 @@ function withoutTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, openaiModel: string): string {
+export function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, openaiModel: string): string {
+  if (provider === "local") {
+    return "hf-realtime-voice";
+  }
   if (provider === "openai") {
     return openaiModel;
   }

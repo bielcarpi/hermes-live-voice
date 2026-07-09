@@ -70,7 +70,7 @@ Hermes already has the hard agent layer. Realtime voice has a different runtime 
 | --- | --- |
 | Hermes plugin | Installs as `hermes-live`, registers `hermes_live_status`, and exposes a `/hermes-live` slash command. |
 | Realtime gateway | Owns `/v1/live`, provider sessions, audio frames, auth, origin checks, and static demo serving. |
-| Provider bridge | Supports Gemini Live, OpenAI Realtime, and a mock provider for local development. |
+| Provider bridge | Supports Gemini Live, OpenAI Realtime, a local speech-to-speech backend, and a mock provider for local development. |
 | Hermes run bridge | Starts Hermes runs, streams events, forwards approvals, and stops active runs on interruption/disconnect. |
 | Client protocol | JSON over WebSocket with PCM16 audio frames, text smoke messages, run events, provider transcripts, and errors. |
 
@@ -86,6 +86,7 @@ Implemented:
 - `WS /v1/live`
 - Gemini Live adapter
 - OpenAI Realtime adapter
+- Local speech-to-speech adapter (hf-realtime-voice backend)
 - Mock provider for local development
 - Hermes `/v1/runs` client
 - Hermes run event streaming over SSE
@@ -167,6 +168,16 @@ OPENAI_API_KEY=...
 OPENAI_REALTIME_MODEL=gpt-realtime-2
 OPENAI_REALTIME_TURN_DETECTION=disabled
 ```
+
+Local speech-to-speech (hf-realtime-voice backend):
+
+```sh
+HERMES_LIVE_PROVIDER=local
+HERMES_LOCAL_REALTIME_BASE_URL=ws://127.0.0.1:8765/v1/realtime
+HERMES_LOCAL_REALTIME_VOICE=Aiden
+```
+
+Requires a separately-running `hf-realtime-voice` speech-to-speech backend (its own Python process, started independently). See [docs/live-provider-testing.md](docs/live-provider-testing.md) for setup and the single-session limitation.
 
 For current OpenAI Realtime 1.x behavior:
 

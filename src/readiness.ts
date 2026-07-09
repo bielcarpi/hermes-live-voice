@@ -114,6 +114,13 @@ function realtimeCheckSummary(config: AppConfig): Record<string, unknown> {
       outputAudioFormat: config.openai.outputAudioFormat,
     };
   }
+  if (config.realtime.provider === "local") {
+    return {
+      ...base,
+      baseUrl: config.local.baseUrl,
+      voice: config.local.voice,
+    };
+  }
   return base;
 }
 
