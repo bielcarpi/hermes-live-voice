@@ -67,7 +67,7 @@ try {
   if (readiness.status !== "ready") {
     throw new Error(`Gateway readiness status mismatch: ${JSON.stringify(readiness)}.`);
   }
-  if (readiness.checks?.gateway?.ok !== true || readiness.checks?.hermes?.ok !== true || readiness.checks?.realtime?.ok !== true) {
+  if (readiness.checks?.gateway?.ok !== true || readiness.checks?.agent?.ok !== true || readiness.checks?.realtime?.ok !== true) {
     throw new Error(`Gateway readiness checks were not all ok: ${JSON.stringify(readiness)}.`);
   }
   if (readiness.checks?.realtime?.provider !== "mock" || readiness.checks?.realtime?.model !== "mock-live") {

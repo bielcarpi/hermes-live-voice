@@ -35,8 +35,8 @@ try {
 
 assertEqual(report.ok, false, "report.ok");
 assertEqual(report.gateway?.ok, true, "gateway.ok");
-assertEqual(report.hermes?.ok, false, "hermes.ok");
-assertIncludes(report.hermes?.error, "HERMES_AGENT_API_SERVER_KEY", "hermes.error");
+assertEqual(report.agent?.ok, false, "agent.ok");
+assertIncludes(report.agent?.error, "HERMES_AGENT_API_SERVER_KEY", "agent.error");
 assertEqual(report.realtime?.ok, false, "realtime.ok");
 assertEqual(report.realtime?.configured, false, "realtime.configured");
 assertEqual(report.realtime?.provider, "openai", "realtime.provider");

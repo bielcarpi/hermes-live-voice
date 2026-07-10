@@ -75,7 +75,7 @@ function summarize(msg) {
   if (!msg || typeof msg !== "object") return "";
   switch (msg.type) {
     case "session.start":    return `profile=${msg.profileId} user=${msg.userLabel}`;
-    case "session.ready":    return `model=${msg.model} hermesModel=${msg.hermes?.model ?? "?"}`;
+    case "session.ready":    return `model=${msg.model} agentModel=${msg.agent?.model ?? "?"}`;
     case "text.input":       return `"${String(msg.text).slice(0, 80)}"`;
     case "transcript.delta": return `[${msg.speaker}] "${String(msg.text ?? "").slice(0, 60)}"`;
     case "run.started":      return `runId=${msg.runId}`;
@@ -257,7 +257,7 @@ async function main() {
     "session.ready",
   );
 
-  log("PHASE 1", `✓ session.ready  model=${results.sessionReady.model}  hermesModel=${results.sessionReady.hermes?.model ?? "?"}`, GREEN);
+  log("PHASE 1", `✓ session.ready  model=${results.sessionReady.model}  agentModel=${results.sessionReady.agent?.model ?? "?"}`, GREEN);
   assert(results.sessionReady.type === "session.ready", "Expected session.ready");
   assert(results.sessionReady.sessionId, "session.ready must include sessionId");
 
