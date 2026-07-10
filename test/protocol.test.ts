@@ -60,10 +60,11 @@ describe("protocol", () => {
 
   it("exposes only gateway tools to OpenAI Realtime", () => {
     expect(OPENAI_HERMES_LIVE_TOOLS.map((tool) => tool.name)).toEqual([
-      "start_hermes_run",
-      "get_hermes_run_status",
-      "stop_hermes_run",
-      "submit_hermes_approval",
+      "start_agent_run",
+      "get_agent_run_status",
+      "stop_agent_run",
+      "submit_agent_approval",
+      "generate_agent_random_number",
     ]);
     expect(OPENAI_HERMES_LIVE_TOOLS.every((tool) => tool.type === "function")).toBe(true);
     expect(OPENAI_HERMES_LIVE_TOOLS[0]).toHaveProperty("parameters");
@@ -72,10 +73,11 @@ describe("protocol", () => {
 
   it("uses Gemini SDK function declaration schema shape", () => {
     expect(HERMES_LIVE_TOOL_DECLARATIONS.map((tool) => tool.name)).toEqual([
-      "start_hermes_run",
-      "get_hermes_run_status",
-      "stop_hermes_run",
-      "submit_hermes_approval",
+      "start_agent_run",
+      "get_agent_run_status",
+      "stop_agent_run",
+      "submit_agent_approval",
+      "generate_agent_random_number",
     ]);
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).toHaveProperty("parametersJsonSchema");
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).not.toHaveProperty("parameters");

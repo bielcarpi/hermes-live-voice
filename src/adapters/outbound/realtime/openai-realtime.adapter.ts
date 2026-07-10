@@ -76,6 +76,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
   private readonly handledToolCalls = new Set<string>();
   private responseActive = false;
   private responsePending = false;
+  private toolResponsePending = false;
 
   private get busy(): boolean {
     return this.responseActive || this.responsePending;
@@ -154,6 +155,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
     });
     if (!this.busy) {
       this.createResponse();
+    } else {
+      // Response still in flight (e.g. narration) — defer follow-up until it settles.
+      this.toolResponsePending = true;
     }
   }
 
@@ -209,6 +213,10 @@ class OpenAIRealtimeSession implements LiveModelSession {
     ) {
       this.responsePending = false;
       this.responseActive = false;
+      if (this.toolResponsePending) {
+        this.toolResponsePending = false;
+        this.createResponse();
+      }
     }
   }
 }
@@ -349,7 +357,7 @@ function extractOpenAIFunctionCalls(root: any): LiveToolCall[] {
       calls.push({ id: item.call_id, name: String(item.name ?? ""), args: normalizeArgs(item.arguments ?? {}) });
     }
   }
-  return calls.filter((call) => call.name.length > 0 && hasNonEmptyArgs(call.args));
+  return calls.filter((call) => call.name.length > 0);
 }
 
 function normalizeArgs(value: unknown): Record<string, unknown> {
@@ -362,10 +370,6 @@ function normalizeArgs(value: unknown): Record<string, unknown> {
     }
   }
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function hasNonEmptyArgs(args: Record<string, unknown>): boolean {
-  return Object.values(args).some((v) => typeof v === "string" && v.length > 0);
 }
 
 function buildRealtimeUrl(baseUrl: string, model: string): string {

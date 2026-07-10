@@ -13,13 +13,13 @@ describe("Gemini Live adapter helpers", () => {
   it("normalizes function calls from Gemini toolCall messages", () => {
     const events = normalizeGeminiLiveMessage({
       toolCall: {
-        functionCalls: [{ id: "call_1", name: "start_hermes_run", args: { message: "hello" } }],
+        functionCalls: [{ id: "call_1", name: "start_agent_run", args: { message: "hello" } }],
       },
     });
 
     expect(events).toContainEqual({
       type: "tool_call",
-      call: { id: "call_1", name: "start_hermes_run", args: { message: "hello" } },
+      call: { id: "call_1", name: "start_agent_run", args: { message: "hello" } },
     });
   });
 
@@ -94,10 +94,10 @@ describe("Gemini Live adapter helpers", () => {
   });
 
   it("builds Gemini tool responses with the function call id", () => {
-    expect(buildGeminiToolResponse({ id: "call_1", name: "start_hermes_run", args: {} }, { ok: true })).toEqual({
-      functionResponses: [{ id: "call_1", name: "start_hermes_run", response: { ok: true } }],
+    expect(buildGeminiToolResponse({ id: "call_1", name: "start_agent_run", args: {} }, { ok: true })).toEqual({
+      functionResponses: [{ id: "call_1", name: "start_agent_run", response: { ok: true } }],
     });
-    expect(() => buildGeminiToolResponse({ name: "start_hermes_run", args: {} }, { ok: false })).toThrow(/did not include an id/);
+    expect(() => buildGeminiToolResponse({ name: "start_agent_run", args: {} }, { ok: false })).toThrow(/did not include an id/);
   });
 
   it("fails direct adapter connects with clear credential errors", async () => {

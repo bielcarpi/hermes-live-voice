@@ -14,7 +14,7 @@ export interface ReadinessSection extends Record<string, unknown> {
 export interface ReadinessReport {
   ok: boolean;
   gateway: ReadinessSection;
-  hermes: ReadinessSection;
+  agent: ReadinessSection;
   realtime: ReadinessSection;
 }
 
@@ -26,12 +26,12 @@ export interface BuildReadinessReportOptions {
 
 export async function buildReadinessReport(config: AppConfig, options: BuildReadinessReportOptions = {}): Promise<ReadinessReport> {
   const gateway = checkGatewayConfig(config);
-  const hermes = await checkHermesConfig(config, options);
+  const agent = await checkHermesConfig(config, options);
   const realtime = checkRealtimeConfig(config, options);
   return {
-    ok: gateway.ok && hermes.ok && realtime.ok,
+    ok: gateway.ok && agent.ok && realtime.ok,
     gateway,
-    hermes,
+    agent,
     realtime,
   };
 }

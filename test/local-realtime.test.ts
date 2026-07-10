@@ -87,12 +87,12 @@ describe("Local Realtime adapter helpers", () => {
       normalizeLocalRealtimeEvent({
         type: "response.function_call_arguments.done",
         call_id: "call_1",
-        name: "start_hermes_run",
+        name: "start_agent_run",
         arguments: '{"message":"hello"}',
       }),
     ).toContainEqual({
       type: "tool_call",
-      call: { id: "call_1", name: "start_hermes_run", args: { message: "hello" } },
+      call: { id: "call_1", name: "start_agent_run", args: { message: "hello" } },
     });
   });
 

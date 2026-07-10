@@ -4,6 +4,22 @@
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #000000;
   color: #f7f5ee;
+  --surface-page: #000000;
+  --surface-panel: rgba(6, 9, 14, 0.72);
+  --surface-input: rgba(255, 255, 255, 0.07);
+  --surface-raised: rgba(255, 255, 255, 0.1);
+  --text-primary: #f7f5ee;
+  --text-secondary: #aeb8c8;
+  --text-log: #e9eef7;
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --accent-assistant: #47A85A;
+  --accent-assistant-hover: #3a9148;
+  --accent-you: #7B52C4;
+  --accent-run: #e8a838;
+  --accent-approval: #e87c38;
+  --accent-error: #e85050;
+  --accent-log-dim: #6b7a8d;
 }
 
 * {
@@ -35,7 +51,7 @@ input {
   width: min(980px, 100%);
   min-height: min(760px, calc(100vh - 48px));
   display: grid;
-  grid-template-rows: auto auto auto 1fr;
+  grid-template-rows: auto auto auto auto 1fr;
   gap: 16px;
 }
 
@@ -59,7 +75,7 @@ h1 {
 
 #status {
   margin-top: 6px;
-  color: #aeb8c8;
+  color: var(--text-secondary);
 }
 
 .controls {
@@ -71,7 +87,7 @@ h1 {
 label {
   display: grid;
   gap: 6px;
-  color: #aeb8c8;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -80,21 +96,21 @@ input {
   height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.07);
-  color: #f7f5ee;
+  background: var(--surface-input);
+  color: var(--text-primary);
   padding: 0 12px;
   outline: none;
 }
 
 input:focus {
-  border-color: #7B52C4;
+  border-color: var(--accent-you);
 }
 
 button {
   height: 44px;
   border: 0;
   border-radius: 8px;
-  background: #47A85A;
+  background: var(--accent-assistant);
   color: #071a0c;
   padding: 0 16px;
   cursor: pointer;
@@ -103,7 +119,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: #3a9148;
+  background: var(--accent-assistant-hover);
 }
 
 button:disabled {
@@ -112,16 +128,48 @@ button:disabled {
 }
 
 button.secondary {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f7f5ee;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-pill {
+  height: 32px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: rgba(71, 168, 90, 0.14);
+  color: var(--text-primary);
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.filter-pill:hover:not(:disabled) {
+  background: rgba(71, 168, 90, 0.24);
+}
+
+.filter-pill.is-inactive,
+.filter-pill.is-inactive:hover:not(:disabled) {
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+}
+
+.filter-pill:focus-visible {
+  outline: 2px solid var(--accent-you);
+  outline-offset: 2px;
 }
 
 .log {
   min-height: 360px;
   overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
-  background: rgba(6, 9, 14, 0.72);
+  background: var(--surface-panel);
   padding: 16px;
 }
 
@@ -129,7 +177,11 @@ button.secondary {
   display: grid;
   gap: 4px;
   padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.entry.filter-hidden {
+  display: none;
 }
 
 .entry:last-child {
@@ -137,16 +189,71 @@ button.secondary {
 }
 
 .entry strong {
-  color: #47A85A;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-assistant);
   font-size: 12px;
   text-transform: uppercase;
+}
+
+.entry[data-kind="you"] strong {
+  color: var(--accent-you);
+}
+
+.entry[data-kind="assistant"] strong,
+.entry[data-kind="agent"] strong {
+  color: var(--accent-assistant);
+}
+
+.entry[data-kind="run"] strong,
+.entry[data-kind="run.event"] strong {
+  color: var(--accent-run);
+}
+
+.entry[data-kind="session"] strong,
+.entry[data-kind="speech"] strong {
+  color: var(--text-secondary);
+}
+
+.entry[data-kind="error"] strong {
+  color: var(--accent-error);
+}
+
+.entry[data-kind="approval"] strong {
+  color: var(--accent-approval);
+}
+
+.entry[data-kind="log"] strong,
+.entry.entry-misc strong {
+  color: var(--accent-log-dim);
+}
+
+.timing-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.timing-chip[hidden] {
+  display: none;
 }
 
 .entry pre {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: #e9eef7;
+  color: var(--text-log);
 }
 
 .approval-actions {
@@ -160,12 +267,12 @@ button.secondary {
   height: 34px;
   padding: 0 12px;
   background: rgba(255, 255, 255, 0.12);
-  color: #f7f5ee;
+  color: var(--text-primary);
 }
 
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   gap: 10px;
 }
 

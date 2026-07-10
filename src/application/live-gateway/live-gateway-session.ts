@@ -115,18 +115,18 @@ export class LiveGatewaySession {
           return;
         }
         clearProviderReadyTimeout();
-        const hermesInfo: { model?: string; capabilities?: Record<string, unknown> } = {};
+        const agentInfo: { model?: string; capabilities?: Record<string, unknown> } = {};
         if (typeof capabilities.model === "string") {
-          hermesInfo.model = capabilities.model;
+          agentInfo.model = capabilities.model;
         }
         if (capabilities.features) {
-          hermesInfo.capabilities = capabilities.features;
+          agentInfo.capabilities = capabilities.features;
         }
         this.send({
           type: "session.ready",
           sessionId: this.id,
           model: this.deps.config.realtime.model,
-          hermes: hermesInfo,
+          agent: agentInfo,
         });
         readySent = true;
         resolveProviderReady();
@@ -268,12 +268,12 @@ export class LiveGatewaySession {
       throw new Error(`Realtime tool call ${call.name || "<unknown>"} did not include an id.`);
     }
     switch (call.name) {
-      case "start_hermes_run": {
+      case "start_agent_run": {
         const message = stringArg(call, "message");
         if (!message) {
-          throw new Error("start_hermes_run requires message.");
+          throw new Error("start_agent_run requires message.");
         }
-        validateText(message, this.deps.config.server.maxTextChars, "Hermes run message");
+        validateText(message, this.deps.config.server.maxTextChars, "Agent run message");
         const recentContext = stringArg(call, "recent_voice_context");
         if (recentContext) {
           validateText(recentContext, this.deps.config.server.maxTextChars, "Recent voice context");
@@ -282,19 +282,19 @@ export class LiveGatewaySession {
         await this.liveSession?.sendToolResponse(call, result);
         break;
       }
-      case "get_hermes_run_status": {
+      case "get_agent_run_status": {
         const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
         const status = await this.deps.hermes.getRun(runId, this.hermesRequestOptions());
         await this.liveSession?.sendToolResponse(call, { ok: true, status });
         break;
       }
-      case "stop_hermes_run": {
+      case "stop_agent_run": {
         const runId = stringArg(call, "run_id") || this.activeRunId;
         const stopped = await this.stopRun(runId, stringArg(call, "reason"));
         await this.liveSession?.sendToolResponse(call, stopped);
         break;
       }
-      case "submit_hermes_approval": {
+      case "submit_agent_approval": {
         const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
         const parsedChoice = ApprovalChoiceSchema.parse(stringArg(call, "choice"));
         const result = await this.deps.hermes.submitApproval(runId, parsedChoice, {
@@ -304,8 +304,26 @@ export class LiveGatewaySession {
         await this.liveSession?.sendToolResponse(call, { ok: true, result });
         break;
       }
+      case "generate_agent_random_number": {
+        const receivedAt = Date.now();
+        const min = numberArg(call, "min") ?? 0;
+        const max = numberArg(call, "max") ?? 100;
+        this.deps.logger.info("agent_random_number_requested", { sessionId: this.id, callId: call.id, rawArgs: call.args, min, max });
+        const value = randomIntInRange(min, max);
+        this.deps.logger.info("agent_random_number_tool_call", {
+          sessionId: this.id,
+          callId: call.id,
+          min,
+          max,
+          value,
+          handlerLatencyMs: Date.now() - receivedAt,
+        });
+        await this.liveSession?.sendToolResponse(call, { ok: true, value, min, max });
+        this.deps.logger.info("agent_random_number_responded", { sessionId: this.id, callId: call.id, value });
+        break;
+      }
       default:
-        await this.liveSession?.sendToolResponse(call, { ok: false, error: `Unknown hermes-live tool: ${call.name}` });
+        await this.liveSession?.sendToolResponse(call, { ok: false, error: `Unknown agent tool: ${call.name}` });
     }
   }
 
@@ -346,6 +364,14 @@ export class LiveGatewaySession {
         ...(event.itemId ? { itemId: event.itemId } : {}),
         ...(event.audioStartMs === undefined ? {} : { audioStartMs: event.audioStartMs }),
       });
+    } else if (event.type === "input_speech_stopped") {
+      this.deps.logger.info("user_speaking_stopped", { sessionId: this.id, durationS: event.durationS });
+      this.send({
+        type: "input.speech_stopped",
+        provider: event.provider,
+        ...(event.durationS === undefined ? {} : { durationS: event.durationS }),
+        ...(event.audioEndMs === undefined ? {} : { audioEndMs: event.audioEndMs }),
+      });
     } else {
       this.send({ type: "realtime.message", message: event.message });
     }
@@ -356,7 +382,7 @@ export class LiveGatewaySession {
       throw new Error("session.start has not completed.");
     }
     if (this.hermesRunActive) {
-      return { ok: false, error: "A Hermes run is already active for this voice session." };
+      return { ok: false, error: "An agent run is already active for this voice session." };
     }
 
     this.hermesRunActive = true;
@@ -415,7 +441,7 @@ export class LiveGatewaySession {
         } else if (event.event === "run.failed") {
           terminal = true;
           this.deps.logger.warn("hermes_run_failed", { sessionId: this.id, runId, error: String(event.error ?? "unknown") });
-          return { ok: false, run_id: runId, status: "failed", output: transcript.join(""), error: String(event.error ?? "Hermes run failed.") };
+          return { ok: false, run_id: runId, status: "failed", output: transcript.join(""), error: String(event.error ?? "Agent run failed.") };
         } else if (event.event === "run.cancelled") {
           terminal = true;
           this.deps.logger.info("hermes_run_cancelled", { sessionId: this.id, runId });
@@ -425,7 +451,7 @@ export class LiveGatewaySession {
 
       if (!terminal) {
         const output = transcript.join("");
-        const error = "Hermes run event stream ended before a terminal event.";
+        const error = "Agent run event stream ended before a terminal event.";
         this.send({ type: "run.failed", runId, error });
         return { ok: false, run_id: runId, status: "incomplete", output, error };
       }
@@ -452,7 +478,7 @@ export class LiveGatewaySession {
       this.deps.logger.info("hermes_approval_requested", { sessionId: this.id, runId });
       this.send({ type: "approval.request", runId, event });
     } else if (event.event === "run.failed") {
-      this.send({ type: "run.failed", runId, error: String(event.error ?? "Hermes run failed.") });
+      this.send({ type: "run.failed", runId, error: String(event.error ?? "Agent run failed.") });
     } else if (event.event === "run.cancelled") {
       this.send({ type: "run.stopped", runId, status: "cancelled" });
     }
@@ -476,7 +502,7 @@ export class LiveGatewaySession {
     const target = this.resolveActiveRunId(runId);
     const result = await this.deps.hermes.stopRun(target, this.hermesRequestOptions());
     this.send({ type: "run.stopped", runId: target, status: result.status ?? "stopping" });
-    this.send({ type: "log", level: "info", message: "Hermes run stop requested", data: { runId: target, reason } });
+    this.send({ type: "log", level: "info", message: "Agent run stop requested", data: { runId: target, reason } });
     return { ok: true, run_id: target, status: result.status ?? "stopping" };
   }
 
@@ -486,10 +512,10 @@ export class LiveGatewaySession {
 
   private resolveActiveRunId(requestedRunId: string | undefined): string {
     if (!this.activeRunId) {
-      throw new Error("No active Hermes run.");
+      throw new Error("No active agent run.");
     }
     if (requestedRunId && requestedRunId !== this.activeRunId) {
-      throw new Error("Requested Hermes run is not active in this voice session.");
+      throw new Error("Requested agent run is not active in this voice session.");
     }
     return this.activeRunId;
   }
@@ -596,4 +622,15 @@ function safetyIdentifierForSessionKey(sessionKey: string): string {
 function stringArg(call: LiveToolCall, name: string): string {
   const value = call.args[name];
   return typeof value === "string" ? value : "";
+}
+
+function numberArg(call: LiveToolCall, name: string): number | undefined {
+  const value = call.args[name];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function randomIntInRange(min: number, max: number): number {
+  const lo = Math.ceil(Math.min(min, max));
+  const hi = Math.floor(Math.max(min, max));
+  return Math.floor(Math.random() * (hi - lo + 1)) + lo;
 }

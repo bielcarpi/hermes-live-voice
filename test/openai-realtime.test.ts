@@ -38,12 +38,12 @@ describe("OpenAI Realtime adapter helpers", () => {
       normalizeOpenAIRealtimeEvent({
         type: "response.function_call_arguments.done",
         call_id: "call_1",
-        name: "start_hermes_run",
+        name: "start_agent_run",
         arguments: '{"message":"hello"}',
       }),
     ).toContainEqual({
       type: "tool_call",
-      call: { id: "call_1", name: "start_hermes_run", args: { message: "hello" } },
+      call: { id: "call_1", name: "start_agent_run", args: { message: "hello" } },
     });
   });
 
@@ -152,6 +152,64 @@ describe("OpenAI Realtime adapter helpers", () => {
       await closeServer(server);
     }
   });
+
+  it("defers the follow-up response.create when a tool resolves while the announcing response is still active", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const clientMessages: any[] = [];
+    const secondResponseCreate = deferred<void>();
+
+    server.once("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString("utf8"));
+        clientMessages.push(message);
+        const responseCreateCount = clientMessages.filter((m) => m.type === "response.create").length;
+        if (message.type === "session.update") {
+          socket.send(JSON.stringify({ type: "session.updated" }));
+        } else if (message.type === "response.create" && responseCreateCount === 1) {
+          socket.send(JSON.stringify({ type: "response.created", response: { status: "in_progress" } }));
+          socket.send(
+            JSON.stringify({
+              type: "response.function_call_arguments.done",
+              call_id: "call_1",
+              name: "generate_agent_random_number",
+              arguments: "{}",
+            }),
+          );
+        } else if (message.type === "response.create" && responseCreateCount === 2) {
+          secondResponseCreate.resolve();
+        } else if (message.type === "conversation.item.create" && message.item?.type === "function_call_output") {
+          socket.send(JSON.stringify({ type: "response.done", response: { status: "completed" } }));
+        }
+      });
+    });
+
+    const adapter = new OpenAIRealtimeAdapter(
+      testOpenAIConfig({ apiKey: "test-key", baseUrl: `ws://127.0.0.1:${port}/v1/realtime` }),
+    );
+    let session: Awaited<ReturnType<OpenAIRealtimeAdapter["connect"]>>;
+
+    try {
+      session = await adapter.connect({
+        sessionId: "live_openai_test",
+        systemInstruction: "test",
+        callbacks: {
+          onEvent: (event) => {
+            if (event.type === "tool_call") {
+              void session.sendToolResponse(event.call, { ok: true, value: 42 });
+            }
+          },
+        },
+      });
+      await session.sendText("get me a random number");
+      await withTimeout(secondResponseCreate.promise, 2_000, "Tool response never triggered a follow-up response.create.");
+      expect(clientMessages.filter((m) => m.type === "response.create")).toHaveLength(2);
+    } finally {
+      await session?.close();
+      await closeServer(server);
+    }
+  });
 });
 
 function testOpenAIConfig(
@@ -205,4 +263,14 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
       clearTimeout(timeout);
     }
   }
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }

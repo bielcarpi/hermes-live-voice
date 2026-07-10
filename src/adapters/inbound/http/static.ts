@@ -31,7 +31,7 @@ export function serveStatic(req: IncomingMessage, res: ServerResponse, options: 
     "content-length": String(stats.size),
     "cache-control": "no-store",
     "content-security-policy":
-      "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",

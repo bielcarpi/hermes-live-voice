@@ -27,7 +27,7 @@ describe("HTTP server", () => {
     });
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       object: "hermes_live.capabilities",
-      features: { hermes_runs: true, openai_realtime: true },
+      features: { agent_runs: true, openai_realtime: true },
     });
   });
 
@@ -109,7 +109,7 @@ describe("HTTP server", () => {
           ok: true,
           authRequired: false,
         },
-        hermes: {
+        agent: {
           ok: false,
           baseUrl: "http://127.0.0.1:8642",
           error: "Hermes API Server is missing required features: run_events_sse",
@@ -141,7 +141,7 @@ describe("HTTP server", () => {
     expect(body).toMatchObject({
       status: "ready",
       checks: {
-        hermes: { ok: true, baseUrl: "http://127.0.0.1:8642" },
+        agent: { ok: true, baseUrl: "http://127.0.0.1:8642" },
         realtime: {
           ok: true,
           configured: true,

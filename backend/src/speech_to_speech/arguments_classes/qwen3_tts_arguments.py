@@ -45,8 +45,8 @@ class Qwen3TTSHandlerArguments:
         },
     )
     qwen3_tts_instruct: Optional[str] = field(
-        default=None,
-        metadata={"help": "Instruction text for VoiceDesign models (optional, required for voice design)."},
+        default="Speak at a steady, natural pace with a clear and warm tone. Keep volume and energy consistent across sentences.",
+        metadata={"help": "Instruction text to control prosody/style. Used for CustomVoice style control and required for VoiceDesign models."},
     )
     qwen3_tts_xvec_only: bool = field(
         default=False,
@@ -81,9 +81,33 @@ class Qwen3TTSHandlerArguments:
         },
     )
     qwen3_tts_max_new_tokens: int = field(
-        default=1536,
+        default=2048,
         metadata={
-            "help": "Upper cap for Qwen3-TTS codec tokens. The handler estimates a per-utterance budget from the text and clamps it to this ceiling (~12 tokens per second of audio). Raise this above 1536 if you want to allow longer utterances."
+            "help": "Upper cap for Qwen3-TTS codec tokens. The handler estimates a per-utterance budget from the text and clamps it to this ceiling (~12 tokens per second of audio). Raise this above 2048 if you want to allow longer utterances."
+        },
+    )
+    qwen3_tts_gen_temperature: float = field(
+        default=0.7,
+        metadata={
+            "help": "Sampling temperature for Qwen3-TTS generation. Lower values (e.g. 0.6-0.7) reduce run-to-run variance in tone and pace. Default is 0.7."
+        },
+    )
+    qwen3_tts_gen_top_p: float = field(
+        default=0.95,
+        metadata={
+            "help": "Nucleus sampling probability for Qwen3-TTS generation. Default is 0.95."
+        },
+    )
+    qwen3_tts_gen_top_k: int = field(
+        default=50,
+        metadata={
+            "help": "Top-k sampling for Qwen3-TTS generation. Default is 50."
+        },
+    )
+    qwen3_tts_gen_repetition_penalty: float = field(
+        default=1.05,
+        metadata={
+            "help": "Repetition penalty for Qwen3-TTS generation. Reduces repetitive audio artifacts. Default is 1.05."
         },
     )
     qwen3_tts_blocksize: int = field(

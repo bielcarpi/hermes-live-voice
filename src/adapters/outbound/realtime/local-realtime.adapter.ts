@@ -85,13 +85,22 @@ export function normalizeLocalRealtimeEvent(event: unknown): LiveModelEvent[] {
     });
   }
 
+  if (root?.type === "input_audio_buffer.speech_stopped") {
+    events.push({
+      type: "input_speech_stopped",
+      provider: "local",
+      ...(typeof root.duration_s === "number" ? { durationS: root.duration_s } : {}),
+      ...(typeof root.audio_end_ms === "number" ? { audioEndMs: root.audio_end_ms } : {}),
+    });
+  }
+
   if (root?.type === "response.function_call_arguments.done") {
     const call: LiveToolCall = {
       id: root.call_id,
       name: String(root.name ?? ""),
       args: parseLocalArgs(root.arguments ?? {}),
     };
-    if (call.name.length > 0 && hasNonEmptyArgs(call.args)) {
+    if (call.name.length > 0) {
       events.push({ type: "tool_call", call });
     }
   }
@@ -158,6 +167,7 @@ class LocalRealtimeSession implements LiveModelSession {
   private readonly handledToolCalls = new Set<string>();
   private responseActive = false;
   private responsePending = false;
+  private toolResponsePending = false;
 
   private get busy(): boolean {
     return this.responseActive || this.responsePending;
@@ -224,6 +234,9 @@ class LocalRealtimeSession implements LiveModelSession {
     });
     if (!this.busy) {
       this.createResponse();
+    } else {
+      // Response still in flight (e.g. narration) — defer follow-up until it settles.
+      this.toolResponsePending = true;
     }
   }
 
@@ -279,6 +292,10 @@ class LocalRealtimeSession implements LiveModelSession {
     ) {
       this.responsePending = false;
       this.responseActive = false;
+      if (this.toolResponsePending) {
+        this.toolResponsePending = false;
+        this.createResponse();
+      }
     }
   }
 }
@@ -318,8 +335,4 @@ function parseLocalArgs(value: unknown): Record<string, unknown> {
     }
   }
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function hasNonEmptyArgs(args: Record<string, unknown>): boolean {
-  return Object.values(args).some((v) => typeof v === "string" && v.length > 0);
 }

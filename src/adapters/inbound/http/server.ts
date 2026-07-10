@@ -151,7 +151,7 @@ async function handleHttp(
       status: report.ok ? "ready" : "not_ready",
       checks: {
         gateway: report.gateway,
-        hermes: report.hermes,
+        agent: report.agent,
         realtime: report.realtime,
       },
     });
@@ -171,10 +171,10 @@ async function handleHttp(
         gemini_live: options.config.realtime.provider === "gemini",
         openai_realtime: options.config.realtime.provider === "openai",
         mock_live: options.config.realtime.provider === "mock",
-        hermes_runs: true,
-        hermes_run_events: true,
-        hermes_stop: true,
-        hermes_approval: true,
+        agent_runs: true,
+        agent_run_events: true,
+        agent_stop: true,
+        agent_approval: true,
         browser_demo: options.config.server.demoEnabled,
         optional_hermes_plugin: true,
       },

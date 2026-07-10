@@ -1,12 +1,20 @@
+import { fireSound, toggleMute } from "./sounds.js";
+
 const gatewayInput = document.querySelector("#gateway");
 const tokenInput = document.querySelector("#token");
 const connectButton = document.querySelector("#connect");
 const micButton = document.querySelector("#mic");
 const stopButton = document.querySelector("#stop");
+const muteButton = document.querySelector("#mute");
 const form = document.querySelector("#text-form");
 const textInput = document.querySelector("#text");
 const statusEl = document.querySelector("#status");
+const filtersEl = document.querySelector("#filters");
 const logEl = document.querySelector("#log");
+
+const FILTER_KINDS = ["you", "assistant", "agent", "run", "run.event", "session", "speech", "error", "approval", "log"];
+const filterableKinds = new Set(FILTER_KINDS);
+const activeKinds = new Set(FILTER_KINDS);
 
 let socket;
 let activeRunId = "";
@@ -20,6 +28,11 @@ let mediaStream;
 let workletNode;
 let currentTranscriptEntry = null;
 let currentTranscriptSpeaker = "";
+let currentSpeechEntry;
+let pendingResponseSince;
+let awaitingFirstAudio = false;
+let currentTurnTtfaMs;
+let currentTurnSpokenMs = 0;
 
 let loadingToneContext;
 let loadingToneOscillator;
@@ -27,6 +40,7 @@ let loadingToneGain;
 let loadingToneRunId = "";
 
 gatewayInput.value = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/v1/live`;
+renderFilters();
 
 connectButton.addEventListener("click", () => {
   if (socket?.readyState === WebSocket.OPEN) {
@@ -53,6 +67,7 @@ form.addEventListener("submit", (event) => {
     finalizeTranscriptEntry();
     requestResponseCancel("new text input", truncate);
     send({ type: "text.input", text });
+    startAssistantResponseClock();
     addLog("you", text);
     textInput.value = "";
   } catch (error) {
@@ -83,6 +98,12 @@ stopButton.addEventListener("click", () => {
   } catch (error) {
     showError(error);
   }
+});
+
+muteButton?.addEventListener("click", () => {
+  const muted = toggleMute();
+  muteButton.textContent = muted ? "Unmute sounds" : "Mute sounds";
+  muteButton.setAttribute("aria-pressed", String(muted));
 });
 
 async function startLoadingTone() {
@@ -179,6 +200,7 @@ function connect() {
 function handleMessage(message) {
   if (message.type === "session.ready") {
     finalizeTranscriptEntry();
+    currentSpeechEntry = undefined;
     setStatus("Connected");
     addLog("session", JSON.stringify(message, null, 2));
   } else if (message.type === "transcript.delta") {
@@ -187,22 +209,36 @@ function handleMessage(message) {
     finalizeTranscriptEntry();
     const truncate = clearPlayback();
     requestResponseCancel("provider detected user speech", truncate);
-    addLog("speech", `started${message.audioStartMs === undefined ? "" : ` at ${message.audioStartMs}ms`}`);
+    awaitingFirstAudio = false;
+    pendingResponseSince = undefined;
+    currentSpeechEntry = beginSpeechEntry();
+  } else if (message.type === "input.speech_stopped") {
+    const entry = currentSpeechEntry ?? beginSpeechEntry();
+    renderSpeechChip(entry, message.durationS);
+    currentSpeechEntry = undefined;
+    startAssistantResponseClock();
   } else if (message.type === "audio.output") {
+    if (awaitingFirstAudio && pendingResponseSince !== undefined) {
+      currentTurnTtfaMs = performance.now() - pendingResponseSince;
+      awaitingFirstAudio = false;
+      renderTimingChip(ensureAssistantEntry());
+    }
     void playPcmAudio(message.data, message.mimeType, message.itemId, message.contentIndex);
   } else if (message.type === "run.started") {
     finalizeTranscriptEntry();
     activeRunId = message.runId;
+    fireSound("run.started");
     addLog("run", `started ${message.runId}`);
   } else if (message.type === "run.event") {
     handleRunEvent(message);
   } else if (message.type === "run.completed") {
     activeRunId = "";
     stopLoadingTone();
-    if (currentTranscriptEntry && currentTranscriptSpeaker === "hermes") {
+    fireSound("run.completed");
+    if (currentTranscriptEntry && currentTranscriptSpeaker === "agent") {
       finalizeTranscriptEntry();
     } else {
-      addLog("hermes", message.output ?? "");
+      addLog("agent", message.output ?? "");
     }
   } else if (message.type === "approval.request") {
     activeRunId = message.runId;
@@ -217,6 +253,7 @@ function handleMessage(message) {
     } else {
       stopLoadingTone();
     }
+    fireSound(message.type === "run.failed" ? "run.failed" : "session.error");
     setStatus(message.type === "run.failed" ? "Run failed" : "Error");
     clearPlayback();
     addLog("error", JSON.stringify(message, null, 2));
@@ -233,12 +270,13 @@ function handleMessage(message) {
 function handleRunEvent(message) {
   const event = message.event ?? {};
   if (event.event === "message.delta" && typeof event.delta === "string") {
-    appendTranscript("hermes", event.delta);
+    appendTranscript("agent", event.delta);
     return;
   }
   if (event.event === "approval.request" || event.event === "run.completed" || event.event === "run.failed") {
     return;
   }
+  fireSound("run.event");
   addLog("run.event", JSON.stringify(event, null, 2));
 }
 
@@ -319,6 +357,8 @@ async function playPcmAudio(base64, mimeType, itemId, contentIndex = 0) {
   const ctx = playbackContext;
   const buffer = ctx.createBuffer(1, samples.length, rate);
   buffer.copyToChannel(samples, 0);
+  currentTurnSpokenMs += buffer.duration * 1000;
+  renderTimingChip(ensureAssistantEntry());
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   source.connect(ctx.destination);
@@ -404,23 +444,23 @@ function ensureOpen() {
 }
 
 function addLog(kind, value) {
-  const entry = document.createElement("div");
-  entry.className = "entry";
-  entry.innerHTML = `<strong></strong><pre></pre>`;
-  entry.querySelector("strong").textContent = kind;
-  entry.querySelector("pre").textContent = value;
-  logEl.prepend(entry);
-  logEl.scrollTop = 0;
+  const entry = createLogEntry(kind);
+  const body = document.createElement("pre");
+  body.textContent = value;
+  entry.append(body);
+  prependLogEntry(entry);
+  return entry;
+}
+
+function beginSpeechEntry() {
+  const entry = createLogEntry("speech");
+  prependLogEntry(entry);
   return entry;
 }
 
 function appendTranscript(speaker, text) {
-  if (currentTranscriptEntry && currentTranscriptSpeaker === speaker) {
-    currentTranscriptEntry.querySelector("pre").textContent += text;
-  } else {
-    currentTranscriptEntry = addLog(speaker, text);
-    currentTranscriptSpeaker = speaker;
-  }
+  const entry = ensureTranscriptEntry(speaker);
+  entry.querySelector("pre").textContent += text;
   logEl.scrollTop = 0;
 }
 
@@ -430,10 +470,7 @@ function finalizeTranscriptEntry() {
 }
 
 function addApprovalRequest(message) {
-  const entry = document.createElement("div");
-  entry.className = "entry";
-  const title = document.createElement("strong");
-  title.textContent = "approval";
+  const entry = createLogEntry("approval");
   const body = document.createElement("pre");
   body.textContent = JSON.stringify(message.event, null, 2);
   const actions = document.createElement("div");
@@ -452,9 +489,122 @@ function addApprovalRequest(message) {
     actions.append(button);
   }
 
-  entry.append(title, body, actions);
+  entry.append(body, actions);
+  prependLogEntry(entry);
+}
+
+function renderFilters() {
+  if (!filtersEl) return;
+  filtersEl.textContent = "";
+  for (const kind of FILTER_KINDS) {
+    const button = document.createElement("button");
+    button.className = "filter-pill";
+    button.type = "button";
+    button.dataset.kind = kind;
+    button.setAttribute("data-kind", kind);
+    button.textContent = kind;
+    syncFilterPill(button, true);
+    button.addEventListener("click", () => {
+      if (activeKinds.has(kind)) {
+        activeKinds.delete(kind);
+      } else {
+        activeKinds.add(kind);
+      }
+      syncFilterPill(button, activeKinds.has(kind));
+      applyFiltersToEntries();
+    });
+    filtersEl.append(button);
+  }
+}
+
+function syncFilterPill(button, isActive) {
+  button.setAttribute("aria-pressed", String(isActive));
+  toggleClassName(button, "is-inactive", !isActive);
+}
+
+function applyFiltersToEntries() {
+  for (const entry of logEl.querySelectorAll(".entry")) {
+    applyFilterState(entry);
+  }
+}
+
+function applyFilterState(entry) {
+  const kind = entry.dataset.kind ?? entry.getAttribute("data-kind") ?? "";
+  const isHidden = filterableKinds.has(kind) && !activeKinds.has(kind);
+  toggleClassName(entry, "filter-hidden", isHidden);
+}
+
+function toggleClassName(element, className, enabled) {
+  const tokens = (element.className || "").split(/\s+/).filter(Boolean);
+  const index = tokens.indexOf(className);
+  if (enabled && index === -1) {
+    tokens.push(className);
+  } else if (!enabled && index !== -1) {
+    tokens.splice(index, 1);
+  }
+  element.className = tokens.join(" ");
+}
+
+function createLogEntry(kind) {
+  const entry = document.createElement("div");
+  entry.className = "entry";
+  entry.dataset.kind = kind;
+  entry.setAttribute("data-kind", kind);
+
+  const title = document.createElement("strong");
+  const label = document.createElement("span");
+  label.className = "entry-label";
+  label.textContent = kind;
+  const timingChip = document.createElement("span");
+  timingChip.className = "timing-chip";
+  timingChip.hidden = true;
+
+  title.append(label, timingChip);
+  entry.append(title);
+  applyFilterState(entry);
+  return entry;
+}
+
+function prependLogEntry(entry) {
   logEl.prepend(entry);
   logEl.scrollTop = 0;
+}
+
+function ensureTranscriptEntry(speaker) {
+  if (currentTranscriptEntry && currentTranscriptSpeaker === speaker) {
+    return currentTranscriptEntry;
+  }
+  currentTranscriptEntry = addLog(speaker, "");
+  currentTranscriptSpeaker = speaker;
+  return currentTranscriptEntry;
+}
+
+function ensureAssistantEntry() {
+  return ensureTranscriptEntry("assistant");
+}
+
+function renderTimingChip(entry) {
+  const chip = entry.querySelector(".timing-chip");
+  const parts = [
+    currentTurnTtfaMs === undefined ? undefined : `TTFA ${Math.round(currentTurnTtfaMs)}ms`,
+    currentTurnSpokenMs > 0 ? `spoken ${(currentTurnSpokenMs / 1000).toFixed(1)}s` : undefined,
+  ].filter(Boolean);
+  chip.textContent = parts.join(" · ");
+  chip.hidden = parts.length === 0;
+}
+
+function renderSpeechChip(entry, durationS) {
+  const chip = entry.querySelector(".timing-chip");
+  const hasDuration = typeof durationS === "number" && Number.isFinite(durationS) && durationS > 0;
+  chip.textContent = hasDuration ? `spoken ${durationS.toFixed(1)}s` : "";
+  chip.hidden = !hasDuration;
+}
+
+function startAssistantResponseClock() {
+  pendingResponseSince = performance.now();
+  awaitingFirstAudio = true;
+  currentTurnTtfaMs = undefined;
+  currentTurnSpokenMs = 0;
 }
 
 function setStatus(value) {

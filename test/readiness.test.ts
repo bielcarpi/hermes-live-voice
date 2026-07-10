@@ -14,7 +14,7 @@ describe("readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(report.gateway).toMatchObject({ ok: true, host: "127.0.0.1" });
-    expect(report.hermes).toMatchObject({
+    expect(report.agent).toMatchObject({
       ok: false,
       baseUrl: "http://127.0.0.1:9",
       error: "Set HERMES_AGENT_API_SERVER_KEY to Hermes Agent's API_SERVER_KEY.",
@@ -53,7 +53,7 @@ describe("readiness", () => {
     );
 
     expect(report.ok).toBe(true);
-    expect(report.hermes).toMatchObject({ ok: true, baseUrl: "http://injected-hermes.local", model: "hermes-agent" });
+    expect(report.agent).toMatchObject({ ok: true, baseUrl: "http://injected-hermes.local", model: "hermes-agent" });
     expect(report.realtime).toMatchObject({ ok: true, configured: true, injected: true, provider: "openai", sessionChecked: false });
     expect(hermes.assertRunsSupported).toHaveBeenCalledOnce();
   });

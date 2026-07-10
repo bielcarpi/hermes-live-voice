@@ -110,6 +110,7 @@ class AudioHandler(RealtimeBaseHandler):
                 event_id=self._next_event_id(),
                 audio_end_ms=event.audio_end_ms,
                 item_id=response._current_item_id(conn_id),
+                **({"duration_s": round(event.duration_s, 3)} if event.duration_s else {}),
             )
         ]
 

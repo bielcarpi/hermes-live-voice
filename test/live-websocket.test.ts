@@ -50,7 +50,7 @@ describe("live gateway WebSocket", () => {
       model: "mock-live",
     });
     expect(ready.sessionKey).toBeUndefined();
-    expect(ready.hermes.baseUrl).toBeUndefined();
+    expect(ready.agent.baseUrl).toBeUndefined();
 
     send(socket, { type: "text.input", text: "What is my status?" });
     const completed = await waitForMessage(socket, "run.completed");
@@ -361,7 +361,7 @@ describe("live gateway WebSocket", () => {
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
-      message: "Requested Hermes run is not active in this voice session.",
+      message: "Requested agent run is not active in this voice session.",
     });
     expect(hermes.submitApproval).not.toHaveBeenCalled();
     approvalSubmitted.resolve();
@@ -431,7 +431,7 @@ describe("live gateway WebSocket", () => {
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
-      message: "Requested Hermes run is not active in this voice session.",
+      message: "Requested agent run is not active in this voice session.",
     });
     expect(hermes.stopRun).not.toHaveBeenCalled();
     releaseRun.resolve();
@@ -462,11 +462,11 @@ describe("live gateway WebSocket", () => {
     await waitForMessage(socket, "session.ready");
     send(socket, { type: "text.input", text: "Run something long" });
     await waitForMessage(socket, "run.started");
-    liveModel.emitToolCall({ id: "stop_other", name: "stop_hermes_run", args: { run_id: "other_run" } });
+    liveModel.emitToolCall({ id: "stop_other", name: "stop_agent_run", args: { run_id: "other_run" } });
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "tool_call_failed",
-      message: "Requested Hermes run is not active in this voice session.",
+      message: "Requested agent run is not active in this voice session.",
       recoverable: true,
     });
     expect(hermes.stopRun).not.toHaveBeenCalled();
@@ -490,11 +490,11 @@ describe("live gateway WebSocket", () => {
     await waitForOpen(socket);
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
-    liveModel.emitToolCall({ name: "start_hermes_run", args: { message: "side effect without call id" } });
+    liveModel.emitToolCall({ name: "start_agent_run", args: { message: "side effect without call id" } });
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "tool_call_failed",
-      message: "Realtime tool call start_hermes_run did not include an id.",
+      message: "Realtime tool call start_agent_run did not include an id.",
       recoverable: true,
     });
     expect(hermes.startRun).not.toHaveBeenCalled();
@@ -525,10 +525,10 @@ describe("live gateway WebSocket", () => {
     send(socket, { type: "text.input", text: "Run something long" });
     await waitForMessage(socket, "run.started");
     const response = liveModel.nextToolResponse();
-    liveModel.emitToolCall({ id: "status_active", name: "get_hermes_run_status", args: { run_id: "run_ws" } });
+    liveModel.emitToolCall({ id: "status_active", name: "get_agent_run_status", args: { run_id: "run_ws" } });
 
     await expect(response).resolves.toMatchObject({
-      call: { id: "status_active", name: "get_hermes_run_status" },
+      call: { id: "status_active", name: "get_agent_run_status" },
       response: { ok: true, status: { run_id: "run_ws", status: "running" } },
     });
     expect(hermes.getRun).toHaveBeenCalledWith("run_ws", {
@@ -804,7 +804,7 @@ describe("live gateway WebSocket", () => {
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "tool_call_failed",
-      message: "Hermes run message exceeds HERMES_LIVE_MAX_TEXT_CHARS.",
+      message: "Agent run message exceeds HERMES_LIVE_MAX_TEXT_CHARS.",
       recoverable: true,
     });
     expect(hermes.startRun).not.toHaveBeenCalled();
@@ -1113,7 +1113,7 @@ class ToolEchoSession implements LiveModelSession {
   async sendText(text: string): Promise<void> {
     this.callbacks.onEvent({
       type: "tool_call",
-      call: { id: "delayed_call", name: "start_hermes_run", args: { message: text } },
+      call: { id: "delayed_call", name: "start_agent_run", args: { message: text } },
     });
   }
 
@@ -1165,7 +1165,7 @@ class OversizedToolCallSession implements LiveModelSession {
   async sendText(_text: string): Promise<void> {
     this.callbacks.onEvent({
       type: "tool_call",
-      call: { id: "oversized", name: "start_hermes_run", args: { message: "12345" } },
+      call: { id: "oversized", name: "start_agent_run", args: { message: "12345" } },
     });
   }
 
@@ -1226,7 +1226,7 @@ class ManualToolSession implements LiveModelSession {
   async sendText(text: string): Promise<void> {
     this.callbacks.onEvent({
       type: "tool_call",
-      call: { id: "manual_start", name: "start_hermes_run", args: { message: text } },
+      call: { id: "manual_start", name: "start_agent_run", args: { message: text } },
     });
   }
 
@@ -1309,7 +1309,7 @@ class NarrationThrowingSession implements LiveModelSession {
   async sendText(text: string): Promise<void> {
     this.callbacks.onEvent({
       type: "tool_call",
-      call: { id: "narration_throw", name: "start_hermes_run", args: { message: text } },
+      call: { id: "narration_throw", name: "start_agent_run", args: { message: text } },
     });
   }
 

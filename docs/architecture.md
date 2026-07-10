@@ -118,6 +118,7 @@ It receives gateway tools:
 - `get_hermes_run_status`
 - `stop_hermes_run`
 - `submit_hermes_approval`
+- `generate_agent_random_number` (latency/connectivity test tool; no Hermes run)
 
 This preserves the intended chain:
 

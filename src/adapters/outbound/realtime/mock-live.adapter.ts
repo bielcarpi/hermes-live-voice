@@ -14,7 +14,7 @@ export class MockLiveAdapter implements LiveModelAdapter {
       params.callbacks.onOpen?.();
       params.callbacks.onEvent({
         type: "text",
-        text: "Mock live mode is connected. Type a message to route it through Hermes.",
+        text: "Mock live mode is connected. Type a message to route it through the agent.",
       });
     });
     return new MockLiveSession(params.callbacks);
@@ -27,7 +27,7 @@ class MockLiveSession implements LiveModelSession {
   async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {
     this.callbacks.onEvent({
       type: "text",
-      text: "Mock live mode does not transcribe audio. Use the text box to test the Hermes bridge.",
+      text: "Mock live mode does not transcribe audio. Use the text box to test the agent bridge.",
     });
   }
 
@@ -36,7 +36,7 @@ class MockLiveSession implements LiveModelSession {
       type: "tool_call",
       call: {
         id: `mock_${randomUUID()}`,
-        name: "start_hermes_run",
+        name: "start_agent_run",
         args: { message: text },
       },
     });
