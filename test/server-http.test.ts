@@ -59,7 +59,7 @@ describe("HTTP server", () => {
     const body = await response.text();
 
     expect(response.status).toBe(200);
-    expect(body).toContain("hermes-live");
+    expect(body).toContain("Buzzlight");
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
@@ -318,12 +318,16 @@ function testConfig(
       apiKey: "test",
       baseUrl: "wss://api.openai.com/v1/realtime",
       model: "gpt-realtime-2",
-      voice: "marin",
+      voice: "echo",
       reasoningEffort: "low",
       turnDetection: "disabled",
       inputAudioFormat: "pcm16",
       outputAudioFormat: "pcm16",
       ...overrides.openai,
+    },
+    local: {
+      baseUrl: "ws://127.0.0.1:8765/v1/realtime",
+      voice: "Aiden",
     },
   };
 }

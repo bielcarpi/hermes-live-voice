@@ -41,6 +41,9 @@ export class LiveGatewaySession {
   private userLabel = "anonymous";
   private activeRunId: string | undefined;
   private hermesRunActive = false;
+  private speaking = false;
+  private speakingSince = 0;
+  private readonly sessionStartedAt = Date.now();
 
   constructor(
     private readonly client: ClientConnectionPort,
@@ -200,6 +203,8 @@ export class LiveGatewaySession {
       return;
     }
     this.closing = true;
+    this.deps.logger.info("session_closing", { sessionId: this.id, activeRunId: this.activeRunId ?? null, wasSpeaking: this.speaking, sessionDurationMs: Date.now() - this.sessionStartedAt });
+    this.speaking = false;
     if (this.activeRunId) {
       await this.deps.hermes.stopRun(this.activeRunId, this.hermesRequestOptions()).catch(() => undefined);
     }
@@ -238,6 +243,7 @@ export class LiveGatewaySession {
         break;
       case "text.input":
         validateText(message.text, this.deps.config.server.maxTextChars, "Text input");
+        this.deps.logger.info("user_text_input", { sessionId: this.id, text: message.text.slice(0, 500) });
         await this.liveSession.sendText(message.text);
         break;
       case "response.cancel":
@@ -305,10 +311,22 @@ export class LiveGatewaySession {
 
   private handleLiveModelEvent(event: LiveModelEvent): void {
     if (event.type === "audio") {
+      if (!this.speaking) {
+        this.speaking = true;
+        this.speakingSince = Date.now();
+        this.deps.logger.info("assistant_speaking_started", { sessionId: this.id });
+      }
       this.send({ type: "audio.output", ...event.audio });
     } else if (event.type === "text") {
+      this.deps.logger.info("assistant_transcript", { sessionId: this.id, text: event.text });
       this.send({ type: "transcript.delta", speaker: "assistant", text: event.text });
     } else if (event.type === "tool_call") {
+      if (this.speaking) {
+        const duration = this.speakingSince ? Date.now() - this.speakingSince : 0;
+        this.speaking = false;
+        this.deps.logger.info("assistant_speaking_stopped", { sessionId: this.id, durationMs: duration });
+      }
+      this.deps.logger.info("assistant_tool_call", { sessionId: this.id, tool: event.call.name });
       void this.handleToolCall(event.call).catch(async (error) => {
         this.fail("tool_call_failed", error, true);
         if (event.call.id) {
@@ -316,6 +334,12 @@ export class LiveGatewaySession {
         }
       });
     } else if (event.type === "input_speech_started") {
+      if (this.speaking) {
+        const duration = this.speakingSince ? Date.now() - this.speakingSince : 0;
+        this.speaking = false;
+        this.deps.logger.info("assistant_speaking_stopped", { sessionId: this.id, durationMs: duration, reason: "user_interrupted" });
+      }
+      this.deps.logger.info("user_speaking_started", { sessionId: this.id });
       this.send({
         type: "input.speech_started",
         provider: event.provider,
@@ -349,21 +373,39 @@ export class LiveGatewaySession {
       const started = await this.deps.hermes.startRun(runParams, this.abort.signal);
       runId = started.runId;
       this.activeRunId = runId;
+      this.deps.logger.info("hermes_run_started", { sessionId: this.id, runId, input: input.slice(0, 200) });
       this.send({ type: "run.started", runId, sessionId: this.id });
 
       const transcript: string[] = [];
       let finalOutput = "";
       let usage: Record<string, unknown> | undefined;
       let terminal = false;
+      let toolsStarted = 0;
+      let toolsCompleted = 0;
 
       for await (const event of this.deps.hermes.streamRunEvents(runId, this.hermesRequestOptions())) {
         this.forwardRunEvent(runId, event);
         if (event.event === "message.delta" && typeof event.delta === "string") {
           transcript.push(event.delta);
+        } else if (event.event === "reasoning.available" && typeof event.text === "string") {
+          this.deps.logger.info("hermes_reasoning", { sessionId: this.id, runId, text: event.text.slice(0, 300) });
+        } else if (event.event === "tool.started" && typeof event.tool === "string") {
+          toolsStarted++;
+          this.deps.logger.info("hermes_tool_started", { sessionId: this.id, runId, tool: event.tool });
+        } else if (event.event === "tool.completed" && typeof event.tool === "string") {
+          toolsCompleted++;
+          this.deps.logger.info("hermes_tool_completed", { sessionId: this.id, runId, tool: event.tool, duration: event.duration, error: event.error ?? false });
         } else if (event.event === "run.completed") {
           terminal = true;
           finalOutput = typeof event.output === "string" ? event.output : transcript.join("");
           usage = event.usage;
+          this.deps.logger.info("hermes_run_completed", {
+            sessionId: this.id,
+            runId,
+            outputLength: (finalOutput || transcript.join("")).length,
+            toolsStarted,
+            toolsCompleted,
+          });
           this.send({
             type: "run.completed",
             runId,
@@ -372,9 +414,11 @@ export class LiveGatewaySession {
           });
         } else if (event.event === "run.failed") {
           terminal = true;
+          this.deps.logger.warn("hermes_run_failed", { sessionId: this.id, runId, error: String(event.error ?? "unknown") });
           return { ok: false, run_id: runId, status: "failed", output: transcript.join(""), error: String(event.error ?? "Hermes run failed.") };
         } else if (event.event === "run.cancelled") {
           terminal = true;
+          this.deps.logger.info("hermes_run_cancelled", { sessionId: this.id, runId });
           return { ok: false, run_id: runId, status: "cancelled" };
         }
       }
@@ -405,6 +449,7 @@ export class LiveGatewaySession {
   private forwardRunEvent(runId: string, event: HermesRunEvent): void {
     this.send({ type: "run.event", runId, event });
     if (event.event === "approval.request") {
+      this.deps.logger.info("hermes_approval_requested", { sessionId: this.id, runId });
       this.send({ type: "approval.request", runId, event });
     } else if (event.event === "run.failed") {
       this.send({ type: "run.failed", runId, error: String(event.error ?? "Hermes run failed.") });
@@ -514,7 +559,26 @@ function validateText(value: string, maxChars: number, label: string): void {
 }
 
 function errorToMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object") {
+    const e = error as Record<string, unknown>;
+    // OpenAI-style errors: {type:"error", error:{message:"..."}}
+    if (typeof e.error === "object" && e.error !== null) {
+      const inner = e.error as Record<string, unknown>;
+      if (typeof inner.message === "string") return inner.message;
+    }
+    // Gemini-style: {error:{message:"..."}}
+    if (typeof e.message === "string") return e.message;
+    // Fallback: stringify the whole thing
+    try {
+      return JSON.stringify(error);
+    } catch {
+      // ignore
+    }
+  }
+  return String(error);
 }
 
 function requestIdFromUnknown(value: unknown): string | undefined {

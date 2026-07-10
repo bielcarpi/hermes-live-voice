@@ -139,6 +139,15 @@ class TestElement {
     this.scrollHeight = this.entries.length;
   }
 
+  prepend(...children: TestElement[]): void {
+    for (const child of children) {
+      if (child.className === "entry") {
+        this.entries.unshift({ strong: child.childElement("strong"), pre: child.childElement("pre") });
+      }
+    }
+    this.scrollHeight = this.entries.length;
+  }
+
   querySelector(selector: string): TestElement {
     if (selector === "strong" || selector === "pre") return this.childElement(selector);
     throw new Error(`Unsupported querySelector(${selector}) on ${this.tagName}`);

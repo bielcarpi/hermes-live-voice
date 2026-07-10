@@ -10,7 +10,7 @@ export type ServerMessage =
   | { type: "session.error"; code: string; message: string; requestId?: string; recoverable?: boolean }
   | { type: "audio.output"; data: string; mimeType: string; itemId?: string; contentIndex?: number }
   | { type: "transcript.delta"; speaker: "user" | "assistant" | "system"; text: string; final?: boolean }
-  | { type: "input.speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number }
+  | { type: "input.speech_started"; provider: "openai" | "local"; itemId?: string; audioStartMs?: number }
   | { type: "realtime.message"; message: unknown }
   | { type: "run.started"; runId: string; sessionId: string }
   | { type: "run.event"; runId: string; event: HermesRunEvent }

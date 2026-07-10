@@ -42,6 +42,8 @@ class MockLiveSession implements LiveModelSession {
     });
   }
 
+  async sendNarration(_text: string): Promise<void> {}
+
   async sendAudioStreamEnd(): Promise<void> {}
 
   async cancelResponse(): Promise<boolean> {

@@ -832,6 +832,28 @@ describe("live gateway WebSocket", () => {
       message: expect.stringContaining("even number"),
     });
   });
+
+  it("does not fail the run when sendNarration throws", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new NarrationThrowingAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Do something" });
+
+    await expect(waitForMessage(socket, "run.completed")).resolves.toMatchObject({
+      type: "run.completed",
+      output: "Hermes says done.",
+    });
+  });
 });
 
 function fakeHermes(
@@ -983,11 +1005,15 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
     openai: {
       baseUrl: "wss://api.openai.com/v1/realtime",
       model: "gpt-realtime-2",
-      voice: "marin",
+      voice: "echo",
       reasoningEffort: "low",
       turnDetection: "disabled",
       inputAudioFormat: "pcm16",
       outputAudioFormat: "pcm16",
+    },
+    local: {
+      baseUrl: "ws://127.0.0.1:8765/v1/realtime",
+      voice: "Aiden",
     },
   };
 }
@@ -1091,6 +1117,8 @@ class ToolEchoSession implements LiveModelSession {
     });
   }
 
+  async sendNarration(_text: string): Promise<void> {}
+
   async sendAudioStreamEnd(): Promise<void> {}
 
   async cancelResponse(): Promise<boolean> {
@@ -1110,6 +1138,8 @@ class CloseTrackingSession implements LiveModelSession {
   async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
 
   async sendText(_text: string): Promise<void> {}
+
+  async sendNarration(_text: string): Promise<void> {}
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1138,6 +1168,8 @@ class OversizedToolCallSession implements LiveModelSession {
       call: { id: "oversized", name: "start_hermes_run", args: { message: "12345" } },
     });
   }
+
+  async sendNarration(_text: string): Promise<void> {}
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1198,6 +1230,8 @@ class ManualToolSession implements LiveModelSession {
     });
   }
 
+  async sendNarration(_text: string): Promise<void> {}
+
   async sendAudioStreamEnd(): Promise<void> {}
 
   async cancelResponse(): Promise<boolean> {
@@ -1226,6 +1260,8 @@ class CancelTrackingSession implements LiveModelSession {
   async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
 
   async sendText(_text: string): Promise<void> {}
+
+  async sendNarration(_text: string): Promise<void> {}
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1256,6 +1292,43 @@ class ProviderCloseAdapter implements LiveModelAdapter {
     this.providerClosed.promise.then(() => params.callbacks.onClose?.({ code: 1006, reason: "provider closed" }));
     return new ToolEchoSession(params.callbacks);
   }
+}
+
+class NarrationThrowingAdapter implements LiveModelAdapter {
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return new NarrationThrowingSession(params.callbacks);
+  }
+}
+
+class NarrationThrowingSession implements LiveModelSession {
+  constructor(private readonly callbacks: LiveModelCallbacks) {}
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(text: string): Promise<void> {
+    this.callbacks.onEvent({
+      type: "tool_call",
+      call: { id: "narration_throw", name: "start_hermes_run", args: { message: text } },
+    });
+  }
+
+  async sendNarration(_text: string): Promise<void> {
+    throw new Error("narration intentionally failed");
+  }
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async cancelResponse(): Promise<boolean> {
+    return false;
+  }
+
+  async sendToolResponse(_call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
+    const output = typeof response.output === "string" ? response.output : JSON.stringify(response);
+    this.callbacks.onEvent({ type: "text", text: output });
+  }
+
+  async close(): Promise<void> {}
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {

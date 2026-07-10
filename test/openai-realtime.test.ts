@@ -160,7 +160,7 @@ function testOpenAIConfig(
   return {
     baseUrl: "wss://api.openai.com/v1/realtime",
     model: "gpt-realtime-2",
-    voice: "marin",
+    voice: "echo",
     reasoningEffort: "low",
     turnDetection: "disabled",
     inputAudioFormat: "pcm16",

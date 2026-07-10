@@ -77,6 +77,10 @@ class OpenAIRealtimeSession implements LiveModelSession {
   private responseActive = false;
   private responsePending = false;
 
+  private get busy(): boolean {
+    return this.responseActive || this.responsePending;
+  }
+
   constructor(
     private readonly ws: WebSocket,
     private readonly config: AppConfig["openai"],
@@ -100,6 +104,17 @@ class OpenAIRealtimeSession implements LiveModelSession {
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
     });
+    if (!this.busy) {
+      this.createResponse();
+    }
+  }
+
+  async sendNarration(text: string): Promise<void> {
+    if (this.busy) return;
+    this.sendJson({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+    });
     this.createResponse();
   }
 
@@ -108,7 +123,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
       return;
     }
     this.sendJson({ type: "input_audio_buffer.commit" });
-    this.createResponse();
+    if (!this.busy) {
+      this.createResponse();
+    }
   }
 
   async cancelResponse(_reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean> {
@@ -135,7 +152,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
       type: "conversation.item.create",
       item: { type: "function_call_output", call_id: call.id, output: JSON.stringify(response) },
     });
-    this.createResponse();
+    if (!this.busy) {
+      this.createResponse();
+    }
   }
 
   async close(): Promise<void> {
@@ -290,11 +309,11 @@ export function buildOpenAISessionUpdate(
       output_modalities: ["audio"],
       audio: {
         input: {
-          format: openAiSessionAudioFormat(config.inputAudioFormat, "input"),
+          format: openAiSessionAudioFormat(config.inputAudioFormat),
           turn_detection: openAiTurnDetection(config.turnDetection),
         },
         output: {
-          format: openAiSessionAudioFormat(config.outputAudioFormat, "output"),
+          format: openAiSessionAudioFormat(config.outputAudioFormat),
           voice: config.voice,
         },
       },
@@ -330,7 +349,7 @@ function extractOpenAIFunctionCalls(root: any): LiveToolCall[] {
       calls.push({ id: item.call_id, name: String(item.name ?? ""), args: normalizeArgs(item.arguments ?? {}) });
     }
   }
-  return calls.filter((call) => call.name.length > 0);
+  return calls.filter((call) => call.name.length > 0 && hasNonEmptyArgs(call.args));
 }
 
 function normalizeArgs(value: unknown): Record<string, unknown> {
@@ -343,6 +362,10 @@ function normalizeArgs(value: unknown): Record<string, unknown> {
     }
   }
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function hasNonEmptyArgs(args: Record<string, unknown>): boolean {
+  return Object.values(args).some((v) => typeof v === "string" && v.length > 0);
 }
 
 function buildRealtimeUrl(baseUrl: string, model: string): string {
@@ -367,10 +390,9 @@ function openAiTurnDetection(turnDetection: AppConfig["openai"]["turnDetection"]
 
 function openAiSessionAudioFormat(
   format: AppConfig["openai"]["inputAudioFormat"] | AppConfig["openai"]["outputAudioFormat"],
-  direction: "input" | "output",
 ): { type: string; rate?: number } {
   if (format === "pcm16") {
-    return direction === "input" ? { type: "audio/pcm", rate: 24000 } : { type: "audio/pcm" };
+    return { type: "audio/pcm", rate: 24000 };
   }
   return format === "g711_ulaw" ? { type: "audio/pcmu" } : { type: "audio/pcma" };
 }
