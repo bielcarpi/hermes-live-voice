@@ -18,6 +18,13 @@ const playbackItems = new Map();
 let lastPlaybackItem;
 let mediaStream;
 let workletNode;
+let currentTranscriptEntry = null;
+let currentTranscriptSpeaker = "";
+
+let loadingToneContext;
+let loadingToneOscillator;
+let loadingToneGain;
+let loadingToneRunId = "";
 
 gatewayInput.value = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/v1/live`;
 
@@ -43,6 +50,7 @@ form.addEventListener("submit", (event) => {
   if (!text) return;
   try {
     const truncate = clearPlayback();
+    finalizeTranscriptEntry();
     requestResponseCancel("new text input", truncate);
     send({ type: "text.input", text });
     addLog("you", text);
@@ -77,6 +85,58 @@ stopButton.addEventListener("click", () => {
   }
 });
 
+async function startLoadingTone() {
+  stopLoadingTone();
+  try {
+    loadingToneContext = new AudioContext({ sampleRate: 24000 });
+    await loadingToneContext.resume();
+    const now = loadingToneContext.currentTime;
+
+    loadingToneGain = loadingToneContext.createGain();
+    loadingToneGain.gain.setValueAtTime(0, now);
+    loadingToneGain.gain.setValueAtTime(0.001, now + 0.005);
+    loadingToneGain.gain.exponentialRampToValueAtTime(0.06, now + 0.5);
+    loadingToneGain.connect(loadingToneContext.destination);
+
+    loadingToneOscillator = loadingToneContext.createOscillator();
+    loadingToneOscillator.type = "sine";
+    loadingToneOscillator.frequency.setValueAtTime(432, now);
+    loadingToneOscillator.connect(loadingToneGain);
+    loadingToneOscillator.start();
+
+    const osc2 = loadingToneContext.createOscillator();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(648, now);
+    const osc2Gain = loadingToneContext.createGain();
+    osc2Gain.gain.setValueAtTime(0.25, now);
+    osc2.connect(osc2Gain);
+    osc2Gain.connect(loadingToneGain);
+    osc2.start();
+  } catch {
+    loadingToneContext = undefined;
+    loadingToneOscillator = undefined;
+    loadingToneGain = undefined;
+  }
+}
+
+function stopLoadingTone() {
+  if (!loadingToneContext) return;
+  try {
+    if (loadingToneGain) {
+      const now = loadingToneContext.currentTime;
+      loadingToneGain.gain.cancelScheduledValues(now);
+      loadingToneGain.gain.setValueAtTime(loadingToneGain.gain.value, now);
+      loadingToneGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+    }
+    const ctx = loadingToneContext;
+    setTimeout(() => ctx.close().catch(() => {}), 450);
+  } catch { /* ignore */ }
+  loadingToneContext = undefined;
+  loadingToneOscillator = undefined;
+  loadingToneGain = undefined;
+  loadingToneRunId = "";
+}
+
 function connect() {
   const url = new URL(gatewayInput.value);
   const token = tokenInput.value.trim();
@@ -97,6 +157,7 @@ function connect() {
     activeRunId = "";
     socket = undefined;
     clearPlayback();
+    stopLoadingTone();
     setStatus("Disconnected");
     connectButton.textContent = "Connect";
     if (workletNode) void stopMic({ notify: false, status: "Disconnected" });
@@ -117,36 +178,51 @@ function connect() {
 
 function handleMessage(message) {
   if (message.type === "session.ready") {
+    finalizeTranscriptEntry();
     setStatus("Connected");
     addLog("session", JSON.stringify(message, null, 2));
   } else if (message.type === "transcript.delta") {
-    addLog(message.speaker ?? "assistant", message.text ?? "");
+    appendTranscript(message.speaker ?? "assistant", message.text ?? "");
   } else if (message.type === "input.speech_started") {
+    finalizeTranscriptEntry();
     const truncate = clearPlayback();
     requestResponseCancel("provider detected user speech", truncate);
     addLog("speech", `started${message.audioStartMs === undefined ? "" : ` at ${message.audioStartMs}ms`}`);
   } else if (message.type === "audio.output") {
     void playPcmAudio(message.data, message.mimeType, message.itemId, message.contentIndex);
   } else if (message.type === "run.started") {
+    finalizeTranscriptEntry();
     activeRunId = message.runId;
     addLog("run", `started ${message.runId}`);
   } else if (message.type === "run.event") {
     handleRunEvent(message);
   } else if (message.type === "run.completed") {
     activeRunId = "";
-    addLog("hermes", message.output ?? "");
+    stopLoadingTone();
+    if (currentTranscriptEntry && currentTranscriptSpeaker === "hermes") {
+      finalizeTranscriptEntry();
+    } else {
+      addLog("hermes", message.output ?? "");
+    }
   } else if (message.type === "approval.request") {
     activeRunId = message.runId;
     addApprovalRequest(message);
   } else if (message.type === "approval.responded") {
     addLog("approval", `submitted ${message.choice} for ${message.runId}`);
   } else if (message.type === "run.failed" || message.type === "session.error") {
-    if (message.type === "run.failed") activeRunId = "";
+    if (message.type === "run.failed") {
+      activeRunId = "";
+      finalizeTranscriptEntry();
+      stopLoadingTone();
+    } else {
+      stopLoadingTone();
+    }
     setStatus(message.type === "run.failed" ? "Run failed" : "Error");
     clearPlayback();
     addLog("error", JSON.stringify(message, null, 2));
   } else if (message.type === "run.stopped") {
     activeRunId = "";
+    stopLoadingTone();
     clearPlayback();
     addLog("run", `stopped ${message.runId}: ${message.status}`);
   } else if (message.type !== "realtime.message") {
@@ -157,7 +233,7 @@ function handleMessage(message) {
 function handleRunEvent(message) {
   const event = message.event ?? {};
   if (event.event === "message.delta" && typeof event.delta === "string") {
-    addLog("hermes", event.delta);
+    appendTranscript("hermes", event.delta);
     return;
   }
   if (event.event === "approval.request" || event.event === "run.completed" || event.event === "run.failed") {
@@ -224,6 +300,9 @@ async function flushMicWorklet() {
 
 async function playPcmAudio(base64, mimeType, itemId, contentIndex = 0) {
   const rate = Number(/rate=(\d+)/.exec(mimeType || "")?.[1] || 24000);
+  if (loadingToneGain && loadingToneContext) {
+    loadingToneGain.gain.setValueAtTime(0, loadingToneContext.currentTime);
+  }
   const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
   const samples = new Float32Array(bytes.length / 2);
   const view = new DataView(bytes.buffer);
@@ -264,6 +343,9 @@ async function playPcmAudio(base64, mimeType, itemId, contentIndex = 0) {
       }
       if (playbackCursor <= ctx.currentTime) {
         playbackCursor = 0;
+      }
+      if (playbackSources.size === 0 && loadingToneGain && loadingToneContext && loadingToneRunId) {
+        loadingToneGain.gain.exponentialRampToValueAtTime(0.06, loadingToneContext.currentTime + 0.4);
       }
     },
     { once: true },
@@ -327,8 +409,24 @@ function addLog(kind, value) {
   entry.innerHTML = `<strong></strong><pre></pre>`;
   entry.querySelector("strong").textContent = kind;
   entry.querySelector("pre").textContent = value;
-  logEl.append(entry);
-  logEl.scrollTop = logEl.scrollHeight;
+  logEl.prepend(entry);
+  logEl.scrollTop = 0;
+  return entry;
+}
+
+function appendTranscript(speaker, text) {
+  if (currentTranscriptEntry && currentTranscriptSpeaker === speaker) {
+    currentTranscriptEntry.querySelector("pre").textContent += text;
+  } else {
+    currentTranscriptEntry = addLog(speaker, text);
+    currentTranscriptSpeaker = speaker;
+  }
+  logEl.scrollTop = 0;
+}
+
+function finalizeTranscriptEntry() {
+  currentTranscriptEntry = null;
+  currentTranscriptSpeaker = "";
 }
 
 function addApprovalRequest(message) {
@@ -355,8 +453,8 @@ function addApprovalRequest(message) {
   }
 
   entry.append(title, body, actions);
-  logEl.append(entry);
-  logEl.scrollTop = logEl.scrollHeight;
+  logEl.prepend(entry);
+  logEl.scrollTop = 0;
 }
 
 function setStatus(value) {

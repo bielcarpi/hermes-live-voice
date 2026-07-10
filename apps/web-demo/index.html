@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>hermes-live demo</title>
+    <title>Buzzlight</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <section class="panel">
         <header class="topbar">
           <div>
-            <h1>hermes-live</h1>
+            <h1>Buzzlight</h1>
             <p id="status">Disconnected</p>
           </div>
           <button id="connect" type="button">Connect</button>
@@ -28,14 +28,15 @@
           </label>
         </div>
 
-        <div id="log" class="log" aria-live="polite"></div>
-
         <form id="text-form" class="composer">
-          <input id="text" type="text" placeholder="Ask Hermes..." autocomplete="off" />
+          <input id="text" type="text" placeholder="Ask a question..." autocomplete="off" />
           <button type="submit">Send</button>
           <button id="mic" type="button">Mic</button>
           <button id="stop" type="button">Stop</button>
         </form>
+
+        <div id="log" class="log" aria-live="polite"></div>
+
       </section>
     </main>
     <script type="module" src="/app.js"></script>
