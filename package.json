@@ -40,7 +40,7 @@
   },
   "files": [
     "dist",
-    "apps/web-demo",
+    "apps/web",
     "assets",
     "docs",
     "examples",
@@ -70,12 +70,12 @@
     "check:live-provider-local": "node scripts/live-provider-local-smoke.mjs",
     "check:package": "node scripts/package-smoke.mjs",
     "check:plugin": "python3 scripts/plugin-smoke.py",
-    "check:web-demo": "node --check apps/web-demo/app.js && node --check apps/web-demo/mic-worklet.js",
+    "check:web": "node --check apps/web/app.js && node --check apps/web/mic-worklet.js",
     "print-config": "tsx src/cli.ts print-config",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify": "npm run typecheck && npm run check:web-demo && npm run check:plugin && npm test && npm run build && npm run check:live-provider-cli && npm run check:live-provider-local && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
+    "verify": "npm run typecheck && npm run check:web && npm run check:plugin && npm test && npm run build && npm run check:live-provider-cli && npm run check:live-provider-local && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
     "prepack": "npm run build"
   },
   "dependencies": {

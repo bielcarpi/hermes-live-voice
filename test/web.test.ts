@@ -220,7 +220,7 @@ function loadWebDemo(): TestHarness {
     },
   };
 
-  const source = readFileSync(new URL("../apps/web-demo/app.js", import.meta.url), "utf8").replace(
+  const source = readFileSync(new URL("../apps/web/app.js", import.meta.url), "utf8").replace(
     /^import\s+\{\s*fireSound\s*,\s*toggleMute\s*\}\s+from\s+["']\.\/sounds\.js["'];\s*/m,
     "",
   );
@@ -246,7 +246,7 @@ function loadWebDemo(): TestHarness {
   });
 
   vm.runInContext(`${source}\nglobalThis.__webDemoTestApi = { connect, handleMessage };`, context, {
-    filename: "apps/web-demo/app.js",
+    filename: "apps/web/app.js",
   });
 
   const api = (context as vm.Context & { __webDemoTestApi: WebDemoApi }).__webDemoTestApi;

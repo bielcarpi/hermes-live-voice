@@ -291,7 +291,7 @@ function clientWebSocketMaxPayload(config: AppConfig): number {
 
 function resolveDemoRoot(): string {
   const current = dirname(fileURLToPath(import.meta.url));
-  return join(current, "..", "..", "..", "..", "apps", "web-demo");
+  return join(current, "..", "..", "..", "..", "apps", "web");
 }
 
 function listenHttpServer(server: ReturnType<typeof createServer>, port: number, host: string): Promise<void> {

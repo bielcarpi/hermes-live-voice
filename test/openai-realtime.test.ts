@@ -188,7 +188,7 @@ describe("OpenAI Realtime adapter helpers", () => {
     const adapter = new OpenAIRealtimeAdapter(
       testOpenAIConfig({ apiKey: "test-key", baseUrl: `ws://127.0.0.1:${port}/v1/realtime` }),
     );
-    let session: Awaited<ReturnType<OpenAIRealtimeAdapter["connect"]>>;
+    let session: Awaited<ReturnType<OpenAIRealtimeAdapter["connect"]>> | undefined;
 
     try {
       session = await adapter.connect({
@@ -197,7 +197,7 @@ describe("OpenAI Realtime adapter helpers", () => {
         callbacks: {
           onEvent: (event) => {
             if (event.type === "tool_call") {
-              void session.sendToolResponse(event.call, { ok: true, value: 42 });
+              void session?.sendToolResponse(event.call, { ok: true, value: 42 });
             }
           },
         },

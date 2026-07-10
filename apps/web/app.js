@@ -171,7 +171,7 @@ function connect() {
     activeRunId = "";
     setStatus("Starting session");
     connectButton.textContent = "Disconnect";
-    nextSocket.send(JSON.stringify({ type: "session.start", profileId: "demo", userLabel: "web-demo" }));
+    nextSocket.send(JSON.stringify({ type: "session.start", profileId: "demo", userLabel: "web" }));
   });
   nextSocket.addEventListener("close", () => {
     if (socket !== nextSocket) return;
