@@ -251,6 +251,29 @@ The local provider talks to a reduced subset of the OpenAI Realtime WebSocket pr
 - **No push-to-talk.** Turn-taking is always VAD-driven by the backend; `audio.end` has no effect for this provider.
 - **No mid-response truncation.** Barge-in cancels the whole in-flight response (`response.cancel`) but does not trim previously-sent audio at a precise timestamp.
 
+## Local Backend Venv Boundary Trap
+
+When the local speech-to-speech provider is in use, `backend/.venv` must be a self-contained editable install rooted at `hermes-live-voice/backend/`. If the venv was created by running `uv sync` from a sibling repo's `backend/` (for example, an adjacent `hf-realtime-voice/backend/`), the editable `.pth` file silently points at the wrong repo's `src/`, and every code change under `hermes-live-voice/backend/src/` is invisible at runtime.
+
+- **Symptom.** Backend edits appear to do nothing: log lines you added never print, new behavior never runs, `git diff` shows changes but the process behaves like the old code. Restarts do not help. The backend loads a completely different tree.
+- **Root cause.** `uv sync` writes the editable install's `.pth` file with an absolute path to whatever directory it was run from. Running it from `../hf-realtime-voice/backend/` pins the venv at that sibling checkout, even though the venv lives inside `hermes-live-voice/backend/.venv`.
+- **Fix.** Delete the misrooted venv and recreate it from the correct directory:
+
+  ```sh
+  rm -rf backend/.venv
+  cd backend && uv sync --python 3.13
+  ```
+
+- **Verify.** After the rebuild, all three checks must pass. They confirm the shebang, the `.pth` file, and the imported module all resolve inside `hermes-live-voice/backend/`:
+
+  ```sh
+  head -1 backend/.venv/bin/speech-to-speech
+  cat backend/.venv/lib/python3.13/site-packages/__editable__.speech_to_speech-*.pth
+  backend/.venv/bin/python -c "import speech_to_speech, pathlib; print(pathlib.Path(speech_to_speech.__file__).resolve())"
+  ```
+
+  Expected: the shebang starts with `hermes-live-voice/backend/.venv/bin/python`, the `.pth` file's single line ends in `hermes-live-voice/backend/src`, and the imported module path lives under `hermes-live-voice/backend/src/`. If any of the three points at a sibling checkout, the venv is not self-contained — repeat the fix.
+
 References:
 
 - OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime
