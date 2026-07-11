@@ -168,6 +168,8 @@ class LocalRealtimeSession implements LiveModelSession {
   private responseActive = false;
   private responsePending = false;
   private toolResponsePending = false;
+  private cancelling = false;
+  private cancelFallbackTimer?: NodeJS.Timeout;
 
   private get busy(): boolean {
     return this.responseActive || this.responsePending;
@@ -197,13 +199,14 @@ class LocalRealtimeSession implements LiveModelSession {
     }
   }
 
-  async sendNarration(text: string): Promise<void> {
-    if (this.busy) return;
+  async sendNarration(text: string): Promise<boolean> {
+    if (this.busy) return false;
     this.sendJson({
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
     });
     this.createResponse();
+    return true;
   }
 
   async sendAudioStreamEnd(): Promise<void> {
@@ -217,10 +220,23 @@ class LocalRealtimeSession implements LiveModelSession {
     }
     if (shouldCancel) {
       this.sendJson({ type: "response.cancel" });
+      this.cancelling = true;
+      if (this.cancelFallbackTimer) {
+        clearTimeout(this.cancelFallbackTimer);
+      }
+      this.cancelFallbackTimer = setTimeout(() => {
+        this.cancelFallbackTimer = undefined;
+        if (this.ws.readyState !== WebSocket.OPEN) return;
+        this.cancelling = false;
+        this.responsePending = false;
+        this.responseActive = false;
+        if (this.toolResponsePending) {
+          this.toolResponsePending = false;
+          this.createResponse();
+        }
+      }, 2000);
     }
     // truncate param accepted but NOT sent (no conversation.item.truncate)
-    this.responsePending = false;
-    this.responseActive = false;
     return true;
   }
 
@@ -241,6 +257,10 @@ class LocalRealtimeSession implements LiveModelSession {
   }
 
   async close(): Promise<void> {
+    if (this.cancelFallbackTimer) {
+      clearTimeout(this.cancelFallbackTimer);
+      this.cancelFallbackTimer = undefined;
+    }
     closeWebSocket(this.ws, 1000, "session closed");
   }
 
@@ -290,6 +310,11 @@ class LocalRealtimeSession implements LiveModelSession {
       event?.response?.status === "cancelled" ||
       event?.response?.status === "failed"
     ) {
+      if (this.cancelFallbackTimer) {
+        clearTimeout(this.cancelFallbackTimer);
+        this.cancelFallbackTimer = undefined;
+      }
+      this.cancelling = false;
       this.responsePending = false;
       this.responseActive = false;
       if (this.toolResponsePending) {

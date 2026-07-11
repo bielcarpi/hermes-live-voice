@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildLocalSessionUpdate,
   buildLocalRealtimeAudioAppend,
@@ -304,18 +304,153 @@ describe("Local Realtime adapter helpers", () => {
       );
 
       const framesBefore = frames.length;
-      await session.sendNarration("hi");
+      const notBusyResult = await session.sendNarration("hi");
       await new Promise((r) => setTimeout(r, 20));
 
       const narrationFrames = (frames as any[]).slice(framesBefore);
       expect(narrationFrames).toHaveLength(2);
       expect(narrationFrames[0]).toMatchObject({ type: "conversation.item.create" });
       expect(narrationFrames[1]).toMatchObject({ type: "response.create" });
+      expect(notBusyResult).toBe(true);
 
       const busyFramesBefore = frames.length;
-      await session.sendNarration("ignored because busy");
+      const busyResult = await session.sendNarration("ignored because busy");
       await new Promise((r) => setTimeout(r, 20));
       expect(frames.length).toBe(busyFramesBefore);
+      expect(busyResult).toBe(false);
+
+      await session.close();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("defers a tool follow-up during cancel-in-flight until the server confirms response.cancelled", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const frames: any[] = [];
+    let socketRef: import("ws").WebSocket | undefined;
+
+    server.once("connection", (socket) => {
+      socketRef = socket;
+      socket.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString("utf8"));
+        frames.push(msg);
+        if (msg.type === "session.update") {
+          socket.send(JSON.stringify({ type: "session.created" }));
+        } else if (msg.type === "response.create") {
+          const created = frames.filter((f) => f.type === "response.create").length;
+          if (created === 1) {
+            socket.send(JSON.stringify({ type: "response.created", response: { status: "in_progress" } }));
+          }
+        }
+      });
+    });
+
+    const adapter = new LocalRealtimeAdapter(testLocalConfig({ baseUrl: `ws://127.0.0.1:${port}` }));
+
+    try {
+      const session = await withTimeout(
+        adapter.connect({
+          sessionId: "live_local_test",
+          systemInstruction: "test",
+          callbacks: { onEvent: () => undefined },
+        }),
+        3_000,
+        "connect() did not resolve",
+      );
+
+      await session.sendText("hello");
+      await waitFor(() => frames.some((f) => f.type === "response.create"), 500);
+      await new Promise((r) => setTimeout(r, 20));
+
+      const cancelled = await session.cancelResponse("interrupted");
+      expect(cancelled).toBe(true);
+      await waitFor(() => frames.some((f) => f.type === "response.cancel"), 500);
+
+      const framesBeforeTool = frames.length;
+      await session.sendToolResponse({ id: "call_1", name: "generate_agent_random_number", args: {} }, { ok: true });
+      await new Promise((r) => setTimeout(r, 50));
+
+      const framesAfterTool = frames.slice(framesBeforeTool);
+      expect(framesAfterTool.some((f) => f.type === "conversation.item.create")).toBe(true);
+      expect(framesAfterTool.filter((f) => f.type === "response.create")).toHaveLength(0);
+
+      socketRef?.send(JSON.stringify({ type: "response.cancelled" }));
+      await waitFor(
+        () => frames.filter((f) => f.type === "response.create").length === 2,
+        1_000,
+        "deferred response.create never fired",
+      );
+
+      const cancelIdx = frames.findIndex((f) => f.type === "response.cancel");
+      const secondCreateIdx = frames.map((f) => f.type).lastIndexOf("response.create");
+      expect(cancelIdx).toBeGreaterThanOrEqual(0);
+      expect(secondCreateIdx).toBeGreaterThan(cancelIdx);
+      expect(frames.filter((f) => f.type === "response.create")).toHaveLength(2);
+
+      await session.close();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("fires the deferred follow-up via the 2s fallback timer when cancel confirmation never arrives", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const frames: any[] = [];
+
+    server.once("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString("utf8"));
+        frames.push(msg);
+        if (msg.type === "session.update") {
+          socket.send(JSON.stringify({ type: "session.created" }));
+        } else if (msg.type === "response.create") {
+          const created = frames.filter((f) => f.type === "response.create").length;
+          if (created === 1) {
+            socket.send(JSON.stringify({ type: "response.created", response: { status: "in_progress" } }));
+          }
+        }
+        // Deliberately never send response.cancelled — the fallback timer must recover.
+      });
+    });
+
+    const adapter = new LocalRealtimeAdapter(testLocalConfig({ baseUrl: `ws://127.0.0.1:${port}` }));
+
+    try {
+      const session = await withTimeout(
+        adapter.connect({
+          sessionId: "live_local_test",
+          systemInstruction: "test",
+          callbacks: { onEvent: () => undefined },
+        }),
+        3_000,
+        "connect() did not resolve",
+      );
+
+      await session.sendText("hello");
+      await waitFor(() => frames.some((f) => f.type === "response.create"), 500);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Switch to fake timers BEFORE cancelResponse so its setTimeout is a fake timer we can advance.
+      vi.useFakeTimers();
+      try {
+        await session.cancelResponse("interrupted");
+        await session.sendToolResponse({ id: "call_1", name: "generate_agent_random_number", args: {} }, { ok: true });
+        await vi.advanceTimersByTimeAsync(2000);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await waitFor(
+        () => frames.filter((f) => f.type === "response.create").length === 2,
+        1_000,
+        "fallback timer never fired the deferred response.create",
+      );
+      expect(frames.filter((f) => f.type === "response.create")).toHaveLength(2);
 
       await session.close();
     } finally {
@@ -359,5 +494,19 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
     if (timeout) {
       clearTimeout(timeout);
     }
+  }
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs: number,
+  message = "waitFor predicate never became true",
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(message);
+    }
+    await new Promise((r) => setTimeout(r, 10));
   }
 }

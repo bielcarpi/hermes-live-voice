@@ -34,7 +34,7 @@ export interface LiveModelSession {
   sendAudioStreamEnd(): Promise<void>;
   cancelResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean>;
   sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void>;
-  sendNarration(text: string): Promise<void>;
+  sendNarration(text: string): Promise<boolean>;
   close(): Promise<void>;
 }
 

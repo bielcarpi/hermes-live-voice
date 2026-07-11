@@ -77,6 +77,8 @@ class OpenAIRealtimeSession implements LiveModelSession {
   private responseActive = false;
   private responsePending = false;
   private toolResponsePending = false;
+  private cancelling = false;
+  private cancelFallbackTimer?: NodeJS.Timeout;
 
   private get busy(): boolean {
     return this.responseActive || this.responsePending;
@@ -110,13 +112,14 @@ class OpenAIRealtimeSession implements LiveModelSession {
     }
   }
 
-  async sendNarration(text: string): Promise<void> {
-    if (this.busy) return;
+  async sendNarration(text: string): Promise<boolean> {
+    if (this.busy) return false;
     this.sendJson({
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
     });
     this.createResponse();
+    return true;
   }
 
   async sendAudioStreamEnd(): Promise<void> {
@@ -136,12 +139,25 @@ class OpenAIRealtimeSession implements LiveModelSession {
     }
     if (shouldCancel) {
       this.sendJson(buildOpenAIResponseCancel());
+      this.cancelling = true;
+      if (this.cancelFallbackTimer) {
+        clearTimeout(this.cancelFallbackTimer);
+      }
+      this.cancelFallbackTimer = setTimeout(() => {
+        this.cancelFallbackTimer = undefined;
+        if (this.ws.readyState !== WebSocket.OPEN) return;
+        this.cancelling = false;
+        this.responsePending = false;
+        this.responseActive = false;
+        if (this.toolResponsePending) {
+          this.toolResponsePending = false;
+          this.createResponse();
+        }
+      }, 2000);
     }
     if (truncate) {
       this.sendJson(buildOpenAIConversationItemTruncate(truncate));
     }
-    this.responsePending = false;
-    this.responseActive = false;
     return true;
   }
 
@@ -162,6 +178,10 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   async close(): Promise<void> {
+    if (this.cancelFallbackTimer) {
+      clearTimeout(this.cancelFallbackTimer);
+      this.cancelFallbackTimer = undefined;
+    }
     closeWebSocket(this.ws, 1000, "session closed");
   }
 
@@ -211,6 +231,11 @@ class OpenAIRealtimeSession implements LiveModelSession {
       event?.response?.status === "cancelled" ||
       event?.response?.status === "failed"
     ) {
+      if (this.cancelFallbackTimer) {
+        clearTimeout(this.cancelFallbackTimer);
+        this.cancelFallbackTimer = undefined;
+      }
+      this.cancelling = false;
       this.responsePending = false;
       this.responseActive = false;
       if (this.toolResponsePending) {
@@ -262,6 +287,14 @@ export function normalizeOpenAIRealtimeEvent(
       provider: "openai",
       ...(typeof root.item_id === "string" ? { itemId: root.item_id } : {}),
       ...(typeof root.audio_start_ms === "number" ? { audioStartMs: root.audio_start_ms } : {}),
+    });
+  }
+  if (root?.type === "input_audio_buffer.speech_stopped") {
+    events.push({
+      type: "input_speech_stopped",
+      provider: "openai",
+      ...(typeof root.duration_s === "number" ? { durationS: root.duration_s } : {}),
+      ...(typeof root.audio_end_ms === "number" ? { audioEndMs: root.audio_end_ms } : {}),
     });
   }
   for (const call of extractOpenAIFunctionCalls(root)) {

@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildOpenAIConversationItemTruncate,
   buildOpenAIRealtimeAudioAppend,
@@ -59,6 +59,29 @@ describe("OpenAI Realtime adapter helpers", () => {
       provider: "openai",
       itemId: "item_1",
       audioStartMs: 320,
+    });
+  });
+
+  it("normalizes speech-stop events for VAD interruption handling", () => {
+    expect(
+      normalizeOpenAIRealtimeEvent({
+        type: "input_audio_buffer.speech_stopped",
+        duration_s: 1.5,
+        audio_end_ms: 1500,
+      }),
+    ).toContainEqual({
+      type: "input_speech_stopped",
+      provider: "openai",
+      durationS: 1.5,
+      audioEndMs: 1500,
+    });
+    expect(
+      normalizeOpenAIRealtimeEvent({
+        type: "input_audio_buffer.speech_stopped",
+      }),
+    ).toContainEqual({
+      type: "input_speech_stopped",
+      provider: "openai",
     });
   });
 
@@ -149,6 +172,143 @@ describe("OpenAI Realtime adapter helpers", () => {
         reason: "OpenAI Realtime session start failed",
       });
     } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("defers a tool follow-up during cancel-in-flight until the server confirms response.cancelled", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const clientMessages: any[] = [];
+    let socketRef: import("ws").WebSocket | undefined;
+
+    server.once("connection", (socket) => {
+      socketRef = socket;
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString("utf8"));
+        clientMessages.push(message);
+        if (message.type === "session.update") {
+          socket.send(JSON.stringify({ type: "session.updated" }));
+        } else if (message.type === "response.create") {
+          const created = clientMessages.filter((m) => m.type === "response.create").length;
+          if (created === 1) {
+            // First response.create -> mark as in-flight so cancelResponse has something to cancel.
+            socket.send(JSON.stringify({ type: "response.created", response: { status: "in_progress" } }));
+          }
+        }
+      });
+    });
+
+    const adapter = new OpenAIRealtimeAdapter(
+      testOpenAIConfig({ apiKey: "test-key", baseUrl: `ws://127.0.0.1:${port}/v1/realtime` }),
+    );
+    let session: Awaited<ReturnType<OpenAIRealtimeAdapter["connect"]>> | undefined;
+
+    try {
+      session = await adapter.connect({
+        sessionId: "live_openai_test",
+        systemInstruction: "test",
+        callbacks: { onEvent: () => undefined },
+      });
+
+      // Kick off a response and wait for the server to acknowledge response.created.
+      await session.sendText("hello");
+      await waitFor(() => clientMessages.some((m) => m.type === "response.create"), 500);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Cancel while the response is active.
+      const cancelled = await session.cancelResponse("interrupted");
+      expect(cancelled).toBe(true);
+      await waitFor(() => clientMessages.some((m) => m.type === "response.cancel"), 500);
+
+      const framesBeforeTool = clientMessages.length;
+      // Immediately issue a tool response -> must defer because cancel-in-flight keeps busy=true.
+      await session.sendToolResponse({ id: "call_1", name: "generate_agent_random_number", args: {} }, { ok: true });
+      await new Promise((r) => setTimeout(r, 50));
+
+      const framesAfterTool = clientMessages.slice(framesBeforeTool);
+      expect(framesAfterTool.some((m) => m.type === "conversation.item.create")).toBe(true);
+      // No new response.create should have appeared yet.
+      expect(framesAfterTool.filter((m) => m.type === "response.create")).toHaveLength(0);
+
+      // Now simulate the server confirming the cancel.
+      socketRef?.send(JSON.stringify({ type: "response.cancelled" }));
+      await waitFor(
+        () => clientMessages.filter((m) => m.type === "response.create").length === 2,
+        1_000,
+        "deferred response.create never fired",
+      );
+
+      // Verify ordering: response.cancel comes before the second response.create.
+      const cancelIdx = clientMessages.findIndex((m) => m.type === "response.cancel");
+      const secondCreateIdx = clientMessages.map((m) => m.type).lastIndexOf("response.create");
+      expect(cancelIdx).toBeGreaterThanOrEqual(0);
+      expect(secondCreateIdx).toBeGreaterThan(cancelIdx);
+      expect(clientMessages.filter((m) => m.type === "response.create")).toHaveLength(2);
+    } finally {
+      await session?.close();
+      await closeServer(server);
+    }
+  });
+
+  it("fires the deferred follow-up via the 2s fallback timer when cancel confirmation never arrives", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const clientMessages: any[] = [];
+
+    server.once("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString("utf8"));
+        clientMessages.push(message);
+        if (message.type === "session.update") {
+          socket.send(JSON.stringify({ type: "session.updated" }));
+        } else if (message.type === "response.create") {
+          const created = clientMessages.filter((m) => m.type === "response.create").length;
+          if (created === 1) {
+            socket.send(JSON.stringify({ type: "response.created", response: { status: "in_progress" } }));
+          }
+        }
+        // Deliberately never send response.cancelled — the fallback timer must recover.
+      });
+    });
+
+    const adapter = new OpenAIRealtimeAdapter(
+      testOpenAIConfig({ apiKey: "test-key", baseUrl: `ws://127.0.0.1:${port}/v1/realtime` }),
+    );
+    let session: Awaited<ReturnType<OpenAIRealtimeAdapter["connect"]>> | undefined;
+
+    try {
+      session = await adapter.connect({
+        sessionId: "live_openai_test",
+        systemInstruction: "test",
+        callbacks: { onEvent: () => undefined },
+      });
+
+      await session.sendText("hello");
+      await waitFor(() => clientMessages.some((m) => m.type === "response.create"), 500);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Switch to fake timers BEFORE cancelResponse so its setTimeout is a fake timer we can advance.
+      vi.useFakeTimers();
+      try {
+        await session.cancelResponse("interrupted");
+        await session.sendToolResponse({ id: "call_1", name: "generate_agent_random_number", args: {} }, { ok: true });
+        // Advance past the 2s fallback.
+        await vi.advanceTimersByTimeAsync(2000);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await waitFor(
+        () => clientMessages.filter((m) => m.type === "response.create").length === 2,
+        1_000,
+        "fallback timer never fired the deferred response.create",
+      );
+      expect(clientMessages.filter((m) => m.type === "response.create")).toHaveLength(2);
+    } finally {
+      await session?.close();
       await closeServer(server);
     }
   });
@@ -273,4 +433,18 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(e
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs: number,
+  message = "waitFor predicate never became true",
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(message);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
