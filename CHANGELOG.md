@@ -19,6 +19,7 @@
 - Rename the documented Hermes credential env to `HERMES_AGENT_API_SERVER_KEY` while keeping `HERMES_API_KEY` as a legacy alias.
 - Remove unsupported OpenAI Realtime reasoning effort value `none` and tighten clone-first setup docs.
 - Add `hermes-live provider-smoke` and `npm run check:live-provider` for optional real Gemini Live/OpenAI Realtime session handshakes.
+- Upgrade the Gemini SDK to v2, Vitest to v4, and tsx to the latest v4 release while keeping Node type-checking aligned with the package's minimum supported Node 20 runtime.
 
 ## 0.1.0
 
