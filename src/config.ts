@@ -13,6 +13,13 @@ const EnvSchema = z.object({
   HERMES_LIVE_MAX_TEXT_CHARS: z.coerce.number().int().positive().default(20_000),
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   HERMES_LIVE_DEMO_ENABLED: z.string().optional(),
+  HERMES_LIVE_NARRATION_ENABLED: z.string().optional(),
+  HERMES_LIVE_NARRATION_GRACE_MS: z.coerce.number().int().nonnegative().default(6_000),
+  HERMES_LIVE_NARRATION_MIN_GAP_MS: z.coerce.number().int().nonnegative().default(12_000),
+  HERMES_LIVE_NARRATION_HEARTBEAT_IDLE_MS: z.coerce.number().int().nonnegative().default(25_000),
+  HERMES_LIVE_NARRATION_HEARTBEAT_MAX: z.coerce.number().int().min(0).default(2),
+  HERMES_LIVE_NARRATION_REASONING_MODE: z.enum(["paraphrase", "off"]).default("paraphrase"),
+  HERMES_LIVE_NARRATION_AUDIO_GAP_MS: z.coerce.number().int().nonnegative().default(800),
 
   HERMES_BASE_URL: z.string().url().default("http://127.0.0.1:8642"),
   HERMES_AGENT_API_SERVER_KEY: z.string().optional(),
@@ -95,7 +102,26 @@ export interface AppConfig {
     baseUrl: string;
     voice: string;
   };
+  narration: {
+    enabled: boolean;
+    graceMs: number;
+    minGapMs: number;
+    heartbeatIdleMs: number;
+    heartbeatMax: number;
+    reasoningMode: "paraphrase" | "off";
+    audioGapMs: number;
+  };
 }
+
+export const defaultNarrationConfig: AppConfig["narration"] = {
+  enabled: true,
+  graceMs: 6_000,
+  minGapMs: 12_000,
+  heartbeatIdleMs: 25_000,
+  heartbeatMax: 2,
+  reasoningMode: "paraphrase",
+  audioGapMs: 800,
+};
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = EnvSchema.parse(env);
@@ -152,6 +178,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     local: {
       baseUrl: withoutTrailingSlash(parsed.HERMES_LOCAL_REALTIME_BASE_URL),
       voice: parsed.HERMES_LOCAL_REALTIME_VOICE,
+    },
+    narration: {
+      enabled:
+        parsed.HERMES_LIVE_NARRATION_ENABLED === undefined
+          ? true
+          : parseBool(parsed.HERMES_LIVE_NARRATION_ENABLED),
+      graceMs: parsed.HERMES_LIVE_NARRATION_GRACE_MS,
+      minGapMs: parsed.HERMES_LIVE_NARRATION_MIN_GAP_MS,
+      heartbeatIdleMs: parsed.HERMES_LIVE_NARRATION_HEARTBEAT_IDLE_MS,
+      heartbeatMax: parsed.HERMES_LIVE_NARRATION_HEARTBEAT_MAX,
+      reasoningMode: parsed.HERMES_LIVE_NARRATION_REASONING_MODE,
+      audioGapMs: parsed.HERMES_LIVE_NARRATION_AUDIO_GAP_MS,
     },
   };
 }

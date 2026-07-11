@@ -223,4 +223,40 @@ describe("config", () => {
       expect(() => assertRuntimeConfig(config)).not.toThrow();
     });
   });
+
+  describe("narration config", () => {
+    it("applies defaults when no env values are provided", () => {
+      const config = loadConfig({});
+
+      expect(config.narration).toEqual({
+        enabled: true,
+        graceMs: 6_000,
+        minGapMs: 12_000,
+        heartbeatIdleMs: 25_000,
+        heartbeatMax: 2,
+        reasoningMode: "paraphrase",
+        audioGapMs: 800,
+      });
+    });
+
+    it("respects HERMES_LIVE_NARRATION_ENABLED=false", () => {
+      const config = loadConfig({ HERMES_LIVE_NARRATION_ENABLED: "false" });
+
+      expect(config.narration.enabled).toBe(false);
+    });
+
+    it("accepts reasoning mode off", () => {
+      const config = loadConfig({ HERMES_LIVE_NARRATION_REASONING_MODE: "off" });
+
+      expect(config.narration.reasoningMode).toBe("off");
+    });
+
+    it("rejects invalid reasoning mode values", () => {
+      expect(() => loadConfig({ HERMES_LIVE_NARRATION_REASONING_MODE: "invalid" })).toThrow();
+    });
+
+    it("validates non-negative heartbeat max", () => {
+      expect(() => loadConfig({ HERMES_LIVE_NARRATION_HEARTBEAT_MAX: "-1" })).toThrow();
+    });
+  });
 });
