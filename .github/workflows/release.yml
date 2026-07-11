@@ -11,6 +11,7 @@ permissions:
 jobs:
   github-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -22,6 +23,26 @@ jobs:
       - run: npm audit --audit-level=moderate
       - run: mkdir -p release
       - run: npm pack --pack-destination release
-      - run: gh release create "$GITHUB_REF_NAME" release/*.tgz --title "$GITHUB_REF_NAME" --notes-file CHANGELOG.md --verify-tag
+      - run: gh release create "$GITHUB_REF_NAME" release/*.tgz --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}
+
+  npm-publish:
+    if: vars.PUBLISH_NPM == 'true'
+    needs: github-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - run: npm publish --access public --provenance

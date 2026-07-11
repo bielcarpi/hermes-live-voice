@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup help and ideas
+    url: https://github.com/bielcarpi/hermes-live-voice/discussions
+    about: Ask questions, show a client, or discuss a deployment before filing a bug.
+  - name: Report a security vulnerability
+    url: https://github.com/bielcarpi/hermes-live-voice/security/advisories/new
+    about: Send vulnerability details privately. Never disclose secrets or exploits in a public issue.
+  - name: Hermes Agent support
+    url: https://github.com/NousResearch/hermes-agent
+    about: Use the upstream Hermes repository for Hermes core behavior unrelated to this gateway.

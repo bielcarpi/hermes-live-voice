@@ -9,18 +9,27 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run verify
       - run: npm audit --audit-level=moderate
-      - run: npm run check:plugin
       - run: npm pack --dry-run
-      - run: docker build -t hermes-live-voice:ci .
+      - if: matrix.node-version == 20
+        run: docker build -t hermes-live-voice:ci .

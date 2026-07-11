@@ -1,0 +1,7 @@
+# Default owner and security-sensitive boundaries.
+* @bielcarpi
+/src/adapters/inbound/http/ @bielcarpi
+/src/adapters/outbound/hermes/ @bielcarpi
+/src/application/live-gateway/ @bielcarpi
+/.github/workflows/ @bielcarpi
+/SECURITY.md @bielcarpi

@@ -84,6 +84,8 @@ try {
         file.startsWith("node_modules/") ||
         file.startsWith("src/") ||
         file.startsWith("test/") ||
+        (/(^|\/)\.[^/]+/.test(file) && file !== ".env.example") ||
+        / \d+\.[^/]+$/.test(file) ||
         file.includes("__pycache__") ||
         file.endsWith(".pyc") ||
         file === ".env" ||

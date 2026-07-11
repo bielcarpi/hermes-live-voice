@@ -1,7 +1,7 @@
 {
   "name": "hermes-live-voice",
   "version": "0.1.0",
-  "description": "Realtime voice for Hermes Agent: Gemini Live, OpenAI Realtime, WebSocket sessions, tools, memory, approvals, and barge-in.",
+  "description": "Realtime voice bridge for Hermes Agent with Gemini Live, OpenAI Realtime, barge-in, tools, memory, and approvals.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -22,6 +22,10 @@
   "bugs": {
     "url": "https://github.com/bielcarpi/hermes-live-voice/issues"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "keywords": [
     "hermes-agent",
     "gemini-live",
@@ -29,6 +33,10 @@
     "realtime",
     "voice",
     "hermes-plugin",
+    "speech-to-speech",
+    "voice-agent",
+    "full-duplex",
+    "barge-in",
     "agent",
     "websocket"
   ],
@@ -40,7 +48,10 @@
   },
   "files": [
     "dist",
-    "apps/web-demo",
+    "apps/web-demo/app.js",
+    "apps/web-demo/index.html",
+    "apps/web-demo/mic-worklet.js",
+    "apps/web-demo/styles.css",
     "assets",
     "docs",
     "examples",
@@ -52,6 +63,7 @@
     "README.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
+    "SUPPORT.md",
     "SECURITY.md",
     "CODE_OF_CONDUCT.md",
     ".env.example"
@@ -65,6 +77,7 @@
     "check:cli-check": "node scripts/cli-check-smoke.mjs",
     "check:cli-client": "node scripts/cli-client-smoke.mjs",
     "check:gateway": "node scripts/gateway-smoke.mjs",
+    "check:docs": "node scripts/docs-check.mjs",
     "check:live-provider": "npm run build && node dist/cli.js provider-smoke",
     "check:live-provider-cli": "node scripts/live-provider-cli-smoke.mjs",
     "check:package": "node scripts/package-smoke.mjs",
@@ -74,7 +87,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify": "npm run typecheck && npm run check:web-demo && npm run check:plugin && npm test && npm run build && npm run check:live-provider-cli && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
+    "verify": "npm run typecheck && npm run check:docs && npm run check:web-demo && npm run check:plugin && npm test && npm run build && npm run check:live-provider-cli && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
     "prepack": "npm run build"
   },
   "dependencies": {
