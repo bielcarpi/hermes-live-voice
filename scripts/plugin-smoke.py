@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import py_compile
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -51,8 +52,10 @@ def main() -> None:
     assert_equal(command["name"], "hermes-live", "registered slash command")
 
     manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     for expected in [
         "name: hermes-live",
+        "kind: standalone",
         "provides_tools:",
         "- hermes_live_status",
         "provides_commands:",
@@ -60,6 +63,11 @@ def main() -> None:
     ]:
         if expected not in manifest:
             raise AssertionError(f"plugin.yaml missing {expected!r}")
+
+    version_match = re.search(r"^version:\s*([^\s#]+)", manifest, re.MULTILINE)
+    if version_match is None:
+        raise AssertionError("plugin.yaml is missing a version")
+    assert_equal(version_match.group(1), package["version"], "plugin/package version")
 
     print("Plugin smoke ok: manifest, register(ctx), tool handler, and slash command verified")
 

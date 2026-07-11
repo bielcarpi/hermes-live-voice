@@ -1,7 +1,8 @@
 name: hermes-live
-version: 0.1.0
-description: Hermes plugin metadata for the hermes-live realtime voice gateway.
-author: Hermes Live contributors
+version: 0.2.0
+description: "Connect Hermes Agent to an interruptible Gemini Live or OpenAI Realtime voice session through the self-hosted Hermes Live Voice gateway."
+author: Biel Carpi and Hermes Live contributors
+kind: standalone
 provides_tools:
   - hermes_live_status
 provides_commands:

@@ -4,6 +4,8 @@
 
 The package/repository name is `hermes-live-voice`. The installed CLI command, Hermes plugin id, toolset, and slash command remain `hermes-live` so existing Hermes-facing names stay short and stable.
 
+The plugin manifest version is kept identical to the npm package version and verified by `npm run check:plugin` before release.
+
 The plugin and gateway have different jobs:
 
 - The Hermes plugin gives Hermes installations a discoverable integration surface, status tool, and slash command.

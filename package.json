@@ -13,7 +13,10 @@
     "./package.json": "./package.json"
   },
   "license": "MIT",
-  "author": "Hermes Live contributors",
+  "author": {
+    "name": "Biel Carpi",
+    "url": "https://github.com/bielcarpi"
+  },
   "homepage": "https://github.com/bielcarpi/hermes-live-voice#readme",
   "repository": {
     "type": "git",
