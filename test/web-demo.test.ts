@@ -41,6 +41,7 @@ function loadWebDemo(): {
     stop: new TestElement("stop"),
     "text-form": new TestElement("text-form"),
     text: new TestElement("text"),
+    send: new TestElement("send"),
     status: new TestElement("status"),
     log: new TestElement("log"),
   };

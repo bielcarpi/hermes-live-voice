@@ -5,6 +5,7 @@ const micButton = document.querySelector("#mic");
 const stopButton = document.querySelector("#stop");
 const form = document.querySelector("#text-form");
 const textInput = document.querySelector("#text");
+const sendButton = document.querySelector("#send");
 const statusEl = document.querySelector("#status");
 const logEl = document.querySelector("#log");
 
@@ -18,6 +19,8 @@ const playbackItems = new Map();
 let lastPlaybackItem;
 let mediaStream;
 let workletNode;
+
+setInteractive(false);
 
 gatewayInput.value = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/v1/live`;
 
@@ -89,6 +92,7 @@ function connect() {
     if (socket !== nextSocket) return;
     activeRunId = "";
     setStatus("Starting session");
+    setInteractive(false);
     connectButton.textContent = "Disconnect";
     nextSocket.send(JSON.stringify({ type: "session.start", profileId: "demo", userLabel: "web-demo" }));
   });
@@ -98,6 +102,7 @@ function connect() {
     socket = undefined;
     clearPlayback();
     setStatus("Disconnected");
+    setInteractive(false);
     connectButton.textContent = "Connect";
     if (workletNode) void stopMic({ notify: false, status: "Disconnected" });
   });
@@ -118,6 +123,7 @@ function connect() {
 function handleMessage(message) {
   if (message.type === "session.ready") {
     setStatus("Connected");
+    setInteractive(true);
     addLog("session", JSON.stringify(message, null, 2));
   } else if (message.type === "transcript.delta") {
     addLog(message.speaker ?? "assistant", message.text ?? "");
@@ -144,6 +150,7 @@ function handleMessage(message) {
     if (message.type === "run.failed") activeRunId = "";
     setStatus(message.type === "run.failed" ? "Run failed" : "Error");
     clearPlayback();
+    if (message.type === "session.error" && !message.recoverable) setInteractive(false);
     addLog("error", JSON.stringify(message, null, 2));
   } else if (message.type === "run.stopped") {
     activeRunId = "";
@@ -196,7 +203,7 @@ async function stopMic({ notify = true, status = "Connected" } = {}) {
   mediaStream = undefined;
   await audioContext?.close();
   audioContext = undefined;
-  micButton.textContent = "Mic";
+  micButton.textContent = "Start mic";
   setStatus(status);
 }
 
@@ -361,6 +368,14 @@ function addApprovalRequest(message) {
 
 function setStatus(value) {
   statusEl.textContent = value;
+  statusEl.className = `status ${value.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}`;
+}
+
+function setInteractive(enabled) {
+  textInput.disabled = !enabled;
+  sendButton.disabled = !enabled;
+  micButton.disabled = !enabled;
+  stopButton.disabled = !enabled;
 }
 
 function showError(error) {

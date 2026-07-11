@@ -3,39 +3,68 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>hermes-live demo</title>
+    <meta name="description" content="Reference client for talking to Hermes Agent through a realtime voice session." />
+    <title>Hermes Live Voice</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
-      <section class="panel">
+      <section class="panel" aria-labelledby="product-title">
         <header class="topbar">
-          <div>
-            <h1>hermes-live</h1>
-            <p id="status">Disconnected</p>
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true">H</div>
+            <div>
+              <p class="eyebrow">Hermes Agent · realtime bridge</p>
+              <h1 id="product-title">Hermes Live Voice</h1>
+              <p class="tagline">Talk to Hermes like a live call.</p>
+            </div>
           </div>
-          <button id="connect" type="button">Connect</button>
+          <div class="connection-actions">
+            <p id="status" class="status" role="status">Disconnected</p>
+            <button id="connect" class="connect-button" type="button">Connect</button>
+          </div>
         </header>
 
-        <div class="controls">
-          <label>
-            Gateway
-            <input id="gateway" type="url" value="" autocomplete="off" />
-          </label>
-          <label>
-            Token
-            <input id="token" type="password" autocomplete="off" />
-          </label>
-        </div>
+        <details class="setup-card">
+          <summary>Connection settings</summary>
+          <div class="controls">
+            <label>
+              Gateway WebSocket
+              <input id="gateway" type="url" value="" autocomplete="off" spellcheck="false" />
+            </label>
+            <label>
+              Gateway token
+              <input id="token" type="password" autocomplete="off" placeholder="Only when configured" />
+            </label>
+          </div>
+          <p>Credentials stay in this browser session and are sent only to your configured gateway.</p>
+        </details>
 
-        <div id="log" class="log" aria-live="polite"></div>
+        <section id="log" class="conversation" aria-label="Conversation" aria-live="polite">
+          <div class="welcome" aria-hidden="true">
+            <span class="live-orb"></span>
+            <p class="welcome-title">Your Hermes, now conversational.</p>
+            <p>Connect, then speak or type a request that uses Hermes memory, tools, skills, or approvals.</p>
+            <div class="prompt-examples">
+              <span>Inspect this repository and run the tests</span>
+              <span>What should I work on next?</span>
+              <span>Summarize my current project state</span>
+            </div>
+          </div>
+        </section>
 
         <form id="text-form" class="composer">
-          <input id="text" type="text" placeholder="Ask Hermes..." autocomplete="off" />
-          <button type="submit">Send</button>
-          <button id="mic" type="button">Mic</button>
-          <button id="stop" type="button">Stop</button>
+          <label class="sr-only" for="text">Message Hermes</label>
+          <input id="text" type="text" placeholder="Ask Hermes to do something…" autocomplete="off" disabled />
+          <button id="send" type="submit" disabled>Send</button>
+          <button id="mic" class="secondary" type="button" disabled>Start mic</button>
+          <button id="stop" class="danger" type="button" disabled>Stop</button>
         </form>
+
+        <footer>
+          <span>Developer preview · self-hosted trusted-client use</span>
+          <a href="https://github.com/bielcarpi/hermes-live-voice" target="_blank" rel="noreferrer">View on GitHub</a>
+        </footer>
       </section>
     </main>
     <script type="module" src="/app.js"></script>
