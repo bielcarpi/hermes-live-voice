@@ -22,6 +22,8 @@ import {
   type LiveModelSession,
 } from "./ports/realtime-model.port.js";
 import { buildSystemInstruction } from "./system-instruction.js";
+import { parseNarratableEvent, redactForNarration } from "./run-event-parsing.js";
+import { RunNarrator } from "./run-narrator.js";
 
 export interface LiveGatewaySessionDeps {
   config: AppConfig;
@@ -41,8 +43,23 @@ export class LiveGatewaySession {
   private userLabel = "anonymous";
   private activeRunId: string | undefined;
   private hermesRunActive = false;
+  private runStats?: {
+    runId: string;
+    startedAt: number;
+    toolsStarted: number;
+    toolsCompleted: number;
+    lastEventName?: string;
+    lastEventAt?: number;
+    lastReasoning?: string;
+  };
   private speaking = false;
   private speakingSince = 0;
+  private runNarrator?: RunNarrator;
+  private userSpeaking = false;
+  private clientAudioActive = false;
+  private lastAudioDeltaAt = 0;
+  private lastUserInputAt = 0;
+  private lastNarrationAt = 0;
   private readonly sessionStartedAt = Date.now();
 
   constructor(
@@ -205,6 +222,8 @@ export class LiveGatewaySession {
     this.closing = true;
     this.deps.logger.info("session_closing", { sessionId: this.id, activeRunId: this.activeRunId ?? null, wasSpeaking: this.speaking, sessionDurationMs: Date.now() - this.sessionStartedAt });
     this.speaking = false;
+    this.runNarrator?.dispose();
+    this.runNarrator = undefined;
     if (this.activeRunId) {
       await this.deps.hermes.stopRun(this.activeRunId, this.hermesRequestOptions()).catch(() => undefined);
     }
@@ -236,13 +255,25 @@ export class LiveGatewaySession {
     switch (message.type) {
       case "audio.input":
         validateAudioFrame(message.data, message.mimeType, this.deps.config.server.maxAudioBytes);
+        if (this.isPushToTalkFallbackActive() && !this.clientAudioActive) {
+          if (this.lastNarrationAt > this.lastUserInputAt) {
+            await this.liveSession.cancelResponse("user_barge_in");
+          }
+          this.lastUserInputAt = Date.now();
+          this.clientAudioActive = true;
+        }
         await this.liveSession.sendRealtimeAudio({ data: message.data, mimeType: message.mimeType });
         break;
       case "audio.end":
         await this.liveSession.sendAudioStreamEnd();
+        if (this.isPushToTalkFallbackActive()) {
+          this.clientAudioActive = false;
+          this.runNarrator?.poke();
+        }
         break;
       case "text.input":
         validateText(message.text, this.deps.config.server.maxTextChars, "Text input");
+        this.lastUserInputAt = Date.now();
         this.deps.logger.info("user_text_input", { sessionId: this.id, text: message.text.slice(0, 500) });
         await this.liveSession.sendText(message.text);
         break;
@@ -252,10 +283,21 @@ export class LiveGatewaySession {
       case "approval.respond":
         await this.handleApprovalResponse(message);
         break;
-      case "run.stop":
+      case "run.stop": {
+        const requestedRunId = message.runId;
+        if (requestedRunId !== undefined && requestedRunId !== this.activeRunId) {
+          this.send({
+            type: "log",
+            level: "info",
+            message: "Stop requested for a run that is not active",
+            data: { requestedRunId, activeRunId: this.activeRunId ?? null },
+          });
+          break;
+        }
         await this.cancelRealtimeResponse(message.reason);
         await this.stopRun(message.runId, message.reason);
         break;
+      }
       case "session.close":
         await this.close();
         this.client.close(1000, "session closed");
@@ -283,24 +325,44 @@ export class LiveGatewaySession {
         break;
       }
       case "get_agent_run_status": {
-        const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
-        const status = await this.deps.hermes.getRun(runId, this.hermesRequestOptions());
-        await this.liveSession?.sendToolResponse(call, { ok: true, status });
+        const resolved = this.resolveRunIdTolerant(stringArg(call, "run_id") || undefined);
+        if (!resolved.ok) {
+          await this.liveSession?.sendToolResponse(call, resolved.result);
+          break;
+        }
+        const status = await this.deps.hermes.getRun(resolved.runId, this.hermesRequestOptions());
+        const statsMatch = this.runStats && this.runStats.runId === resolved.runId;
+        const payload: Record<string, unknown> = { ok: true, status };
+        if (statsMatch) {
+          payload.elapsed_s = (Date.now() - this.runStats!.startedAt) / 1000;
+          payload.tools_started = this.runStats!.toolsStarted;
+          payload.tools_completed = this.runStats!.toolsCompleted;
+          payload.last_activity = this.runStats!.lastReasoning ?? this.runStats!.lastEventName;
+          if (this.runStats!.lastEventAt !== undefined) {
+            payload.last_event_age_s = (Date.now() - this.runStats!.lastEventAt) / 1000;
+          }
+        }
+        await this.liveSession?.sendToolResponse(call, payload);
         break;
       }
       case "stop_agent_run": {
-        const runId = stringArg(call, "run_id") || this.activeRunId;
-        const stopped = await this.stopRun(runId, stringArg(call, "reason"));
+        const resolved = this.resolveRunIdTolerant(stringArg(call, "run_id") || undefined);
+        if (!resolved.ok) {
+          await this.liveSession?.sendToolResponse(call, resolved.result);
+          break;
+        }
+        const stopped = await this.stopRun(resolved.runId, stringArg(call, "reason"));
         await this.liveSession?.sendToolResponse(call, stopped);
         break;
       }
       case "submit_agent_approval": {
-        const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
+        const runId = this.resolveActiveRunIdOrThrow(stringArg(call, "run_id") || undefined);
         const parsedChoice = ApprovalChoiceSchema.parse(stringArg(call, "choice"));
         const result = await this.deps.hermes.submitApproval(runId, parsedChoice, {
           resolveAll: Boolean(call.args.resolve_all),
           ...this.hermesRequestOptions(),
         });
+        this.runNarrator?.onApprovalResolved();
         await this.liveSession?.sendToolResponse(call, { ok: true, result });
         break;
       }
@@ -334,6 +396,7 @@ export class LiveGatewaySession {
         this.speakingSince = Date.now();
         this.deps.logger.info("assistant_speaking_started", { sessionId: this.id });
       }
+      this.lastAudioDeltaAt = Date.now();
       this.send({ type: "audio.output", ...event.audio });
     } else if (event.type === "text") {
       this.deps.logger.info("assistant_transcript", { sessionId: this.id, text: event.text });
@@ -357,6 +420,11 @@ export class LiveGatewaySession {
         this.speaking = false;
         this.deps.logger.info("assistant_speaking_stopped", { sessionId: this.id, durationMs: duration, reason: "user_interrupted" });
       }
+      if (this.lastNarrationAt > this.lastUserInputAt) {
+        void this.liveSession?.cancelResponse("user_barge_in");
+      }
+      this.userSpeaking = true;
+      this.lastUserInputAt = Date.now();
       this.deps.logger.info("user_speaking_started", { sessionId: this.id });
       this.send({
         type: "input.speech_started",
@@ -365,6 +433,7 @@ export class LiveGatewaySession {
         ...(event.audioStartMs === undefined ? {} : { audioStartMs: event.audioStartMs }),
       });
     } else if (event.type === "input_speech_stopped") {
+      this.userSpeaking = false;
       this.deps.logger.info("user_speaking_stopped", { sessionId: this.id, durationS: event.durationS });
       this.send({
         type: "input.speech_stopped",
@@ -372,7 +441,18 @@ export class LiveGatewaySession {
         ...(event.durationS === undefined ? {} : { durationS: event.durationS }),
         ...(event.audioEndMs === undefined ? {} : { audioEndMs: event.audioEndMs }),
       });
+      this.runNarrator?.poke();
     } else {
+      const rawType = (event.message as { type?: unknown } | null | undefined)?.type;
+      if (
+        typeof rawType === "string" &&
+        (rawType === "response.done" || rawType === "response.cancelled" || rawType === "response.failed")
+      ) {
+        if (this.speaking) {
+          this.speaking = false;
+        }
+        this.runNarrator?.poke();
+      }
       this.send({ type: "realtime.message", message: event.message });
     }
   }
@@ -399,6 +479,34 @@ export class LiveGatewaySession {
       const started = await this.deps.hermes.startRun(runParams, this.abort.signal);
       runId = started.runId;
       this.activeRunId = runId;
+      this.runStats = { runId, startedAt: Date.now(), toolsStarted: 0, toolsCompleted: 0 };
+      const provider = this.deps.config.realtime.provider;
+      if (this.deps.config.narration.enabled && (provider === "openai" || provider === "local" || provider === "mock")) {
+        const narratorRunId = runId;
+        this.runNarrator = new RunNarrator({
+          runId: narratorRunId,
+          config: this.deps.config.narration,
+          deliver: async (framedText: string): Promise<boolean> => {
+            const audioGapOk = Date.now() - this.lastAudioDeltaAt >= this.deps.config.narration.audioGapMs;
+            if (this.speaking || this.userSpeaking || this.clientAudioActive || !audioGapOk || !this.liveSession) {
+              return false;
+            }
+            const ok = await this.liveSession.sendNarration(framedText);
+            if (ok) {
+              this.lastNarrationAt = Date.now();
+            }
+            return ok;
+          },
+          cancelNarration: async (): Promise<void> => {
+            if (this.lastNarrationAt > this.lastUserInputAt) {
+              await this.liveSession?.cancelResponse("narration_cutoff");
+            }
+          },
+          logger: this.deps.logger,
+        });
+      } else if (this.deps.config.narration.enabled && provider === "gemini") {
+        this.deps.logger.warn("narration_disabled_for_provider", { sessionId: this.id, provider });
+      }
       this.deps.logger.info("hermes_run_started", { sessionId: this.id, runId, input: input.slice(0, 200) });
       this.send({ type: "run.started", runId, sessionId: this.id });
 
@@ -406,20 +514,33 @@ export class LiveGatewaySession {
       let finalOutput = "";
       let usage: Record<string, unknown> | undefined;
       let terminal = false;
-      let toolsStarted = 0;
-      let toolsCompleted = 0;
 
       for await (const event of this.deps.hermes.streamRunEvents(runId, this.hermesRequestOptions())) {
         this.forwardRunEvent(runId, event);
+        if (this.runStats) {
+          this.runStats.lastEventName = event.event as string;
+          this.runStats.lastEventAt = Date.now();
+        }
+        const narratable = parseNarratableEvent(event);
+        if (narratable) {
+          if (narratable.kind === "reasoning") {
+            this.runNarrator?.onEvent({ kind: "reasoning", text: redactForNarration(narratable.text) });
+          } else {
+            this.runNarrator?.onEvent(narratable);
+          }
+        }
         if (event.event === "message.delta" && typeof event.delta === "string") {
           transcript.push(event.delta);
         } else if (event.event === "reasoning.available" && typeof event.text === "string") {
           this.deps.logger.info("hermes_reasoning", { sessionId: this.id, runId, text: event.text.slice(0, 300) });
+          if (this.runStats) {
+            this.runStats.lastReasoning = redactForNarration(event.text as string);
+          }
         } else if (event.event === "tool.started" && typeof event.tool === "string") {
-          toolsStarted++;
+          if (this.runStats) this.runStats.toolsStarted++;
           this.deps.logger.info("hermes_tool_started", { sessionId: this.id, runId, tool: event.tool });
         } else if (event.event === "tool.completed" && typeof event.tool === "string") {
-          toolsCompleted++;
+          if (this.runStats) this.runStats.toolsCompleted++;
           this.deps.logger.info("hermes_tool_completed", { sessionId: this.id, runId, tool: event.tool, duration: event.duration, error: event.error ?? false });
         } else if (event.event === "run.completed") {
           terminal = true;
@@ -429,8 +550,8 @@ export class LiveGatewaySession {
             sessionId: this.id,
             runId,
             outputLength: (finalOutput || transcript.join("")).length,
-            toolsStarted,
-            toolsCompleted,
+            toolsStarted: this.runStats?.toolsStarted ?? 0,
+            toolsCompleted: this.runStats?.toolsCompleted ?? 0,
           });
           this.send({
             type: "run.completed",
@@ -438,13 +559,16 @@ export class LiveGatewaySession {
             output: finalOutput || transcript.join(""),
             ...(usage ? { usage } : {}),
           });
+          await this.runNarrator?.onTerminal();
         } else if (event.event === "run.failed") {
           terminal = true;
           this.deps.logger.warn("hermes_run_failed", { sessionId: this.id, runId, error: String(event.error ?? "unknown") });
+          await this.runNarrator?.onTerminal();
           return { ok: false, run_id: runId, status: "failed", output: transcript.join(""), error: String(event.error ?? "Agent run failed.") };
         } else if (event.event === "run.cancelled") {
           terminal = true;
           this.deps.logger.info("hermes_run_cancelled", { sessionId: this.id, runId });
+          await this.runNarrator?.onTerminal();
           return { ok: false, run_id: runId, status: "cancelled" };
         }
       }
@@ -453,6 +577,7 @@ export class LiveGatewaySession {
         const output = transcript.join("");
         const error = "Agent run event stream ended before a terminal event.";
         this.send({ type: "run.failed", runId, error });
+        await this.runNarrator?.onTerminal();
         return { ok: false, run_id: runId, status: "incomplete", output, error };
       }
 
@@ -463,12 +588,15 @@ export class LiveGatewaySession {
       }
       const message = errorToMessage(error);
       this.send({ type: "run.failed", runId, error: message });
+      await this.runNarrator?.onTerminal();
       return { ok: false, run_id: runId, status: "failed", error: message };
     } finally {
       this.hermesRunActive = false;
       if (runId && this.activeRunId === runId) {
         this.activeRunId = undefined;
       }
+      this.runNarrator?.dispose();
+      this.runNarrator = undefined;
     }
   }
 
@@ -485,11 +613,12 @@ export class LiveGatewaySession {
   }
 
   private async handleApprovalResponse(message: Extract<ClientMessage, { type: "approval.respond" }>): Promise<void> {
-    const runId = this.resolveActiveRunId(message.runId);
+    const runId = this.resolveActiveRunIdOrThrow(message.runId);
     const result = await this.deps.hermes.submitApproval(runId, message.choice, {
       ...(message.resolveAll === undefined ? {} : { resolveAll: message.resolveAll }),
       ...this.hermesRequestOptions(),
     });
+    this.runNarrator?.onApprovalResolved();
     this.send({
       type: "approval.responded",
       runId,
@@ -499,7 +628,11 @@ export class LiveGatewaySession {
   }
 
   private async stopRun(runId: string | undefined, reason?: string): Promise<Record<string, unknown>> {
-    const target = this.resolveActiveRunId(runId);
+    const resolved = this.resolveRunIdTolerant(runId);
+    if (!resolved.ok) {
+      return resolved.result;
+    }
+    const target = resolved.runId;
     const result = await this.deps.hermes.stopRun(target, this.hermesRequestOptions());
     this.send({ type: "run.stopped", runId: target, status: result.status ?? "stopping" });
     this.send({ type: "log", level: "info", message: "Agent run stop requested", data: { runId: target, reason } });
@@ -510,7 +643,14 @@ export class LiveGatewaySession {
     return { signal: this.abort.signal, ...(this.sessionKey ? { sessionKey: this.sessionKey } : {}) };
   }
 
-  private resolveActiveRunId(requestedRunId: string | undefined): string {
+  private isPushToTalkFallbackActive(): boolean {
+    return (
+      this.deps.config.realtime.provider === "openai" &&
+      this.deps.config.openai.turnDetection === "disabled"
+    );
+  }
+
+  private resolveActiveRunIdOrThrow(requestedRunId: string | undefined): string {
     if (!this.activeRunId) {
       throw new Error("No active agent run.");
     }
@@ -518,6 +658,42 @@ export class LiveGatewaySession {
       throw new Error("Requested agent run is not active in this voice session.");
     }
     return this.activeRunId;
+  }
+
+  // Never throws; sibling of resolveActiveRunIdOrThrow for status/stop paths.
+  private resolveRunIdTolerant(
+    requestedRunId: string | undefined,
+  ): { ok: true; runId: string } | { ok: false; result: Record<string, unknown> } {
+    if (requestedRunId && requestedRunId !== this.activeRunId) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          error: "That run is no longer active.",
+          active_run_id: this.activeRunId ?? null,
+        },
+      };
+    }
+    if (!this.activeRunId) {
+      if (this.runStats) {
+        return {
+          ok: false,
+          result: {
+            ok: false,
+            error: "No active agent run.",
+            last_run: {
+              run_id: this.runStats.runId,
+              elapsed_s: (Date.now() - this.runStats.startedAt) / 1000,
+              tools_started: this.runStats.toolsStarted,
+              tools_completed: this.runStats.toolsCompleted,
+              last_activity: this.runStats.lastReasoning ?? this.runStats.lastEventName,
+            },
+          },
+        };
+      }
+      return { ok: false, result: { ok: false, error: "No active agent run." } };
+    }
+    return { ok: true, runId: this.activeRunId };
   }
 
   private async cancelRealtimeResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<void> {

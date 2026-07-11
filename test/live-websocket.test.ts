@@ -404,7 +404,7 @@ describe("live gateway WebSocket", () => {
     });
   });
 
-  it("rejects client stop requests for runs outside the active voice session", async () => {
+  it("reports mismatched client stop requests via a log frame without cancelling the active run", async () => {
     const releaseRun = deferred<void>();
     const hermes = fakeHermes({
       streamEvents: async function* () {
@@ -429,16 +429,18 @@ describe("live gateway WebSocket", () => {
     await waitForMessage(socket, "run.started");
     send(socket, { type: "run.stop", runId: "other_run", reason: "test" });
 
-    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
-      code: "client_message_failed",
-      message: "Requested agent run is not active in this voice session.",
+    await expect(waitForMessage(socket, "log")).resolves.toMatchObject({
+      type: "log",
+      level: "info",
+      message: "Stop requested for a run that is not active",
+      data: { requestedRunId: "other_run", activeRunId: "run_ws" },
     });
     expect(hermes.stopRun).not.toHaveBeenCalled();
     releaseRun.resolve();
     await waitForMessage(socket, "run.completed");
   });
 
-  it("rejects provider stop tool calls for runs outside the active voice session", async () => {
+  it("returns a tolerant tool response for provider stop tool calls naming a mismatched run", async () => {
     const releaseRun = deferred<void>();
     const liveModel = new ManualToolAdapter();
     const hermes = fakeHermes({
@@ -462,12 +464,12 @@ describe("live gateway WebSocket", () => {
     await waitForMessage(socket, "session.ready");
     send(socket, { type: "text.input", text: "Run something long" });
     await waitForMessage(socket, "run.started");
+    const response = liveModel.nextToolResponse();
     liveModel.emitToolCall({ id: "stop_other", name: "stop_agent_run", args: { run_id: "other_run" } });
 
-    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
-      code: "tool_call_failed",
-      message: "Requested agent run is not active in this voice session.",
-      recoverable: true,
+    await expect(response).resolves.toMatchObject({
+      call: { id: "stop_other", name: "stop_agent_run" },
+      response: { ok: false, error: "That run is no longer active.", active_run_id: "run_ws" },
     });
     expect(hermes.stopRun).not.toHaveBeenCalled();
     releaseRun.resolve();
@@ -835,8 +837,16 @@ describe("live gateway WebSocket", () => {
 
   it("does not fail the run when sendNarration throws", async () => {
     const server = await startServer({
-      config: testConfig(),
-      hermes: fakeHermes(),
+      config: testConfig({
+        narration: { graceMs: 10, minGapMs: 20, heartbeatIdleMs: 50, heartbeatMax: 2, audioGapMs: 10 },
+      }),
+      hermes: fakeHermes({
+        streamEvents: async function* () {
+          await new Promise((r) => setTimeout(r, 15));
+          yield { event: "reasoning.available", text: "working on it" };
+          yield { event: "run.completed", output: "Hermes says done." };
+        },
+      }),
       liveModel: new NarrationThrowingAdapter(),
       logger: fakeLogger(),
     });
@@ -853,6 +863,304 @@ describe("live gateway WebSocket", () => {
       type: "run.completed",
       output: "Hermes says done.",
     });
+  });
+
+  it("tolerates provider stop_agent_run tool calls for stale run ids without emitting session.error", async () => {
+    const releaseRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        await releaseRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const errorSeen = { hit: false };
+    socket.on("message", (raw: WebSocket.RawData) => {
+      const parsed = JSON.parse(raw.toString("utf8"));
+      if (parsed.type === "session.error") {
+        errorSeen.hit = true;
+      }
+    });
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run something long" });
+    await waitForMessage(socket, "run.started");
+    const response = liveModel.nextToolResponse();
+    liveModel.emitToolCall({ id: "stop_stale", name: "stop_agent_run", args: { run_id: "stale_run" } });
+
+    await expect(response).resolves.toMatchObject({
+      call: { id: "stop_stale", name: "stop_agent_run" },
+      response: { ok: false, error: "That run is no longer active.", active_run_id: "run_ws" },
+    });
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+    expect(errorSeen.hit).toBe(false);
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.completed");
+    expect(errorSeen.hit).toBe(false);
+  });
+
+  it("keeps the active run streaming when a stop_agent_run tool call names a different run id", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "message.delta", delta: "part " };
+        await new Promise((r) => setTimeout(r, 20));
+        yield { event: "message.delta", delta: "one" };
+        await new Promise((r) => setTimeout(r, 20));
+        yield { event: "run.completed", output: "part one" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run something" });
+    await waitForMessage(socket, "run.started");
+    const toolResponse = liveModel.nextToolResponse();
+    liveModel.emitToolCall({ id: "stop_wrong", name: "stop_agent_run", args: { run_id: "wrong_run" } });
+
+    await expect(toolResponse).resolves.toMatchObject({
+      response: { ok: false, error: "That run is no longer active.", active_run_id: "run_ws" },
+    });
+    await expect(waitForMessage(socket, "run.completed")).resolves.toMatchObject({
+      type: "run.completed",
+      runId: "run_ws",
+      output: "part one",
+    });
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps submit_agent_approval strict when the tool call names a mismatched run id", async () => {
+    const releaseRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "approval.request", run_id: "run_ws", approval_id: "approval_1" };
+        await releaseRun.promise;
+        yield { event: "run.completed", output: "Approved." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Do the thing" });
+    await waitForMessage(socket, "approval.request");
+    liveModel.emitToolCall({
+      id: "approve_wrong",
+      name: "submit_agent_approval",
+      args: { run_id: "wrong_run", choice: "once" },
+    });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "tool_call_failed",
+      message: "Requested agent run is not active in this voice session.",
+      recoverable: true,
+    });
+    expect(hermes.submitApproval).not.toHaveBeenCalled();
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.completed");
+  });
+
+  it("does not cancel the realtime response when a client run.stop names a mismatched run id", async () => {
+    const liveModel = new StopMismatchAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "message.delta", delta: "keep " };
+        await new Promise((r) => setTimeout(r, 20));
+        yield { event: "message.delta", delta: "going" };
+        await new Promise((r) => setTimeout(r, 20));
+        yield { event: "run.completed", output: "keep going" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run something long" });
+    await waitForMessage(socket, "run.started");
+    send(socket, { type: "run.stop", runId: "other_run", reason: "voice barge-in" });
+
+    await expect(waitForMessage(socket, "log")).resolves.toMatchObject({
+      type: "log",
+      level: "info",
+      message: "Stop requested for a run that is not active",
+      data: { requestedRunId: "other_run", activeRunId: "run_ws" },
+    });
+    expect(liveModel.session.cancelResponse).not.toHaveBeenCalled();
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+    await expect(waitForMessage(socket, "run.completed")).resolves.toMatchObject({
+      type: "run.completed",
+      runId: "run_ws",
+      output: "keep going",
+    });
+    expect(liveModel.session.cancelResponse).not.toHaveBeenCalled();
+  });
+
+  it("returns tools_started/tools_completed and elapsed_s in get_agent_run_status mid-run", async () => {
+    const toolsYielded = deferred<void>();
+    const releaseRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "tool.started", tool: "bash" };
+        await new Promise((r) => setTimeout(r, 20));
+        yield { event: "tool.completed", tool: "bash" };
+        await new Promise((r) => setTimeout(r, 20));
+        yield { event: "tool.started", tool: "read_file" };
+        await new Promise((r) => setTimeout(r, 20));
+        yield { event: "tool.completed", tool: "read_file" };
+        toolsYielded.resolve();
+        await releaseRun.promise;
+        yield { event: "run.completed", output: "done" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Do some tools" });
+    await waitForMessage(socket, "run.started");
+
+    await toolsYielded.promise;
+
+    const response = liveModel.nextToolResponse();
+    liveModel.emitToolCall({ id: "status_mid", name: "get_agent_run_status", args: { run_id: "run_ws" } });
+
+    const result = await response;
+    expect(result.call).toMatchObject({ id: "status_mid", name: "get_agent_run_status" });
+    expect(result.response).toMatchObject({
+      ok: true,
+      tools_started: 2,
+      tools_completed: 2,
+    });
+    expect(typeof result.response.elapsed_s).toBe("number");
+    expect(result.response.elapsed_s as number).toBeGreaterThanOrEqual(0);
+
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.completed");
+  });
+
+  it("returns no last_run key and no session.error when get_agent_run_status is called before any run has started", async () => {
+    const liveModel = new ManualToolAdapter();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const errorSeen = { hit: false };
+    socket.on("message", (raw: WebSocket.RawData) => {
+      const parsed = JSON.parse(raw.toString("utf8"));
+      if (parsed.type === "session.error") {
+        errorSeen.hit = true;
+      }
+    });
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+
+    const response = liveModel.nextToolResponse();
+    liveModel.emitToolCall({ id: "status_never", name: "get_agent_run_status", args: {} });
+
+    const result = await response;
+    expect(result.response).toMatchObject({ ok: false, error: "No active agent run." });
+    expect(result.response).not.toHaveProperty("last_run");
+    expect(errorSeen.hit).toBe(false);
+  });
+
+  it("returns last_run summary with correct run_id and counts after a run completes", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "tool.started", tool: "bash" };
+        yield { event: "tool.completed", tool: "bash" };
+        yield { event: "run.completed", output: "finished" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Do something" });
+    await waitForMessage(socket, "run.completed");
+    await liveModel.nextToolResponse();
+    // drain the auto-queued start_agent_run response
+
+    const response = liveModel.nextToolResponse();
+    liveModel.emitToolCall({ id: "status_post", name: "get_agent_run_status", args: {} });
+
+    const result = await response;
+    expect(result.response).toMatchObject({
+      ok: false,
+      error: "No active agent run.",
+      last_run: {
+        run_id: "run_ws",
+        tools_started: 1,
+        tools_completed: 1,
+      },
+    });
+    expect(typeof (result.response.last_run as Record<string, unknown>).elapsed_s).toBe("number");
   });
 });
 
@@ -986,7 +1294,13 @@ function toWebSocketUrl(url: string): string {
   return parsed.toString();
 }
 
-function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): AppConfig {
+function testConfig(
+  overrides: {
+    server?: Partial<AppConfig["server"]>;
+    realtime?: Partial<AppConfig["realtime"]>;
+    narration?: Partial<AppConfig["narration"]>;
+  } = {},
+): AppConfig {
   return {
     server: {
       host: "127.0.0.1",
@@ -1000,7 +1314,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       allowUnauthenticated: overrides.server?.allowUnauthenticated ?? false,
     },
     hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent", timeoutMs: 30_000 },
-    realtime: { provider: "mock", model: "mock-live" },
+    realtime: { provider: "mock", model: "mock-live", ...overrides.realtime },
     gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1" },
     openai: {
       baseUrl: "wss://api.openai.com/v1/realtime",
@@ -1014,6 +1328,16 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
     local: {
       baseUrl: "ws://127.0.0.1:8765/v1/realtime",
       voice: "Aiden",
+    },
+    narration: {
+      enabled: true,
+      graceMs: 6_000,
+      minGapMs: 12_000,
+      heartbeatIdleMs: 25_000,
+      heartbeatMax: 2,
+      reasoningMode: "paraphrase",
+      audioGapMs: 800,
+      ...overrides.narration,
     },
   };
 }
@@ -1117,7 +1441,9 @@ class ToolEchoSession implements LiveModelSession {
     });
   }
 
-  async sendNarration(_text: string): Promise<void> {}
+  async sendNarration(_text: string): Promise<boolean> {
+    return true;
+  }
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1139,7 +1465,9 @@ class CloseTrackingSession implements LiveModelSession {
 
   async sendText(_text: string): Promise<void> {}
 
-  async sendNarration(_text: string): Promise<void> {}
+  async sendNarration(_text: string): Promise<boolean> {
+    return true;
+  }
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1169,7 +1497,9 @@ class OversizedToolCallSession implements LiveModelSession {
     });
   }
 
-  async sendNarration(_text: string): Promise<void> {}
+  async sendNarration(_text: string): Promise<boolean> {
+    return true;
+  }
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1230,7 +1560,9 @@ class ManualToolSession implements LiveModelSession {
     });
   }
 
-  async sendNarration(_text: string): Promise<void> {}
+  async sendNarration(_text: string): Promise<boolean> {
+    return true;
+  }
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1261,7 +1593,9 @@ class CancelTrackingSession implements LiveModelSession {
 
   async sendText(_text: string): Promise<void> {}
 
-  async sendNarration(_text: string): Promise<void> {}
+  async sendNarration(_text: string): Promise<boolean> {
+    return true;
+  }
 
   async sendAudioStreamEnd(): Promise<void> {}
 
@@ -1313,20 +1647,58 @@ class NarrationThrowingSession implements LiveModelSession {
     });
   }
 
-  async sendNarration(_text: string): Promise<void> {
+  async sendNarration(_text: string): Promise<boolean> {
     throw new Error("narration intentionally failed");
   }
 
   async sendAudioStreamEnd(): Promise<void> {}
 
   async cancelResponse(): Promise<boolean> {
-    return false;
+    throw new Error("cancelResponse intentionally failed");
   }
 
   async sendToolResponse(_call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
     const output = typeof response.output === "string" ? response.output : JSON.stringify(response);
     this.callbacks.onEvent({ type: "text", text: output });
   }
+
+  async close(): Promise<void> {}
+}
+
+class StopMismatchAdapter implements LiveModelAdapter {
+  readonly session = new StopMismatchSession();
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    this.session.bind(params.callbacks);
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return this.session;
+  }
+}
+
+class StopMismatchSession implements LiveModelSession {
+  readonly cancelResponse = vi.fn(async () => true);
+  private callbacks?: LiveModelCallbacks;
+
+  bind(callbacks: LiveModelCallbacks): void {
+    this.callbacks = callbacks;
+  }
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(text: string): Promise<void> {
+    this.callbacks?.onEvent({
+      type: "tool_call",
+      call: { id: "stop_mismatch_start", name: "start_agent_run", args: { message: text } },
+    });
+  }
+
+  async sendNarration(_text: string): Promise<boolean> {
+    return true;
+  }
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
 
   async close(): Promise<void> {}
 }

@@ -297,6 +297,7 @@ function testConfig(
     realtime?: Partial<AppConfig["realtime"]>;
     gemini?: Partial<AppConfig["gemini"]>;
     openai?: Partial<AppConfig["openai"]>;
+    narration?: Partial<AppConfig["narration"]>;
   } = {},
 ): AppConfig {
   return {
@@ -328,6 +329,16 @@ function testConfig(
     local: {
       baseUrl: "ws://127.0.0.1:8765/v1/realtime",
       voice: "Aiden",
+    },
+    narration: {
+      enabled: true,
+      graceMs: 6_000,
+      minGapMs: 12_000,
+      heartbeatIdleMs: 25_000,
+      heartbeatMax: 2,
+      reasoningMode: "paraphrase",
+      audioGapMs: 800,
+      ...overrides.narration,
     },
   };
 }
