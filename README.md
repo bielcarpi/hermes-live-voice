@@ -218,6 +218,27 @@ HERMES_LIVE_ALLOW_ORIGIN=https://your-app.example
 
 `hermes-live` refuses network-accessible binds without a strong `HERMES_LIVE_AUTH_TOKEN` unless you explicitly set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 
+Run narration:
+
+```sh
+# Enables spoken progress updates while a Hermes run is in progress.
+HERMES_LIVE_NARRATION_ENABLED=true
+# Quiet period after a run starts before any narration can speak.
+HERMES_LIVE_NARRATION_GRACE_MS=6000
+# Minimum time between two narration deliveries.
+HERMES_LIVE_NARRATION_MIN_GAP_MS=12000
+# How long the run can be silent before a heartbeat narration fires.
+HERMES_LIVE_NARRATION_HEARTBEAT_IDLE_MS=25000
+# How many heartbeats before offering to keep waiting or cancel.
+HERMES_LIVE_NARRATION_HEARTBEAT_MAX=2
+# Narrate agent reasoning: "paraphrase" enables it, "off" disables it.
+HERMES_LIVE_NARRATION_REASONING_MODE=paraphrase
+# Minimum silence after assistant audio output before narrating.
+HERMES_LIVE_NARRATION_AUDIO_GAP_MS=800
+```
+
+Narration is currently supported on the `openai`, `local`, and `mock` providers. It is disabled on the `gemini` provider in this release (the Gemini Live adapter does not yet expose the busy-state tracking narration needs), and the gateway logs a warning instead of erroring when narration is requested there.
+
 ## Run
 
 ```sh

@@ -183,6 +183,7 @@ async function handleHermesRequest(req, res) {
     });
     res.write('event: message.delta\ndata: {"delta":"gateway "}\n\n');
     res.write('event: message.delta\ndata: {"delta":"smoke ok"}\n\n');
+    res.write('event: reasoning.available\ndata: {"text":"thinking about the request"}\n\n');
     res.end('event: run.completed\ndata: {"usage":{"source":"gateway-smoke"}}\n\n');
     return;
   }

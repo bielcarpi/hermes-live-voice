@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add gateway-side run narration: spoken progress updates while a Hermes run is in progress, paraphrased by the realtime voice model, gated by grace/min-gap/heartbeat/audio-gap timing and cancelled cleanly on run completion. Supported on the `openai`, `local`, and `mock` providers; disabled on `gemini` in this release.
+- Fix a cancel-then-tool-response race in the OpenAI and local realtime adapters that could corrupt turn-taking when a response was cancelled and a new one started back-to-back.
+- Degrade stale or mismatched run ids for status and stop tool calls to informative tool results instead of throwing hard errors, so a user asking about or trying to stop an already-finished run gets a graceful answer.
+- Enrich `get_agent_run_status` with live run statistics (elapsed time, tool counts, last activity) so status checks are more useful mid-run.
 - Rename the documented Hermes credential env to `HERMES_AGENT_API_SERVER_KEY` while keeping `HERMES_API_KEY` as a legacy alias.
 - Remove unsupported OpenAI Realtime reasoning effort value `none` and tighten clone-first setup docs.
 - Add `hermes-live provider-smoke` and `npm run check:live-provider` for optional real Gemini Live/OpenAI Realtime session handshakes.

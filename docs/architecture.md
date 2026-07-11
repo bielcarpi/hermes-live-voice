@@ -128,6 +128,27 @@ Hermes = brain, memory, actions
 Gateway = translator, session manager, safety boundary
 ```
 
+## Run Narration
+
+While a Hermes run is in progress, the gateway can speak short paraphrased progress updates through the realtime voice model. The narrator is gateway-side, lives in `src/application/live-gateway/run-narrator.ts`, and is constructed per Hermes run.
+
+Event flow:
+
+```txt
+Hermes SSE run event
+  -> parseNarratableEvent / redactForNarration  (run-event-parsing.ts)
+  -> RunNarrator.onEvent()
+  -> grace / min-gap / delivery-gate timing
+  -> LiveModelSession.sendNarration()
+  -> realtime model paraphrases into one short spoken sentence
+```
+
+Delivery gates: a narration only sends when the assistant is not currently speaking, the user is not speaking, and enough time has passed since the last audio output chunk. Timing is bounded by `HERMES_LIVE_NARRATION_GRACE_MS`, `HERMES_LIVE_NARRATION_MIN_GAP_MS`, `HERMES_LIVE_NARRATION_HEARTBEAT_IDLE_MS`, `HERMES_LIVE_NARRATION_HEARTBEAT_MAX`, and `HERMES_LIVE_NARRATION_AUDIO_GAP_MS`.
+
+Cutoff: when the run reaches a terminal state, any in-flight narration response is cancelled so the final answer is not interrupted by leftover narration audio.
+
+Narration is supported on the OpenAI Realtime, local speech-to-speech, and mock providers. It is disabled on Gemini Live in this release; the Gemini adapter does not yet expose the busy-state tracking narration needs, so the gateway logs a warning instead of erroring.
+
 ## Session Identity
 
 The gateway derives a Hermes session key from:

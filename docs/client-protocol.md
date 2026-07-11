@@ -241,6 +241,8 @@ Hermes run event:
 }
 ```
 
+`run.event` forwarding to clients is unchanged by the run narration feature. Narration is entirely server-internal, between the gateway and the realtime voice model, and introduces no new wire message types for the browser/client protocol.
+
 Hermes completion:
 
 ```json
