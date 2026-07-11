@@ -6,7 +6,9 @@ Security fixes target the latest released minor version.
 
 ## Reporting
 
-Please do not open public issues for vulnerabilities. Email the maintainers or use GitHub private vulnerability reporting if enabled.
+Please do not open public issues for vulnerabilities. Use the repository's [private vulnerability reporting](https://github.com/bielcarpi/hermes-live-voice/security/advisories/new) so reports, reproduction details, and fixes stay private until coordinated disclosure.
+
+If private reporting is unavailable, contact the maintainer through the GitHub profile without including vulnerability details in public comments.
 
 ## Scope
 
@@ -30,3 +32,13 @@ Security-sensitive areas include:
 - Terminate TLS before exposing the gateway beyond localhost.
 - Run the Docker image as the bundled non-root `node` user.
 - Put rate limits in front of public deployments.
+- Keep `HERMES_LIVE_TRUST_CLIENT_IDENTITY=false` unless every client is trusted to choose a Hermes memory scope.
+- Keep `HERMES_LIVE_RUN_EVENT_DETAIL=summary` or `none` for non-developer clients.
+- Set `HERMES_LIVE_MAX_SESSIONS` to a provider- and budget-appropriate ceiling.
+
+## Out of scope
+
+- Vulnerabilities in Hermes Agent, Gemini, OpenAI, Node.js, or an upstream dependency that are not caused by this repository.
+- Reports that require exposing a gateway with the documented unsafe unauthenticated opt-out.
+- Social engineering, denial-of-service traffic generation, or testing against deployments you do not own.
+- Provider availability, quota, pricing, or model-quality reports.
