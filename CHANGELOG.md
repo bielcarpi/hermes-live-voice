@@ -15,6 +15,7 @@
 - Add CODEOWNERS, a pull-request template, issue routing, support documentation, CodeQL, dependency review, and a Node 20/22/24 CI matrix.
 - Prepare optional npm trusted publishing behind the `PUBLISH_NPM=true` repository variable.
 - Align the Hermes plugin manifest with package version `0.2.0`, add explicit standalone-plugin metadata, and verify version parity in the release gate.
+- Pin GitHub Actions to current immutable release commits and replace the deprecated dependency-license denylist with an explicit non-copyleft allowlist.
 - Rename the documented Hermes credential env to `HERMES_AGENT_API_SERVER_KEY` while keeping `HERMES_API_KEY` as a legacy alias.
 - Remove unsupported OpenAI Realtime reasoning effort value `none` and tighten clone-first setup docs.
 - Add `hermes-live provider-smoke` and `npm run check:live-provider` for optional real Gemini Live/OpenAI Realtime session handshakes.
