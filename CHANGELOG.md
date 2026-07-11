@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-07-11
+
+- Reposition the project as the realtime custom-client bridge for Hermes Agent, with a marketing-first README, honest Voice Mode comparison, provider compatibility roadmap, support guide, and release runbook.
+- Default OpenAI Realtime sessions to the currently documented `gpt-realtime-2.1` model.
+- Add a documented `gpt-live-1` compatibility watchlist without claiming current API availability.
+- Make Hermes memory identity server-owned by default; client-selected `profileId` and `userLabel` now require `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`.
+- Default Hermes run events to an allowlisted summary, with explicit `summary`, `none`, and trusted-development `raw` policies.
+- Add a configurable concurrent WebSocket limit through `HERMES_LIVE_MAX_SESSIONS`.
+- Serialize client message handling and sanitize Hermes run failures returned to clients and realtime providers.
+- Ask realtime models to acknowledge meaningful work briefly before starting a Hermes run.
+- Add CODEOWNERS, a pull-request template, issue routing, support documentation, CodeQL, dependency review, and a Node 20/22/24 CI matrix.
+- Prepare optional npm trusted publishing behind the `PUBLISH_NPM=true` repository variable.
 - Rename the documented Hermes credential env to `HERMES_AGENT_API_SERVER_KEY` while keeping `HERMES_API_KEY` as a legacy alias.
 - Remove unsupported OpenAI Realtime reasoning effort value `none` and tighten clone-first setup docs.
 - Add `hermes-live provider-smoke` and `npm run check:live-provider` for optional real Gemini Live/OpenAI Realtime session handshakes.
