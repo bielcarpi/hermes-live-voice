@@ -9,6 +9,11 @@ const EnvSchema = z.object({
   HERMES_LIVE_ALLOW_UNAUTHENTICATED: z.string().optional(),
   HERMES_LIVE_ALLOW_ORIGIN: z.string().optional(),
   HERMES_LIVE_SESSION_PREFIX: z.string().default("agent:main:hermes-live"),
+  HERMES_LIVE_PROFILE_ID: z.string().default("default"),
+  HERMES_LIVE_USER_LABEL: z.string().default("voice"),
+  HERMES_LIVE_TRUST_CLIENT_IDENTITY: z.string().optional(),
+  HERMES_LIVE_RUN_EVENT_DETAIL: z.enum(["summary", "raw", "none"]).default("summary"),
+  HERMES_LIVE_MAX_SESSIONS: z.coerce.number().int().positive().default(8),
   HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(2_000_000),
   HERMES_LIVE_MAX_TEXT_CHARS: z.coerce.number().int().positive().default(20_000),
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
@@ -32,7 +37,7 @@ const EnvSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_REALTIME_BASE_URL: z.string().url().default("wss://api.openai.com/v1/realtime"),
-  OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
+  OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2.1"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
   OPENAI_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("low"),
   OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),
@@ -41,6 +46,7 @@ const EnvSchema = z.object({
 });
 
 export type RealtimeProvider = "gemini" | "openai" | "mock";
+export type HermesRunEventDetail = "summary" | "raw" | "none";
 
 export interface AppConfig {
   server: {
@@ -50,6 +56,11 @@ export interface AppConfig {
     allowUnauthenticated: boolean;
     allowOrigin?: string;
     sessionPrefix: string;
+    defaultProfileId: string;
+    defaultUserLabel: string;
+    trustClientIdentity: boolean;
+    runEventDetail: HermesRunEventDetail;
+    maxSessions: number;
     maxAudioBytes: number;
     maxTextChars: number;
     providerReadyTimeoutMs: number;
@@ -101,6 +112,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       allowUnauthenticated: parseBool(parsed.HERMES_LIVE_ALLOW_UNAUTHENTICATED),
       ...(parsed.HERMES_LIVE_ALLOW_ORIGIN ? { allowOrigin: parsed.HERMES_LIVE_ALLOW_ORIGIN } : {}),
       sessionPrefix: parsed.HERMES_LIVE_SESSION_PREFIX,
+      defaultProfileId: parsed.HERMES_LIVE_PROFILE_ID,
+      defaultUserLabel: parsed.HERMES_LIVE_USER_LABEL,
+      trustClientIdentity: parseBool(parsed.HERMES_LIVE_TRUST_CLIENT_IDENTITY),
+      runEventDetail: parsed.HERMES_LIVE_RUN_EVENT_DETAIL,
+      maxSessions: parsed.HERMES_LIVE_MAX_SESSIONS,
       maxAudioBytes: parsed.HERMES_LIVE_MAX_AUDIO_BYTES,
       maxTextChars: parsed.HERMES_LIVE_MAX_TEXT_CHARS,
       providerReadyTimeoutMs: parsed.HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS,

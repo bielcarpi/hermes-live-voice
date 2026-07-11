@@ -40,7 +40,7 @@ Expected:
     "ok": true,
     "configured": true,
     "provider": "openai",
-    "model": "gpt-realtime-2",
+    "model": "gpt-realtime-2.1",
     "sessionChecked": false,
     "baseUrl": "wss://api.openai.com/v1/realtime",
     "voice": "marin",
@@ -74,7 +74,7 @@ Expected:
 {
   "ok": true,
   "provider": "openai",
-  "model": "gpt-realtime-2",
+  "model": "gpt-realtime-2.1",
   "connected": true
 }
 ```
@@ -112,7 +112,7 @@ OpenAI Realtime:
 ```sh
 HERMES_LIVE_PROVIDER=openai \
 OPENAI_API_KEY=... \
-OPENAI_REALTIME_MODEL=gpt-realtime-2 \
+OPENAI_REALTIME_MODEL=gpt-realtime-2.1 \
 OPENAI_REALTIME_TURN_DETECTION=disabled \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=... \
@@ -120,13 +120,7 @@ HERMES_LIVE_AUTH_TOKEN=local-test-token \
 npm run dev
 ```
 
-For current Realtime 1.x sessions:
-
-```sh
-OPENAI_REALTIME_MODEL=gpt-realtime-1.5
-```
-
-Use `gpt-realtime` only when intentionally testing the older Realtime model alias.
+Override `OPENAI_REALTIME_MODEL` only when intentionally validating another documented Realtime-compatible model.
 
 For OpenAI-managed turn detection:
 
@@ -211,11 +205,11 @@ HTTP/1.1 200 OK
 
 OpenAI documents WebSockets as appropriate for server-to-server Realtime integrations and recommends WebRTC for browser/mobile clients that connect directly to OpenAI. `hermes-live` keeps provider credentials server-side, so its provider connection is a server-side WebSocket pipeline.
 
-OpenAI Realtime model families currently include `gpt-realtime`, `gpt-realtime-1.5`, `gpt-realtime-mini`, and `gpt-realtime-2`. Use `gpt-realtime-2` when you want reasoning-capable voice behavior; use `gpt-realtime-1.5` when explicitly testing the current Realtime 1.x behavior.
+The currently documented OpenAI voice-agent model is `gpt-realtime-2.1`. Treat model-name overrides as compatibility work: run this complete checklist before advertising another model as supported.
 
 OpenAI Realtime can run with VAD or push-to-talk. In this repo, `OPENAI_REALTIME_TURN_DETECTION=disabled` means the client sends `audio.end`; `semantic_vad` and `server_vad` delegate turn boundaries to OpenAI.
 
-For `gpt-realtime-2`, `OPENAI_REALTIME_REASONING_EFFORT` accepts `minimal`, `low`, `medium`, `high`, or `xhigh`. Keep `low` until live testing proves the workflow needs deeper reasoning.
+For Realtime 2 models, `OPENAI_REALTIME_REASONING_EFFORT` accepts `minimal`, `low`, `medium`, `high`, or `xhigh`. Keep `low` until live testing proves the workflow needs deeper reasoning.
 
 Clients can send `response.cancel` before a barge-in or new turn. The OpenAI adapter maps that to OpenAI Realtime's `response.cancel` event when a response is pending or active.
 
@@ -232,6 +226,6 @@ References:
 - OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime
 - OpenAI Realtime WebSocket guide: https://developers.openai.com/api/docs/guides/realtime-websocket
 - OpenAI Realtime conversations: https://developers.openai.com/api/docs/guides/realtime-conversations
-- OpenAI GPT-Realtime-2 model: https://developers.openai.com/api/docs/models/gpt-realtime-2
+- OpenAI GPT-Realtime-2.1 model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1
 - Gemini Live API: https://ai.google.dev/gemini-api/docs/live-api
 - Gemini Enterprise Live API reference: https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/multimodal-live

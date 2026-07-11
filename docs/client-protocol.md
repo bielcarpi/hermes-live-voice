@@ -52,7 +52,7 @@ Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
       "ok": true,
       "configured": true,
       "provider": "openai",
-      "model": "gpt-realtime-2",
+      "model": "gpt-realtime-2.1",
       "sessionChecked": false
     }
   }
@@ -90,13 +90,15 @@ The first message must be `session.start`.
 }
 ```
 
+The gateway owns Hermes memory identity by default. It uses `HERMES_LIVE_PROFILE_ID` and `HERMES_LIVE_USER_LABEL`, ignoring the two client fields above. Set `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true` only for a trusted-client deployment where clients are intentionally allowed to select Hermes memory scopes.
+
 The server replies:
 
 ```json
 {
   "type": "session.ready",
   "sessionId": "live_...",
-  "model": "gpt-realtime-2",
+  "model": "gpt-realtime-2.1",
   "hermes": {
     "model": "hermes-agent"
   }
@@ -228,18 +230,21 @@ Hermes run started:
 }
 ```
 
-Hermes run event:
+Hermes run event (safe summary by default):
 
 ```json
 {
   "type": "run.event",
   "runId": "run_...",
   "event": {
-    "event": "message.delta",
-    "delta": "..."
+    "event": "tool.started",
+    "run_id": "run_...",
+    "timestamp": 1710000000
   }
 }
 ```
+
+`HERMES_LIVE_RUN_EVENT_DETAIL=summary` forwards only allowlisted scalar metadata. `none` suppresses `run.event` messages. `raw` forwards upstream Hermes event payloads and should be used only with trusted developer clients because those events can contain tool arguments, output, paths, or error detail.
 
 Hermes completion:
 

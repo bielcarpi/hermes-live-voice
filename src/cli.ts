@@ -136,10 +136,13 @@ Optional:
   HERMES_LIVE_AUTH_TOKEN    Require auth for /v1/live, /ready, and /v1/capabilities
   HERMES_LIVE_ALLOW_UNAUTHENTICATED  Unsafe opt-out for network-accessible binds
   HERMES_LIVE_MAX_TEXT_CHARS Text/tool-call character limit, default 20000
+  HERMES_LIVE_MAX_SESSIONS Concurrent WebSocket session limit, default 8
+  HERMES_LIVE_RUN_EVENT_DETAIL summary, raw, or none; default summary
+  HERMES_LIVE_TRUST_CLIENT_IDENTITY Allow profileId/userLabel from clients; default false
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
   HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
-  OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2; use gpt-realtime-1.5 for 1.x
+  OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2.1
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
 
 Plugin options:

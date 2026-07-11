@@ -132,14 +132,16 @@ Gateway = translator, session manager, safety boundary
 The gateway derives a Hermes session key from:
 
 - `HERMES_LIVE_SESSION_PREFIX`
-- `profileId`
-- `userLabel`
+- server-owned `HERMES_LIVE_PROFILE_ID`
+- server-owned `HERMES_LIVE_USER_LABEL`
 
 Example:
 
 ```txt
-agent:main:hermes-live:profile:default:user:alice
+agent:main:hermes-live:profile:default:user:voice
 ```
+
+Client `profileId` and `userLabel` values are ignored by default. A trusted-client deployment can explicitly set `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`, but a shared gateway must not treat those client strings as authenticated user identity.
 
 For OpenAI Realtime, the gateway also sends a hashed privacy-preserving safety identifier in the `OpenAI-Safety-Identifier` header.
 

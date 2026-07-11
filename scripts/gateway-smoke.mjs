@@ -37,6 +37,9 @@ const gateway = spawn(process.execPath, ["dist/cli.js", "serve"], {
     HERMES_LIVE_HERMES_TIMEOUT_MS: "5000",
     HERMES_LIVE_HOST: "127.0.0.1",
     HERMES_LIVE_MAX_TEXT_CHARS: "20000",
+    HERMES_LIVE_PROFILE_ID: "default",
+    HERMES_LIVE_USER_LABEL: "voice",
+    HERMES_LIVE_TRUST_CLIENT_IDENTITY: "false",
     HERMES_LIVE_PORT: String(gatewayPort),
     HERMES_LIVE_PROVIDER: "mock",
     HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: "5000",
@@ -149,7 +152,7 @@ async function handleHermesRequest(req, res) {
     if (authorization !== "Bearer hermes-smoke-secret") {
       throw new Error(`Unexpected Hermes authorization header: ${JSON.stringify(authorization)}.`);
     }
-    if (!sessionKey.includes("agent:main:hermes-live:profile:smoke:user:gateway-smoke")) {
+    if (!sessionKey.includes("agent:main:hermes-live:profile:default:user:voice")) {
       throw new Error(`Unexpected Hermes session key: ${JSON.stringify(sessionKey)}.`);
     }
     if (body.model !== "hermes-agent") {

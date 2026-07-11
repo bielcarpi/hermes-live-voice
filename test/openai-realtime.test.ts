@@ -95,7 +95,7 @@ describe("OpenAI Realtime adapter helpers", () => {
     expect((semanticVad.session.audio as any).input.turn_detection).toEqual({ type: "semantic_vad" });
     expect(semanticVad.session).toMatchObject({
       type: "realtime",
-      model: "gpt-realtime-2",
+      model: "gpt-realtime-2.1",
       reasoning: { effort: "low" },
       parallel_tool_calls: false,
       tool_choice: "auto",
@@ -159,7 +159,7 @@ function testOpenAIConfig(
 ): Parameters<typeof buildOpenAISessionUpdate>[0] {
   return {
     baseUrl: "wss://api.openai.com/v1/realtime",
-    model: "gpt-realtime-2",
+    model: "gpt-realtime-2.1",
     voice: "marin",
     reasoningEffort: "low",
     turnDetection: "disabled",

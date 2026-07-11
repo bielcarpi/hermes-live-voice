@@ -23,6 +23,8 @@ Set `HERMES_AGENT_API_SERVER_KEY` to Hermes Agent's `API_SERVER_KEY`. Current He
 
 `HERMES_API_KEY` remains supported as a legacy alias for existing deployments.
 
+Client-supplied identity is not trusted by default. `HERMES_LIVE_PROFILE_ID` and `HERMES_LIVE_USER_LABEL` define the server-owned Hermes memory scope. `session.start.profileId` and `session.start.userLabel` are ignored unless the operator explicitly sets `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true` for a trusted-client deployment.
+
 When `HERMES_LIVE_AUTH_TOKEN` is set, `WS /v1/live`, `GET /ready`, and `GET /v1/capabilities` require authentication. `GET /health` intentionally stays public for health checks.
 
 When `HERMES_LIVE_HOST` is network-accessible, `hermes-live` refuses to start without a strong `HERMES_LIVE_AUTH_TOKEN`. Generate one with a command such as `openssl rand -hex 32`. Set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` only for an isolated trusted network.
@@ -63,6 +65,10 @@ Raw client WebSocket payload size is capped from `HERMES_LIVE_MAX_AUDIO_BYTES` a
 
 Client metadata fields are also bounded before dispatch, including profile IDs, user labels, run IDs, reasons, MIME types, and playback truncation values.
 
+Hermes run events can contain tool arguments, output, paths, errors, or other operational detail. The default `HERMES_LIVE_RUN_EVENT_DETAIL=summary` policy emits only allowlisted event metadata. Use `none` to suppress run events or `raw` only when the client is fully trusted to receive upstream Hermes payloads.
+
+The gateway enforces `HERMES_LIVE_MAX_SESSIONS` before opening another provider session. Keep that limit aligned with provider quotas and cost controls.
+
 Add your own rate limiting before public deployment.
 
 ## Public Deployment Checklist
@@ -77,3 +83,5 @@ Add your own rate limiting before public deployment.
 - Logs do not include secrets.
 - Provider and Hermes credentials are managed by the server environment.
 - Rate limits exist at the edge.
+- `HERMES_LIVE_MAX_SESSIONS` matches provider quota and cost limits.
+- `HERMES_LIVE_RUN_EVENT_DETAIL` is `summary` or `none` unless every client is trusted.

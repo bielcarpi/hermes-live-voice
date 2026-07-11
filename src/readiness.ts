@@ -42,6 +42,9 @@ function checkGatewayConfig(config: AppConfig): ReadinessSection {
     port: config.server.port,
     authRequired: Boolean(config.server.authToken),
     demoEnabled: config.server.demoEnabled,
+    serverManagedIdentity: !config.server.trustClientIdentity,
+    runEventDetail: config.server.runEventDetail,
+    maxSessions: config.server.maxSessions,
   };
   try {
     assertGatewayExposureConfig(config);

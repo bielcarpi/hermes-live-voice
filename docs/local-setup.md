@@ -29,6 +29,12 @@ Realtime provider sessions must report ready within 15 seconds by default. Set `
 
 Text inputs and provider tool-call messages are limited to 20,000 characters by default. Set `HERMES_LIVE_MAX_TEXT_CHARS` if you need a different bound.
 
+The gateway uses server-owned Hermes identity by default: `HERMES_LIVE_PROFILE_ID=default` and `HERMES_LIVE_USER_LABEL=voice`. Client-supplied `profileId` and `userLabel` values are ignored unless `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`. Only enable that option when every client is trusted to select its own Hermes memory scope.
+
+`HERMES_LIVE_RUN_EVENT_DETAIL=summary` forwards only allowlisted run metadata. Use `none` for the smallest client surface or `raw` only for a trusted developer client that is allowed to see Hermes event payloads.
+
+The gateway accepts up to eight concurrent WebSocket sessions by default. Set `HERMES_LIVE_MAX_SESSIONS` to a positive value that matches your provider quota and cost controls.
+
 ## 2. Install Gateway Dependencies
 
 ```sh
@@ -63,7 +69,7 @@ OpenAI:
 HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=... HERMES_AGENT_API_SERVER_KEY=$API_SERVER_KEY npm run dev
 ```
 
-`OPENAI_REALTIME_MODEL` defaults to `gpt-realtime-2`. Set it to `gpt-realtime-1.5` for current Realtime 1.x behavior. `OPENAI_REALTIME_REASONING_EFFORT` applies to Realtime 2 and accepts `minimal`, `low`, `medium`, `high`, or `xhigh`.
+`OPENAI_REALTIME_MODEL` defaults to the currently documented `gpt-realtime-2.1`. `OPENAI_REALTIME_REASONING_EFFORT` applies to Realtime 2 models and accepts `minimal`, `low`, `medium`, `high`, or `xhigh`. Override the model only after validating it against the live-provider checklist.
 
 ## 4. Check Readiness
 

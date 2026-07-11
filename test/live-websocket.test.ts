@@ -17,7 +17,7 @@ import { startServer } from "../src/adapters/inbound/http/server.js";
 
 const openServers: Array<{ close(): Promise<void> }> = [];
 const openSockets: WebSocket[] = [];
-const defaultSessionKey = "agent:main:hermes-live:profile:default:user:anonymous";
+const defaultSessionKey = "agent:main:hermes-live:profile:default:user:voice";
 
 afterEach(async () => {
   for (const socket of openSockets.splice(0)) {
@@ -42,7 +42,7 @@ describe("live gateway WebSocket", () => {
     openSockets.push(socket);
 
     await waitForOpen(socket);
-    send(socket, { type: "session.start", profileId: "default", userLabel: "Alice Example" });
+    send(socket, { type: "session.start", profileId: "other-profile", userLabel: "Alice Example" });
     const ready = await waitForMessage(socket, "session.ready");
 
     expect(ready).toMatchObject({
@@ -59,10 +59,71 @@ describe("live gateway WebSocket", () => {
     expect(hermes.startRun).toHaveBeenCalledWith(
       expect.objectContaining({
         input: "What is my status?",
-        sessionKey: "agent:main:hermes-live:profile:default:user:alice-example",
+        sessionKey: defaultSessionKey,
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("uses client-selected Hermes identity only when explicitly trusted", async () => {
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig({ server: { trustClientIdentity: true } }),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start", profileId: "Private Profile", userLabel: "Alice Example" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "What is my status?" });
+    await waitForMessage(socket, "run.completed");
+
+    expect(hermes.startRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:main:hermes-live:profile:private-profile:user:alice-example",
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("redacts Hermes run event payloads by default", async () => {
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "tool.started",
+          run_id: "run_ws",
+          timestamp: 1710000000,
+          tool: "terminal",
+          args: { command: "print-secret" },
+        };
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const completed = waitForMessage(socket, "run.completed");
+    send(socket, { type: "text.input", text: "Run a tool" });
+    const runEvent = await waitForMessage(socket, "run.event");
+
+    expect(runEvent.event).toEqual({ event: "tool.started", run_id: "run_ws", timestamp: 1710000000 });
+    expect(JSON.stringify(runEvent)).not.toContain("print-secret");
+    await completed;
   });
 
   it("reports Hermes startup failures as session start failures", async () => {
@@ -674,6 +735,21 @@ describe("live gateway WebSocket", () => {
     await expect(expectUpgradeRejected(toWebSocketUrl(server.url), { origin: server.url })).resolves.toBe(401);
   });
 
+  it("rejects WebSocket upgrades above the configured session limit", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { maxSessions: 1 } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const first = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(first);
+    await waitForOpen(first);
+
+    await expect(expectUpgradeRejected(toWebSocketUrl(server.url), { origin: server.url })).resolves.toBe(503);
+  });
+
   it("allows browser WebSocket auth through the token query parameter", async () => {
     const server = await startServer({
       config: testConfig({ server: { authToken: "secret-token" } }),
@@ -970,6 +1046,11 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       host: "127.0.0.1",
       port: 0,
       sessionPrefix: "agent:main:hermes-live",
+      defaultProfileId: "default",
+      defaultUserLabel: "voice",
+      trustClientIdentity: false,
+      runEventDetail: "summary",
+      maxSessions: 8,
       maxAudioBytes: 2_000_000,
       maxTextChars: 20_000,
       providerReadyTimeoutMs: 15_000,
@@ -982,7 +1063,7 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
     gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1" },
     openai: {
       baseUrl: "wss://api.openai.com/v1/realtime",
-      model: "gpt-realtime-2",
+      model: "gpt-realtime-2.1",
       voice: "marin",
       reasoningEffort: "low",
       turnDetection: "disabled",

@@ -70,6 +70,11 @@ export async function startServer({ config, logger, hermes: providedHermes, live
       socket.destroy();
       return;
     }
+    if (sessions.size >= config.server.maxSessions) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const session = new LiveGatewaySession(new WebSocketClientConnection(ws), { config, hermes, liveModel, logger });
       sessions.add(session);
@@ -168,6 +173,9 @@ async function handleHttp(
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },
       features: {
         auth_required: Boolean(options.config.server.authToken),
+        server_managed_identity: !options.config.server.trustClientIdentity,
+        run_event_detail: options.config.server.runEventDetail,
+        max_sessions: options.config.server.maxSessions,
         gemini_live: options.config.realtime.provider === "gemini",
         openai_realtime: options.config.realtime.provider === "openai",
         mock_live: options.config.realtime.provider === "mock",

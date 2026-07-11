@@ -41,6 +41,7 @@ export class LiveGatewaySession {
   private userLabel = "anonymous";
   private activeRunId: string | undefined;
   private hermesRunActive = false;
+  private messageQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly client: ClientConnectionPort,
@@ -49,7 +50,7 @@ export class LiveGatewaySession {
 
   bind(): void {
     this.client.onMessage((data) => {
-      void this.handleRawMessage(data);
+      this.messageQueue = this.messageQueue.then(() => this.handleRawMessage(data));
     });
     this.client.onClose(() => {
       void this.close();
@@ -69,8 +70,12 @@ export class LiveGatewaySession {
     let liveSession: LiveModelSession | undefined;
     let clearProviderReadyTimeout = () => {};
     try {
-      this.profileId = message.profileId ?? "default";
-      this.userLabel = message.userLabel ?? "anonymous";
+      this.profileId = this.deps.config.server.trustClientIdentity
+        ? message.profileId ?? this.deps.config.server.defaultProfileId
+        : this.deps.config.server.defaultProfileId;
+      this.userLabel = this.deps.config.server.trustClientIdentity
+        ? message.userLabel ?? this.deps.config.server.defaultUserLabel
+        : this.deps.config.server.defaultUserLabel;
       this.sessionKey = makeSessionKey(this.deps.config.server.sessionPrefix, this.profileId, this.userLabel);
       const capabilities = await this.deps.hermes.assertRunsSupported(this.abort.signal);
       const pendingEvents: LiveModelEvent[] = [];
@@ -372,7 +377,18 @@ export class LiveGatewaySession {
           });
         } else if (event.event === "run.failed") {
           terminal = true;
-          return { ok: false, run_id: runId, status: "failed", output: transcript.join(""), error: String(event.error ?? "Hermes run failed.") };
+          this.deps.logger.warn("Hermes run reported failure", {
+            sessionId: this.id,
+            runId,
+            error: String(event.error ?? "Hermes run failed."),
+          });
+          return {
+            ok: false,
+            run_id: runId,
+            status: "failed",
+            output: transcript.join(""),
+            error: "Hermes run failed. Check the gateway logs for details.",
+          };
         } else if (event.event === "run.cancelled") {
           terminal = true;
           return { ok: false, run_id: runId, status: "cancelled" };
@@ -391,9 +407,10 @@ export class LiveGatewaySession {
       if (!runId) {
         throw error;
       }
-      const message = errorToMessage(error);
-      this.send({ type: "run.failed", runId, error: message });
-      return { ok: false, run_id: runId, status: "failed", error: message };
+      this.deps.logger.warn("Hermes run bridge failed", { sessionId: this.id, runId, error: errorToMessage(error) });
+      const publicMessage = "Hermes run failed. Check the gateway logs for details.";
+      this.send({ type: "run.failed", runId, error: publicMessage });
+      return { ok: false, run_id: runId, status: "failed", error: publicMessage };
     } finally {
       this.hermesRunActive = false;
       if (runId && this.activeRunId === runId) {
@@ -403,11 +420,14 @@ export class LiveGatewaySession {
   }
 
   private forwardRunEvent(runId: string, event: HermesRunEvent): void {
-    this.send({ type: "run.event", runId, event });
+    const publicEvent = publicHermesRunEvent(event, this.deps.config.server.runEventDetail);
+    if (publicEvent) {
+      this.send({ type: "run.event", runId, event: publicEvent });
+    }
     if (event.event === "approval.request") {
-      this.send({ type: "approval.request", runId, event });
+      this.send({ type: "approval.request", runId, event: publicEvent ?? publicHermesRunEvent(event, "summary")! });
     } else if (event.event === "run.failed") {
-      this.send({ type: "run.failed", runId, error: String(event.error ?? "Hermes run failed.") });
+      this.send({ type: "run.failed", runId, error: "Hermes run failed. Check the gateway logs for details." });
     } else if (event.event === "run.cancelled") {
       this.send({ type: "run.stopped", runId, status: "cancelled" });
     }
@@ -532,4 +552,25 @@ function safetyIdentifierForSessionKey(sessionKey: string): string {
 function stringArg(call: LiveToolCall, name: string): string {
   const value = call.args[name];
   return typeof value === "string" ? value : "";
+}
+
+function publicHermesRunEvent(
+  event: HermesRunEvent,
+  detail: AppConfig["server"]["runEventDetail"],
+): HermesRunEvent | undefined {
+  if (detail === "raw") {
+    return event;
+  }
+  if (detail === "none") {
+    return undefined;
+  }
+
+  const summary: Record<string, unknown> = {};
+  for (const key of ["event", "run_id", "timestamp", "status", "approval_id"] as const) {
+    const value = event[key];
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      summary[key] = value;
+    }
+  }
+  return summary as HermesRunEvent;
 }

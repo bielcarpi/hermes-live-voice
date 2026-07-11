@@ -9,6 +9,11 @@ describe("config", () => {
     expect(config.server.port).toBe(8788);
     expect(config.server.demoEnabled).toBe(true);
     expect(config.server.allowUnauthenticated).toBe(false);
+    expect(config.server.defaultProfileId).toBe("default");
+    expect(config.server.defaultUserLabel).toBe("voice");
+    expect(config.server.trustClientIdentity).toBe(false);
+    expect(config.server.runEventDetail).toBe("summary");
+    expect(config.server.maxSessions).toBe(8);
     expect(config.server.maxTextChars).toBe(20_000);
     expect(config.server.providerReadyTimeoutMs).toBe(15_000);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
@@ -34,6 +39,24 @@ describe("config", () => {
     const config = loadConfig({ HERMES_LIVE_MAX_TEXT_CHARS: "1234" });
 
     expect(config.server.maxTextChars).toBe(1234);
+  });
+
+  it("configures trusted identity, event detail, and session capacity explicitly", () => {
+    const config = loadConfig({
+      HERMES_LIVE_PROFILE_ID: "private",
+      HERMES_LIVE_USER_LABEL: "alice",
+      HERMES_LIVE_TRUST_CLIENT_IDENTITY: "true",
+      HERMES_LIVE_RUN_EVENT_DETAIL: "none",
+      HERMES_LIVE_MAX_SESSIONS: "3",
+    });
+
+    expect(config.server).toMatchObject({
+      defaultProfileId: "private",
+      defaultUserLabel: "alice",
+      trustClientIdentity: true,
+      runEventDetail: "none",
+      maxSessions: 3,
+    });
   });
 
   it("configures the realtime provider ready timeout", () => {
@@ -134,7 +157,7 @@ describe("config", () => {
     expect(() => assertRuntimeConfig(config)).toThrow(/OPENAI_API_KEY/);
   });
 
-  it("supports Realtime 1 and Realtime 2 model selection through env", () => {
+  it("supports explicit OpenAI Realtime model overrides", () => {
     const realtime1 = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_MODEL: "gpt-realtime-1.5" });
     const realtimeAlias = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_MODEL: "gpt-realtime" });
     const realtime2 = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_MODEL: "gpt-realtime-2" });
