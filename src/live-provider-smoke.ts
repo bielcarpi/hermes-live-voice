@@ -3,6 +3,7 @@ import type { AppConfig } from "./config.js";
 import { assertRealtimeProviderConfig } from "./config.js";
 import { createLiveModelAdapter } from "./adapters/outbound/realtime/factory.js";
 import type { LiveModelEvent } from "./application/live-gateway/ports/realtime-model.port.js";
+import { errorToMessage } from "./domain/error-message.js";
 
 export interface LiveProviderSmokeReport {
   ok: true;
@@ -118,16 +119,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function errorToMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === "object" && "message" in error && typeof (error as { message?: unknown }).message === "string") {
-    return (error as { message: string }).message;
-  }
-  return String(error);
 }
 
 function summarizeLiveEvent(event: LiveModelEvent): Record<string, unknown> {

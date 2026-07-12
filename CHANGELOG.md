@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.2.0 - 2026-07-11
+## 0.2.0 - 2026-07-12
 
 - Reposition the project as the realtime custom-client bridge for Hermes Agent, with a marketing-first README, honest Voice Mode comparison, provider compatibility roadmap, support guide, and release runbook.
 - Default OpenAI Realtime sessions to the currently documented `gpt-realtime-2.1` model.
@@ -20,6 +20,8 @@
 - Remove unsupported OpenAI Realtime reasoning effort value `none` and tighten clone-first setup docs.
 - Add `hermes-live provider-smoke` and `npm run check:live-provider` for optional real Gemini Live/OpenAI Realtime session handshakes.
 - Upgrade the Gemini SDK to v2, Vitest to v4, and tsx to the latest v4 release while keeping Node type-checking aligned with the package's minimum supported Node 20 runtime.
+- Treat client-close aborts of active Hermes event streams as expected cancellation instead of logging or emitting a false run failure.
+- Normalize structured realtime-provider startup errors into safe, actionable diagnostics instead of displaying `[object Object]`.
 
 ## 0.1.0
 

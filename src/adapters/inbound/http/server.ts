@@ -14,6 +14,7 @@ import type { Logger } from "../../../logger.js";
 import { buildReadinessReport } from "../../../readiness.js";
 import { serveStatic } from "./static.js";
 import { WebSocketClientConnection } from "./websocket-client-connection.js";
+import { errorToMessage } from "../../../domain/error-message.js";
 
 export interface StartServerOptions {
   config: AppConfig;
@@ -48,8 +49,9 @@ export async function startServer({ config, logger, hermes: providedHermes, live
         requireRealtimeProviderConfig: !providedLiveModel,
       });
     } catch (error) {
-      logger.error("http handler failed", { error: String(error) });
-      json(req, res, 500, { status: "error", error: String(error) });
+      const message = errorToMessage(error);
+      logger.error("http handler failed", { error: message });
+      json(req, res, 500, { status: "error", error: message });
     }
   });
 
