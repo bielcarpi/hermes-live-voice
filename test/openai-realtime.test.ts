@@ -143,7 +143,7 @@ describe("OpenAI Realtime adapter helpers", () => {
           systemInstruction: "test",
           callbacks: { onEvent: () => undefined },
         }),
-      ).rejects.toEqual({ message: "invalid session" });
+      ).rejects.toThrow("message=invalid session");
       await expect(withTimeout(closed, 2_000, "Timed out waiting for failed OpenAI socket to close.")).resolves.toEqual({
         code: 1011,
         reason: "OpenAI Realtime session start failed",

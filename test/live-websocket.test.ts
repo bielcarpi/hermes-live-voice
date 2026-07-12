@@ -723,6 +723,52 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("treats a client-close event-stream abort as cancellation instead of a run failure", async () => {
+    const streamAborted = deferred<void>();
+    const logger = fakeLogger();
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        await new Promise<void>((_resolve, reject) => {
+          const signal = options?.signal;
+          if (signal?.aborted) {
+            streamAborted.resolve();
+            reject(new DOMException("This operation was aborted", "AbortError"));
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              streamAborted.resolve();
+              reject(new DOMException("This operation was aborted", "AbortError"));
+            },
+            { once: true },
+          );
+        });
+        yield { event: "run.completed", output: "unreachable" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger,
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run until the socket closes" });
+    await waitForMessage(socket, "run.started");
+    socket.close(1000, "test close");
+
+    await streamAborted.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(logger.warn).not.toHaveBeenCalledWith("Hermes run bridge failed", expect.anything());
+  });
+
   it("rejects unauthorized WebSocket upgrades when auth is configured", async () => {
     const server = await startServer({
       config: testConfig({ server: { authToken: "secret-token" } }),

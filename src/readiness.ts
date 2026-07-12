@@ -6,6 +6,7 @@ import {
 } from "./config.js";
 import type { HermesRunsPort } from "./application/live-gateway/ports/hermes-runs.port.js";
 import { HermesClient } from "./adapters/outbound/hermes/hermes-runs.client.js";
+import { errorToMessage } from "./domain/error-message.js";
 
 export interface ReadinessSection extends Record<string, unknown> {
   ok: boolean;
@@ -118,8 +119,4 @@ function realtimeCheckSummary(config: AppConfig): Record<string, unknown> {
     };
   }
   return base;
-}
-
-function errorToMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

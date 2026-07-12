@@ -7,6 +7,7 @@ import {
   type LiveToolCall,
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 import type { RealtimeResponseTruncation } from "../../../domain/protocol/client-protocol.js";
+import { errorToMessage } from "../../../domain/error-message.js";
 import { OPENAI_HERMES_LIVE_TOOLS } from "../../../application/live-gateway/tool-definitions.js";
 import type {
   LiveModelAdapter,
@@ -46,7 +47,7 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
       const onInitialError = (error: unknown) => {
         cleanup();
         closeWebSocket(ws, 1011, "OpenAI Realtime session start failed");
-        reject(error);
+        reject(error instanceof Error ? error : new Error(errorToMessage(error)));
       };
       const onInitialClose = (code: number, reason: Buffer) => {
         cleanup();

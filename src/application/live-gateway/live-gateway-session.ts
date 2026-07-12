@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { errorToMessage } from "../../domain/error-message.js";
 import { isPcmMimeType } from "../../domain/audio/pcm.js";
 import { makeSessionKey, type AppConfig } from "../../config.js";
 import type { Logger } from "../../logger.js";
@@ -404,6 +405,13 @@ export class LiveGatewaySession {
 
       return { ok: true, run_id: runId, output: finalOutput || transcript.join(""), usage };
     } catch (error) {
+      if (this.abort.signal.aborted) {
+        return {
+          ok: false,
+          ...(runId ? { run_id: runId } : {}),
+          status: "cancelled",
+        };
+      }
       if (!runId) {
         throw error;
       }
@@ -531,10 +539,6 @@ function validateText(value: string, maxChars: number, label: string): void {
   if (value.length > maxChars) {
     throw new Error(`${label} exceeds HERMES_LIVE_MAX_TEXT_CHARS.`);
   }
-}
-
-function errorToMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function requestIdFromUnknown(value: unknown): string | undefined {
