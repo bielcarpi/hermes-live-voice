@@ -95,7 +95,13 @@ The realtime provider does not receive Hermes tools directly. It receives gatewa
 
 ## Install In Hermes
 
-Hermes discovers user plugins from `~/.hermes/plugins/<plugin-name>/`. Copy or symlink this directory there, then enable it:
+Current Hermes releases can clone the plugin subdirectory, install it under `~/.hermes/plugins/hermes-live/`, and enable it in one command:
+
+```sh
+hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --enable
+```
+
+For a local clone or npm package, copy or symlink the packaged plugin directory instead:
 
 ```sh
 node dist/cli.js plugin install

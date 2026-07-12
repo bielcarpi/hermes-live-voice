@@ -108,6 +108,14 @@ npm run build
 
 ### 2. Install the Hermes plugin
 
+Current Hermes releases can install and enable the plugin directly from this repository:
+
+```sh
+hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --enable
+```
+
+If you already cloned and built the gateway, the package installer provides the same plugin locally:
+
 ```sh
 node dist/cli.js plugin install
 hermes plugins enable hermes-live
