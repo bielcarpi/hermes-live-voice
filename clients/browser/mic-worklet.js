@@ -1,7 +1,9 @@
 class PcmCaptureProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
-    this.buffer = new Int16Array(2048);
+    const requestedFrameMs = Number(options?.processorOptions?.frameMs ?? 50);
+    const frameMs = Number.isFinite(requestedFrameMs) ? Math.max(20, Math.min(100, requestedFrameMs)) : 50;
+    this.buffer = new Int16Array(Math.max(1, Math.round(sampleRate * frameMs / 1000)));
     this.index = 0;
     this.port.onmessage = (event) => {
       if (event.data?.type === "flush") {
@@ -18,16 +20,15 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
       const clamped = Math.max(-1, Math.min(1, channel[i]));
       this.buffer[this.index] = clamped < 0 ? clamped * 32768 : clamped * 32767;
       this.index += 1;
-      if (this.index >= this.buffer.length) {
-        this.flush();
-      }
+      if (this.index >= this.buffer.length) this.flush();
     }
     return true;
   }
 
   flush() {
     if (this.index === 0) return;
-    this.port.postMessage(this.buffer.slice(0, this.index).buffer);
+    const frame = this.buffer.slice(0, this.index).buffer;
+    this.port.postMessage(frame, [frame]);
     this.index = 0;
   }
 }

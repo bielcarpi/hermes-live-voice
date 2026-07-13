@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./browser": {
+      "types": "./clients/browser/hermes-live-client.d.ts",
+      "import": "./clients/browser/hermes-live-client.js"
+    },
+    "./browser/mic-worklet.js": "./clients/browser/mic-worklet.js",
     "./package.json": "./package.json"
   },
   "license": "MIT",
@@ -51,9 +56,11 @@
   },
   "files": [
     "dist",
+    "clients/browser/hermes-live-client.js",
+    "clients/browser/hermes-live-client.d.ts",
+    "clients/browser/mic-worklet.js",
     "apps/web-demo/app.js",
     "apps/web-demo/index.html",
-    "apps/web-demo/mic-worklet.js",
     "apps/web-demo/styles.css",
     "assets",
     "docs",
@@ -85,7 +92,7 @@
     "check:live-provider-cli": "node scripts/live-provider-cli-smoke.mjs",
     "check:package": "node scripts/package-smoke.mjs",
     "check:plugin": "python3 scripts/plugin-smoke.py",
-    "check:web-demo": "node --check apps/web-demo/app.js && node --check apps/web-demo/mic-worklet.js",
+    "check:web-demo": "node --check clients/browser/hermes-live-client.js && node --check clients/browser/mic-worklet.js && node --check apps/web-demo/app.js",
     "print-config": "tsx src/cli.ts print-config",
     "test": "vitest run",
     "test:watch": "vitest",

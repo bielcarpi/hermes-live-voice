@@ -16,6 +16,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY apps ./apps
+COPY clients ./clients
 COPY docs ./docs
 USER node
 EXPOSE 8788

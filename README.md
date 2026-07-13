@@ -295,6 +295,27 @@ Send text for a smoke test:
 
 Or stream base64 PCM16 audio frames and end the turn with `audio.end`. The server emits provider audio/transcripts, Hermes run events, approvals, completion, and typed errors.
 
+The package also exposes a dependency-free browser client used by the bundled demo:
+
+```js
+import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
+
+const client = new HermesLiveClient({
+  url: "wss://voice.example.com/v1/live",
+  token: () => getShortLivedToken(),
+});
+const audio = new HermesLiveAudio(client, {
+  workletUrl: "/mic-worklet.js",
+});
+
+client.on("approval.request", showApproval);
+client.on("run.completed", ({ output }) => showResult(output));
+await client.connect();
+await audio.startMicrophone();
+```
+
+The gateway serves the canonical worklet at `/mic-worklet.js`; package consumers can also resolve the `hermes-live-voice/browser/mic-worklet.js` export into their own static assets. The client validates lifecycle messages, returns request IDs, bounds microphone and playback buffering, and exposes `subscribe()`/`getSnapshot()` for React or other state-driven UIs. It accepts an async `webSocketUrlProvider`, so a host can mint short-lived same-origin WebSocket tickets without exposing a persistent gateway credential.
+
 See [docs/client-protocol.md](docs/client-protocol.md) before building a client.
 
 ## Commands

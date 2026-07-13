@@ -14,6 +14,34 @@ For a one-shot terminal smoke test, use:
 node dist/cli.js client "What is the current status?"
 ```
 
+## Browser Client
+
+`hermes-live-voice/browser` is the canonical framework-independent browser client. It has no Node, provider SDK, or UI-framework runtime dependencies. The bundled web demo consumes the same module that is included in the packed npm artifact.
+
+```js
+import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
+
+const client = new HermesLiveClient({
+  url: "wss://voice.example.com/v1/live",
+  token: async () => getShortLivedToken(),
+  profileId: "default",
+  userLabel: "browser",
+});
+
+client.on("transcript.delta", ({ speaker, text }) => renderTranscript(speaker, text));
+client.on("approval.request", renderApproval);
+client.on("error", ({ code, error }) => renderError(code, error.message));
+
+await client.connect();
+client.sendText("Inspect this repository");
+```
+
+Every command method returns its generated request ID. `sendAudio()` returns `undefined` and emits `audio.dropped` when the browser WebSocket exceeds the configured backpressure limit. Unknown future server message types emit `unknownmessage`; malformed known lifecycle messages close the connection instead of corrupting local state.
+
+For microphone capture and PCM16 playback, compose `HermesLiveAudio` with a worklet URL owned by the host application. The gateway serves it at `/mic-worklet.js`, and the package exposes the source as `hermes-live-voice/browser/mic-worklet.js` for clients that copy or bundle static assets. Playback is serialized and bounded, and `interrupt()` returns OpenAI-compatible truncation metadata before sending `response.cancel`.
+
+The browser audio helper intentionally rejects G.711 output rather than decoding it as PCM16. Keep `OPENAI_REALTIME_INPUT_AUDIO_FORMAT=pcm16` and `OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT=pcm16` for browser voice clients until a client explicitly implements negotiated G.711 codecs.
+
 ## Authentication
 
 If `HERMES_LIVE_AUTH_TOKEN` is configured, clients must authenticate to:

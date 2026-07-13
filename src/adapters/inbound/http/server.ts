@@ -37,6 +37,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
   const hermes = providedHermes ?? new HermesClient(config.hermes);
   const liveModel = providedLiveModel ?? createLiveModelAdapter(config);
   const demoRoot = resolveDemoRoot();
+  const browserClientRoot = resolveBrowserClientRoot();
   const sessions = new Set<LiveGatewaySession>();
 
   const server = createServer(async (req, res) => {
@@ -45,6 +46,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
         config,
         hermes,
         demoRoot,
+        browserClientRoot,
         requireHermesApiKey: !providedHermes,
         requireRealtimeProviderConfig: !providedLiveModel,
       });
@@ -120,6 +122,7 @@ async function handleHttp(
     config: AppConfig;
     hermes: HermesRunsPort;
     demoRoot: string;
+    browserClientRoot: string;
     requireHermesApiKey: boolean;
     requireRealtimeProviderConfig: boolean;
   },
@@ -192,6 +195,13 @@ async function handleHttp(
     return;
   }
   if (options.config.server.demoEnabled && serveStatic(req, res, { root: options.demoRoot })) {
+    return;
+  }
+  if (
+    options.config.server.demoEnabled &&
+    (url.pathname === "/hermes-live-client.js" || url.pathname === "/mic-worklet.js") &&
+    serveStatic(req, res, { root: options.browserClientRoot })
+  ) {
     return;
   }
   json(req, res, 404, { status: "not_found" });
@@ -302,6 +312,11 @@ function clientWebSocketMaxPayload(config: AppConfig): number {
 function resolveDemoRoot(): string {
   const current = dirname(fileURLToPath(import.meta.url));
   return join(current, "..", "..", "..", "..", "apps", "web-demo");
+}
+
+function resolveBrowserClientRoot(): string {
+  const current = dirname(fileURLToPath(import.meta.url));
+  return join(current, "..", "..", "..", "..", "clients", "browser");
 }
 
 function listenHttpServer(server: ReturnType<typeof createServer>, port: number, host: string): Promise<void> {

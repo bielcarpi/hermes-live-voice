@@ -58,6 +58,9 @@ try {
     "dist/domain/audio/pcm.js",
     "dist/domain/protocol/client-protocol.js",
     "dist/domain/protocol/server-protocol.js",
+    "clients/browser/hermes-live-client.js",
+    "clients/browser/hermes-live-client.d.ts",
+    "clients/browser/mic-worklet.js",
     "apps/web-demo/index.html",
     "apps/web-demo/app.js",
     "docs/client-protocol.md",
@@ -177,6 +180,27 @@ try {
   );
   if (imported.status !== 0) {
     throw new Error(`Installed package import failed with status ${imported.status ?? "null"}\n${imported.stdout}\n${imported.stderr}`);
+  }
+
+  const browserImported = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      [
+        `const m = await import(${JSON.stringify(`${packageJson.name}/browser`)});`,
+        "const required = ['HermesLiveClient','HermesLiveAudio','buildGatewayWebSocketUrl','validateServerMessage'];",
+        "const missing = required.filter((name) => typeof m[name] !== 'function');",
+        "if (missing.length) { console.error('Missing browser exports: ' + missing.join(',')); process.exit(1); }",
+        "if (Object.keys(m).some((name) => name.includes('OpenAI') || name.includes('Gemini'))) process.exit(2);",
+      ].join(" "),
+    ],
+    { cwd: installDir, encoding: "utf8" },
+  );
+  if (browserImported.status !== 0) {
+    throw new Error(
+      `Installed browser import failed with status ${browserImported.status ?? "null"}\n${browserImported.stdout}\n${browserImported.stderr}`,
+    );
   }
 
   console.log(`Package smoke ok: ${pack.entryCount} files, ${pack.filename}, install and CLI verified`);
