@@ -1,0 +1,14 @@
+{
+  "name": "hermes-live",
+  "label": "Live Voice",
+  "description": "Talk to Hermes in real time with interruption, task progress, and approvals.",
+  "icon": "Zap",
+  "version": "0.2.1",
+  "tab": {
+    "path": "/live-voice",
+    "position": "after:chat"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

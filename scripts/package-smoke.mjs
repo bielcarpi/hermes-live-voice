@@ -72,9 +72,18 @@ try {
     "plugins/hermes-live/__init__.py",
     "plugins/hermes-live/schemas.py",
     "plugins/hermes-live/tools.py",
+    "plugins/hermes-live/after-install.md",
+    "plugins/hermes-live/dashboard/manifest.json",
+    "plugins/hermes-live/dashboard/plugin_api.py",
+    "plugins/hermes-live/dashboard/dist/index.js",
+    "plugins/hermes-live/dashboard/dist/style.css",
+    "plugins/hermes-live/dashboard/dist/hermes-live-client.js",
+    "plugins/hermes-live/dashboard/dist/mic-worklet.js",
+    "scripts/dashboard-plugin-smoke.py",
     "scripts/gateway-smoke.mjs",
     "scripts/live-provider-cli-smoke.mjs",
     "scripts/plugin-smoke.py",
+    "scripts/sync-dashboard-assets.mjs",
   ];
 
   const missing = required.filter((file) => !files.has(file));
@@ -161,6 +170,16 @@ try {
   }
   if (!existsSync(join(hermesPluginsDir, "hermes-live", "plugin.yaml"))) {
     throw new Error("Installed CLI plugin install did not write plugin.yaml.");
+  }
+  for (const relative of [
+    "dashboard/manifest.json",
+    "dashboard/plugin_api.py",
+    "dashboard/dist/index.js",
+    "dashboard/dist/style.css",
+  ]) {
+    if (!existsSync(join(hermesPluginsDir, "hermes-live", relative))) {
+      throw new Error(`Installed CLI plugin install did not write ${relative}.`);
+    }
   }
 
   const imported = spawnSync(
