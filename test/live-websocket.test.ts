@@ -482,6 +482,54 @@ describe("live gateway WebSocket", () => {
     await waitForMessage(socket, "run.completed");
   });
 
+  it("does not offer permanent approval without an inspectable permission pattern", async () => {
+    const approvalSubmitted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_1",
+          command: "deploy production",
+          description: "Deploy the current revision.",
+          choices: ["once", "session", "always", "deny"],
+          allow_permanent: true,
+        };
+        await approvalSubmitted.promise;
+        yield { event: "run.completed", output: "Approved." };
+      },
+      submitApproval: vi.fn(async () => {
+        approvalSubmitted.resolve();
+        return { resolved: 1 };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy" });
+
+    await expect(waitForMessage(socket, "approval.request")).resolves.toMatchObject({
+      approval: {
+        command: "deploy production",
+        choices: ["once", "session", "deny"],
+        allowPermanent: false,
+      },
+    });
+
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "deny" });
+    approvalSubmitted.resolve();
+  });
+
   it("routes client stop requests to the active Hermes run", async () => {
     const stopped = deferred<void>();
     const hermes = fakeHermes({

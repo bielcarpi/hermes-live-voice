@@ -625,6 +625,7 @@ function publicApprovalDetails(event: HermesRunEvent): HermesApprovalDetails {
         .slice(0, 32)
     : undefined;
   const informed = Boolean(command || description);
+  const hasInspectablePermanentPattern = Boolean(patternKey || (patternKeys && patternKeys.length > 0));
   const suppliedChoices = Array.isArray(event.choices)
     ? event.choices.filter((choice): choice is "once" | "session" | "always" | "deny" =>
         typeof choice === "string" && ["once", "session", "always", "deny"].includes(choice),
@@ -635,7 +636,7 @@ function publicApprovalDetails(event: HermesRunEvent): HermesApprovalDetails {
     : ["once", "deny"];
   const choices = (suppliedChoices.length > 0 ? suppliedChoices : fallbackChoices).filter((choice) =>
     (informed || choice === "once" || choice === "deny") &&
-    (event.allow_permanent !== false || choice !== "always"),
+    (choice !== "always" || (hasInspectablePermanentPattern && event.allow_permanent !== false)),
   );
   return {
     ...(approvalId ? { approvalId } : {}),
@@ -644,7 +645,7 @@ function publicApprovalDetails(event: HermesRunEvent): HermesApprovalDetails {
     ...(patternKey ? { patternKey } : {}),
     ...(patternKeys && patternKeys.length > 0 ? { patternKeys } : {}),
     choices,
-    allowPermanent: informed && event.allow_permanent !== false && choices.includes("always"),
+    allowPermanent: hasInspectablePermanentPattern && event.allow_permanent !== false && choices.includes("always"),
   };
 }
 
