@@ -22,19 +22,6 @@ const HERMES_LIVE_TOOL_DEFINITIONS = [
     description: "Stop an active Hermes run when the user interrupts or asks to cancel.",
     parametersJsonSchema: { type: "object", properties: { run_id: { type: "string" }, reason: { type: "string" } } },
   },
-  {
-    name: "submit_hermes_approval",
-    description: "Submit a human approval decision for a Hermes run waiting on approval.",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        run_id: { type: "string" },
-        choice: { type: "string", enum: ["once", "session", "always", "deny"] },
-        resolve_all: { type: "boolean" },
-      },
-      required: ["run_id", "choice"],
-    },
-  },
 ] as const;
 
 export const HERMES_LIVE_TOOL_DECLARATIONS = HERMES_LIVE_TOOL_DEFINITIONS.map((tool) => ({

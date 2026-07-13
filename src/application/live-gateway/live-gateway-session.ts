@@ -4,7 +4,6 @@ import { isPcmMimeType } from "../../domain/audio/pcm.js";
 import { makeSessionKey, type AppConfig } from "../../config.js";
 import type { Logger } from "../../logger.js";
 import {
-  ApprovalChoiceSchema,
   parseClientMessage,
   type ClientMessage,
   type RealtimeResponseTruncation,
@@ -27,11 +26,18 @@ import {
 } from "./ports/realtime-model.port.js";
 import { buildSystemInstruction } from "./system-instruction.js";
 
+const MAX_PENDING_APPROVALS = 128;
+
 export interface LiveGatewaySessionDeps {
   config: AppConfig;
   hermes: HermesRunsPort;
   liveModel: LiveModelAdapter;
   logger: Logger;
+}
+
+interface PendingApprovalEnvelope {
+  runId: string;
+  approval: HermesApprovalDetails;
 }
 
 export class LiveGatewaySession {
@@ -45,6 +51,7 @@ export class LiveGatewaySession {
   private userLabel = "anonymous";
   private activeRunId: string | undefined;
   private hermesRunActive = false;
+  private pendingApprovals: PendingApprovalEnvelope[] = [];
   private messageQueue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -222,6 +229,7 @@ export class LiveGatewaySession {
       return;
     }
     this.closing = true;
+    this.clearPendingApprovals();
     if (this.activeRunId) {
       await this.deps.hermes.stopRun(this.activeRunId, this.hermesRequestOptions()).catch(() => undefined);
     }
@@ -310,16 +318,6 @@ export class LiveGatewaySession {
         await this.liveSession?.sendToolResponse(call, stopped);
         break;
       }
-      case "submit_hermes_approval": {
-        const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
-        const parsedChoice = ApprovalChoiceSchema.parse(stringArg(call, "choice"));
-        const result = await this.deps.hermes.submitApproval(runId, parsedChoice, {
-          resolveAll: Boolean(call.args.resolve_all),
-          ...this.hermesRequestOptions(),
-        });
-        await this.liveSession?.sendToolResponse(call, { ok: true, result });
-        break;
-      }
       default:
         await this.liveSession?.sendToolResponse(call, { ok: false, error: `Unknown hermes-live tool: ${call.name}` });
     }
@@ -329,7 +327,12 @@ export class LiveGatewaySession {
     if (event.type === "audio") {
       this.send({ type: "audio.output", ...event.audio });
     } else if (event.type === "text") {
-      this.send({ type: "transcript.delta", speaker: "assistant", text: event.text });
+      this.send({
+        type: "transcript.delta",
+        speaker: event.speaker ?? "assistant",
+        text: event.text,
+        ...(event.final === undefined ? {} : { final: event.final }),
+      });
     } else if (event.type === "tool_call") {
       void this.handleToolCall(event.call).catch(async (error) => {
         this.fail("tool_call_failed", error, true);
@@ -370,6 +373,7 @@ export class LiveGatewaySession {
       return { ok: false, error: "A Hermes run is already active for this voice session." };
     }
 
+    this.clearPendingApprovals();
     this.hermesRunActive = true;
     let runId: string | undefined;
     const input = recentVoiceContext ? `${message}\n\nRecent voice context:\n${recentVoiceContext}` : message;
@@ -397,6 +401,7 @@ export class LiveGatewaySession {
           transcript.push(event.delta);
         } else if (event.event === "run.completed") {
           terminal = true;
+          this.clearPendingApprovals(runId);
           finalOutput = typeof event.output === "string" ? event.output : transcript.join("");
           usage = event.usage;
           this.send({
@@ -407,6 +412,7 @@ export class LiveGatewaySession {
           });
         } else if (event.event === "run.failed") {
           terminal = true;
+          this.clearPendingApprovals(runId);
           this.deps.logger.warn("Hermes run reported failure", {
             sessionId: this.id,
             runId,
@@ -421,6 +427,7 @@ export class LiveGatewaySession {
           };
         } else if (event.event === "run.cancelled") {
           terminal = true;
+          this.clearPendingApprovals(runId);
           return { ok: false, run_id: runId, status: "cancelled" };
         }
       }
@@ -449,6 +456,9 @@ export class LiveGatewaySession {
       this.send({ type: "run.failed", runId, error: publicMessage });
       return { ok: false, run_id: runId, status: "failed", error: publicMessage };
     } finally {
+      if (runId) {
+        this.clearPendingApprovals(runId);
+      }
       this.hermesRunActive = false;
       if (runId && this.activeRunId === runId) {
         this.activeRunId = undefined;
@@ -462,12 +472,14 @@ export class LiveGatewaySession {
       this.send({ type: "run.event", runId, event: publicEvent });
     }
     if (event.event === "approval.request") {
-      this.send({
+      const envelope: Extract<ServerMessage, { type: "approval.request" }> = {
         type: "approval.request",
         runId,
         event: publicEvent ?? publicHermesRunEvent(event, "summary")!,
         approval: publicApprovalDetails(event),
-      });
+      };
+      this.trackPendingApproval(envelope);
+      this.send(envelope);
     } else if (event.event === "run.failed") {
       this.send({ type: "run.failed", runId, error: "Hermes run failed. Check the gateway logs for details." });
     } else if (event.event === "run.cancelled") {
@@ -477,21 +489,39 @@ export class LiveGatewaySession {
 
   private async handleApprovalResponse(message: Extract<ClientMessage, { type: "approval.respond" }>): Promise<void> {
     const runId = this.resolveActiveRunId(message.runId);
-    const result = await this.deps.hermes.submitApproval(runId, message.choice, {
-      ...(message.resolveAll === undefined ? {} : { resolveAll: message.resolveAll }),
-      ...this.hermesRequestOptions(),
-    });
+    if (message.resolveAll === true) {
+      throw new Error("Bulk approval resolution is not supported; answer each approval in FIFO order.");
+    }
+
+    const pending = this.pendingApprovals[0];
+    if (!pending || pending.runId !== runId) {
+      throw new Error("No pending approval is available for the active Hermes run.");
+    }
+    if (
+      message.choice === "always" &&
+      (!pending.approval.choices.includes("always") || !canApprovePermanently(pending.approval))
+    ) {
+      throw new Error("Permanent approval requires an inspectable permission pattern.");
+    }
+    if (!pending.approval.choices.includes(message.choice)) {
+      throw new Error(`Approval choice ${message.choice} was not offered for the pending request.`);
+    }
+
+    const result = await this.deps.hermes.submitApproval(runId, message.choice, this.hermesRequestOptions());
+    const resolved = safeResolvedCount(result.resolved);
+    this.pendingApprovals.splice(0, Math.min(resolved, this.pendingApprovals.length));
     this.send({
       type: "approval.responded",
       runId,
       choice: message.choice,
-      ...(result.resolved === undefined ? {} : { resolved: result.resolved }),
+      resolved,
     });
   }
 
   private async stopRun(runId: string | undefined, reason?: string): Promise<Record<string, unknown>> {
     const target = this.resolveActiveRunId(runId);
     const result = await this.deps.hermes.stopRun(target, this.hermesRequestOptions());
+    this.clearPendingApprovals(target);
     this.send({ type: "run.stopped", runId: target, status: result.status ?? "stopping" });
     this.send({ type: "log", level: "info", message: "Hermes run stop requested", data: { runId: target, reason } });
     return { ok: true, run_id: target, status: result.status ?? "stopping" };
@@ -509,6 +539,32 @@ export class LiveGatewaySession {
       throw new Error("Requested Hermes run is not active in this voice session.");
     }
     return this.activeRunId;
+  }
+
+  private trackPendingApproval(envelope: Extract<ServerMessage, { type: "approval.request" }>): void {
+    const approvalId = envelope.approval.approvalId;
+    const existingIndex = approvalId
+      ? this.pendingApprovals.findIndex(
+          (pending) => pending.runId === envelope.runId && pending.approval.approvalId === approvalId,
+        )
+      : -1;
+    const pending = { runId: envelope.runId, approval: envelope.approval };
+    if (existingIndex >= 0) {
+      this.pendingApprovals[existingIndex] = pending;
+    } else {
+      if (this.pendingApprovals.length >= MAX_PENDING_APPROVALS) {
+        throw new Error("Hermes exceeded the safe pending approval queue limit.");
+      }
+      this.pendingApprovals.push(pending);
+    }
+  }
+
+  private clearPendingApprovals(runId?: string): void {
+    if (!runId) {
+      this.pendingApprovals = [];
+      return;
+    }
+    this.pendingApprovals = this.pendingApprovals.filter((pending) => pending.runId !== runId);
   }
 
   private async cancelRealtimeResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<void> {
@@ -617,12 +673,15 @@ function publicApprovalDetails(event: HermesRunEvent): HermesApprovalDetails {
   const approvalId = boundedString(event.approval_id, 256);
   const command = boundedString(event.command, 4_000);
   const description = boundedString(event.description, 2_000);
-  const patternKey = boundedString(event.pattern_key, 256);
+  const patternKey = boundedInspectablePattern(event.pattern_key, 256);
   const patternKeys = Array.isArray(event.pattern_keys)
-    ? event.pattern_keys
-        .map((value) => boundedString(value, 256))
-        .filter((value): value is string => Boolean(value))
-        .slice(0, 32)
+    ? [
+        ...new Set(
+          event.pattern_keys
+            .map((value) => boundedInspectablePattern(value, 256))
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ].slice(0, 32)
     : undefined;
   const informed = Boolean(command || description);
   const hasInspectablePermanentPattern = Boolean(patternKey || (patternKeys && patternKeys.length > 0));
@@ -634,10 +693,18 @@ function publicApprovalDetails(event: HermesRunEvent): HermesApprovalDetails {
   const fallbackChoices: Array<"once" | "session" | "always" | "deny"> = informed
     ? ["once", "session", "always", "deny"]
     : ["once", "deny"];
-  const choices = (suppliedChoices.length > 0 ? suppliedChoices : fallbackChoices).filter((choice) =>
-    (informed || choice === "once" || choice === "deny") &&
-    (choice !== "always" || (hasInspectablePermanentPattern && event.allow_permanent !== false)),
-  );
+  const choices: Array<"once" | "session" | "always" | "deny"> = (
+    suppliedChoices.length > 0 ? suppliedChoices : fallbackChoices
+  )
+    .filter(
+      (choice) =>
+        (informed || choice === "once" || choice === "deny") &&
+        (choice !== "always" || (hasInspectablePermanentPattern && event.allow_permanent !== false)),
+    )
+    .filter((choice, index, all) => all.indexOf(choice) === index);
+  if (!choices.includes("deny")) {
+    choices.push("deny");
+  }
   return {
     ...(approvalId ? { approvalId } : {}),
     ...(command ? { command } : {}),
@@ -653,4 +720,27 @@ function boundedString(value: unknown, maximum: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
   return normalized ? normalized.slice(0, maximum) : undefined;
+}
+
+function boundedInspectablePattern(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const withoutTerminalSequences = value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\|$)/g, "")
+    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "");
+  const printable = Array.from(withoutTerminalSequences.normalize("NFC"))
+    .filter((character) => !/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}]/u.test(character))
+    .join("")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const bounded = Array.from(printable).slice(0, maximum).join("");
+  return /[\p{L}\p{N}\p{P}\p{S}]/u.test(bounded) ? bounded : undefined;
+}
+
+function canApprovePermanently(approval: HermesApprovalDetails): boolean {
+  return approval.allowPermanent && Boolean(approval.patternKey || approval.patternKeys?.length);
+}
+
+function safeResolvedCount(value: unknown): number {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
 }

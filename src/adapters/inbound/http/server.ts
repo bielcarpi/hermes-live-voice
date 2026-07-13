@@ -235,11 +235,74 @@ function isWebSocketOriginAllowed(req: IncomingMessage, config: AppConfig): bool
   if (config.server.allowOrigin) {
     return origin === config.server.allowOrigin;
   }
-  try {
-    return new URL(origin).host === req.headers.host;
-  } catch {
-    return false;
+
+  const originUrl = parseBrowserOrigin(origin);
+  const requestHost = originUrl
+    ? parseHttpHost(req.headers.host, originUrl.protocol === "https:" ? "https:" : "http:")
+    : undefined;
+  return (
+    originUrl !== undefined &&
+    requestHost !== undefined &&
+    isLoopbackHostname(originUrl.hostname) &&
+    isLoopbackHostname(requestHost.hostname) &&
+    effectivePort(originUrl) === effectivePort(requestHost)
+  );
+}
+
+function parseBrowserOrigin(origin: string): URL | undefined {
+  if (origin !== origin.trim()) {
+    return undefined;
   }
+  try {
+    const parsed = new URL(origin);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.origin !== origin
+    ) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseHttpHost(host: string | undefined, protocol: "http:" | "https:"): URL | undefined {
+  if (!host || host !== host.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(`${protocol}//${host}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (normalized === "localhost" || normalized === "::1") {
+    return true;
+  }
+  const octets = normalized.split(".");
+  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => /^(?:0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+}
+
+function effectivePort(url: URL): string | undefined {
+  if (url.protocol === "http:") {
+    return url.port || "80";
+  }
+  if (url.protocol === "https:") {
+    return url.port || "443";
+  }
+  return undefined;
 }
 
 function addCors(req: IncomingMessage, res: ServerResponse, config: AppConfig): void {

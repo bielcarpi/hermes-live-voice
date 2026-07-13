@@ -67,7 +67,6 @@ describe("protocol", () => {
       "start_hermes_run",
       "get_hermes_run_status",
       "stop_hermes_run",
-      "submit_hermes_approval",
     ]);
     expect(OPENAI_HERMES_LIVE_TOOLS.every((tool) => tool.type === "function")).toBe(true);
     expect(OPENAI_HERMES_LIVE_TOOLS[0]).toHaveProperty("parameters");
@@ -79,7 +78,6 @@ describe("protocol", () => {
       "start_hermes_run",
       "get_hermes_run_status",
       "stop_hermes_run",
-      "submit_hermes_approval",
     ]);
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).toHaveProperty("parametersJsonSchema");
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).not.toHaveProperty("parameters");

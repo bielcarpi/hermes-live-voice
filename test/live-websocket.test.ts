@@ -29,6 +29,31 @@ afterEach(async () => {
 });
 
 describe("live gateway WebSocket", () => {
+  it("forwards provider transcript speaker and final metadata", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new TranscriptMetadataAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    const ready = waitForMessage(socket, "session.ready");
+    const transcript = waitForMessage(socket, "transcript.delta");
+    send(socket, { type: "session.start" });
+
+    await expect(ready).resolves.toMatchObject({ type: "session.ready" });
+    await expect(transcript).resolves.toEqual({
+      type: "transcript.delta",
+      speaker: "user",
+      text: "Spoken input",
+      final: true,
+    });
+  });
+
   it("runs the text protocol through the real gateway WebSocket", async () => {
     const hermes = fakeHermes();
     const server = await startServer({
@@ -530,6 +555,267 @@ describe("live gateway WebSocket", () => {
     approvalSubmitted.resolve();
   });
 
+  it.each([
+    ["control-only", "\u001b[31m\u0000"],
+    ["bidi-only", "\u061c\u202e\u2066\u2069"],
+    ["combining-mark-only", "\u0300\u0301"],
+    ["private-use-only", "\ue000\ue001"],
+  ])("does not treat a %s approval pattern as inspectable", async (_label, patternKey) => {
+    const approvalSubmitted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_uninspectable",
+          command: "deploy production",
+          pattern_key: patternKey,
+          choices: ["once", "always"],
+          allow_permanent: true,
+        };
+        await approvalSubmitted.promise;
+        yield { event: "run.completed", output: "Denied safely." };
+      },
+      submitApproval: vi.fn(async () => {
+        approvalSubmitted.resolve();
+        return { resolved: 1 };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy" });
+
+    const approval = await waitForMessage(socket, "approval.request");
+    expect(approval.approval).toMatchObject({
+      approvalId: "approval_uninspectable",
+      choices: ["once", "deny"],
+      allowPermanent: false,
+    });
+    expect(approval.approval).not.toHaveProperty("patternKey");
+
+    const responded = waitForMessage(socket, "approval.responded");
+    const completed = waitForMessage(socket, "run.completed");
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "deny" });
+    await responded;
+    await completed;
+  });
+
+  it("validates human approval responses against the sanitized FIFO queue", async () => {
+    const releaseSecondApproval = deferred<void>();
+    const finishRun = deferred<void>();
+    let onceResponses = 0;
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_1",
+          command: "deploy staging",
+          description: "Deploy the current revision.",
+          choices: ["once", "always"],
+          allow_permanent: true,
+        };
+        await releaseSecondApproval.promise;
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_2",
+          command: "remember deployment approval",
+          description: "Allow this action for the current session.",
+          choices: ["session", "deny"],
+        };
+        await finishRun.promise;
+        yield { event: "run.completed", output: "Approved in order." };
+      },
+      submitApproval: vi.fn(async (_runId: string, choice: ApprovalChoice) => {
+        if (choice === "deny") {
+          return { resolved: 0 };
+        }
+        if (choice === "once") {
+          onceResponses += 1;
+          return { resolved: onceResponses === 1 ? 0 : 1 };
+        }
+        finishRun.resolve();
+        return { resolved: 1 };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy safely" });
+
+    await expect(waitForMessage(socket, "approval.request")).resolves.toMatchObject({
+      approval: {
+        approvalId: "approval_1",
+        choices: ["once", "deny"],
+        allowPermanent: false,
+      },
+    });
+    releaseSecondApproval.resolve();
+    await expect(waitForMessage(socket, "approval.request")).resolves.toMatchObject({
+      approval: { approvalId: "approval_2", choices: ["session", "deny"] },
+    });
+
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "always" });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: "Permanent approval requires an inspectable permission pattern.",
+    });
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "session" });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: "Approval choice session was not offered for the pending request.",
+    });
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once", resolveAll: true });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: "Bulk approval resolution is not supported; answer each approval in FIFO order.",
+    });
+    expect(hermes.submitApproval).not.toHaveBeenCalled();
+
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "deny" });
+    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "deny", resolved: 0 });
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
+    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "once", resolved: 0 });
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "session" });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      message: "Approval choice session was not offered for the pending request.",
+    });
+
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
+    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "once", resolved: 1 });
+    const completed = waitForMessage(socket, "run.completed");
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "session" });
+    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "session", resolved: 1 });
+    await expect(completed).resolves.toMatchObject({ output: "Approved in order." });
+
+    expect(hermes.submitApproval).toHaveBeenNthCalledWith(1, "run_ws", "deny", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+    expect(hermes.submitApproval).toHaveBeenNthCalledWith(2, "run_ws", "once", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+    expect(hermes.submitApproval).toHaveBeenNthCalledWith(3, "run_ws", "once", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+    expect(hermes.submitApproval).toHaveBeenNthCalledWith(4, "run_ws", "session", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+  });
+
+  it("clears pending approvals as soon as a run stop is accepted", async () => {
+    const finishRun = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_stop",
+          command: "sleep 30",
+          choices: ["once", "deny"],
+        };
+        await finishRun.promise;
+        yield { event: "run.cancelled" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run a long command" });
+    await waitForMessage(socket, "approval.request");
+
+    send(socket, { type: "run.stop", runId: "run_ws", reason: "user cancelled" });
+    await expect(waitForMessage(socket, "run.stopped")).resolves.toMatchObject({ status: "stopping" });
+    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "client_message_failed",
+      message: "No pending approval is available for the active Hermes run.",
+    });
+    expect(hermes.submitApproval).not.toHaveBeenCalled();
+
+    const terminalStop = waitForMessage(socket, "run.stopped");
+    finishRun.resolve();
+    await terminalStop;
+  });
+
+  it("does not expose or execute provider-originated approval submissions", async () => {
+    const finishRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "approval.request", run_id: "run_ws", approval_id: "approval_provider" };
+        await finishRun.promise;
+        yield { event: "run.completed", output: "Human decision still required." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Do something requiring approval" });
+    await waitForMessage(socket, "approval.request");
+
+    const response = liveModel.nextToolResponse();
+    liveModel.emitToolCall({
+      id: "provider_approval",
+      name: "submit_hermes_approval",
+      args: { run_id: "run_ws", choice: "always", resolve_all: true },
+    });
+    await expect(response).resolves.toMatchObject({
+      call: { id: "provider_approval", name: "submit_hermes_approval" },
+      response: { ok: false, error: "Unknown hermes-live tool: submit_hermes_approval" },
+    });
+    expect(hermes.submitApproval).not.toHaveBeenCalled();
+
+    const completed = waitForMessage(socket, "run.completed");
+    finishRun.resolve();
+    await completed;
+  });
+
   it("routes client stop requests to the active Hermes run", async () => {
     const stopped = deferred<void>();
     const hermes = fakeHermes({
@@ -928,6 +1214,127 @@ describe("live gateway WebSocket", () => {
     await expect(expectUpgradeRejected(toWebSocketUrl(server.url), { origin: "https://evil.example.com" })).resolves.toBe(403);
   });
 
+  it("rejects matching attacker Origin and Host headers on the default loopback gateway", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const port = new URL(server.url).port;
+
+    await expect(
+      expectUpgradeRejected(toWebSocketUrl(server.url), {
+        origin: `http://voice.attacker.example:${port}`,
+        host: `voice.attacker.example:${port}`,
+      }),
+    ).resolves.toBe(403);
+    await expect(
+      expectUpgradeRejected(toWebSocketUrl(server.url), {
+        origin: `http://voice.attacker.example:${port}`,
+        host: `127.0.0.1:${port}`,
+      }),
+    ).resolves.toBe(403);
+    await expect(
+      expectUpgradeRejected(toWebSocketUrl(server.url), {
+        origin: `http://127.0.0.1:${port}`,
+        host: `voice.attacker.example:${port}`,
+      }),
+    ).resolves.toBe(403);
+  });
+
+  it.each([
+    ["localhost", "localhost"],
+    ["127.0.0.1", "127.0.0.1"],
+    ["localhost", "127.0.0.1"],
+    ["127.0.0.1", "localhost"],
+    ["[::1]", "[::1]"],
+    ["127.0.0.2", "localhost"],
+  ])("allows default browser origins between loopback hosts (%s to %s)", async (originHost, requestHost) => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const port = new URL(server.url).port;
+    const socket = new WebSocket(toWebSocketUrl(server.url), {
+      headers: { origin: `http://${originHost}:${port}`, host: `${requestHost}:${port}` },
+    });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+  });
+
+  it.each([
+    ["http://localhost", "127.0.0.1:80"],
+    ["https://[::1]", "localhost:443"],
+    ["https://localhost", "[::1]"],
+  ])("normalizes equivalent default ports for loopback browser origins (%s)", async (origin, requestHost) => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin, host: requestHost } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+  });
+
+  it("requires equivalent Origin and Host ports for the default loopback browser policy", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const port = new URL(server.url).port;
+
+    await expect(
+      expectUpgradeRejected(toWebSocketUrl(server.url), {
+        origin: `http://localhost:${port}`,
+        host: "127.0.0.1:65535",
+      }),
+    ).resolves.toBe(403);
+  });
+
+  it("allows headerless native clients through the default loopback policy", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url));
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+  });
+
+  it("accepts an exact configured custom browser origin", async () => {
+    const allowOrigin = "https://voice.example.com";
+    const server = await startServer({
+      config: testConfig({ server: { allowOrigin } }),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), {
+      headers: { origin: allowOrigin, host: "gateway.internal" },
+    });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+  });
+
   it("rejects malformed and oversized audio frames before forwarding to the provider", async () => {
     const server = await startServer({
       config: testConfig({ server: { maxAudioBytes: 2 } }),
@@ -1274,6 +1681,16 @@ class DelayedOpenAdapter implements LiveModelAdapter {
     this.providerOpened.resolve();
     await this.releaseProvider;
     return new ToolEchoSession(params.callbacks);
+  }
+}
+
+class TranscriptMetadataAdapter implements LiveModelAdapter {
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    queueMicrotask(() => {
+      params.callbacks.onOpen?.();
+      params.callbacks.onEvent({ type: "text", speaker: "user", text: "Spoken input", final: true });
+    });
+    return new CloseTrackingSession();
   }
 }
 
