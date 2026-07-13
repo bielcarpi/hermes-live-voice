@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSseEventBlock, parseSseStream } from "../src/adapters/outbound/hermes/sse.js";
+import { MAX_SSE_EVENT_BYTES, parseSseEventBlock, parseSseStream } from "../src/adapters/outbound/hermes/sse.js";
 
 describe("SSE parsing", () => {
   it("parses JSON data blocks", () => {
@@ -42,5 +42,43 @@ describe("SSE parsing", () => {
     }
 
     expect(events).toEqual([{ event: "a" }, { event: "b" }]);
+  });
+
+  it("rejects an oversized unterminated event before buffering more data", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${"x".repeat(MAX_SSE_EVENT_BYTES + 1)}`));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const consume = async () => {
+      for await (const _event of parseSseStream(stream)) {
+        // No complete event should be emitted.
+      }
+    };
+    await expect(consume()).rejects.toThrow(`${MAX_SSE_EVENT_BYTES}-byte safety limit`);
+    expect(cancelled).toBe(true);
+  });
+
+  it("cancels the source when a consumer returns before natural EOF", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"event":"run.completed"}\n\n'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    for await (const _event of parseSseStream(stream)) {
+      break;
+    }
+
+    expect(cancelled).toBe(true);
   });
 });

@@ -133,10 +133,6 @@ function summarizeLiveEvent(event: LiveModelEvent): Record<string, unknown> {
       return { type: "input_speech_started", provider: event.provider };
     case "response":
       return { type: "response", status: event.status };
-    case "raw": {
-      const message = event.message as any;
-      return { type: "raw", messageType: message?.type ?? message?.serverContent?.turnComplete ?? "unknown" };
-    }
   }
 }
 
