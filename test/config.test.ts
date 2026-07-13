@@ -85,6 +85,9 @@ describe("config", () => {
 
   it("redacts unsafe session pieces into stable session keys", () => {
     expect(sanitizeSessionComponent(" Alice Example!!! ")).toBe("alice-example");
+    expect(sanitizeSessionComponent("---Alice---Example---")).toBe("alice---example");
+    expect(sanitizeSessionComponent("Alice!!!Example")).toBe("alice-example");
+    expect(sanitizeSessionComponent(`${"-".repeat(100_000)}Alice`)).toBe("alice");
     expect(makeSessionKey("agent:main:hermes-live", "Default Profile", "Alice Example")).toBe(
       "agent:main:hermes-live:profile:default-profile:user:alice-example",
     );

@@ -51,7 +51,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
     } catch (error) {
       const message = errorToMessage(error);
       logger.error("http handler failed", { error: message });
-      json(req, res, 500, { status: "error", error: message });
+      json(req, res, 500, { status: "error", error: "Internal server error." });
     }
   });
 

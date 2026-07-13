@@ -212,12 +212,41 @@ export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | 
 }
 
 export function sanitizeSessionComponent(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._:-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
+  const sanitized: string[] = [];
+  let replacingUnsafeRun = false;
+
+  for (const character of value.trim().toLowerCase()) {
+    if (isSafeSessionCharacter(character)) {
+      sanitized.push(character);
+      replacingUnsafeRun = false;
+    } else if (!replacingUnsafeRun) {
+      sanitized.push("-");
+      replacingUnsafeRun = true;
+    }
+  }
+
+  let start = 0;
+  let end = sanitized.length;
+  while (start < end && sanitized[start] === "-") {
+    start += 1;
+  }
+  while (end > start && sanitized[end - 1] === "-") {
+    end -= 1;
+  }
+
+  return sanitized.slice(start, Math.min(end, start + 80)).join("");
+}
+
+function isSafeSessionCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return (
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    character === "." ||
+    character === "_" ||
+    character === ":" ||
+    character === "-"
+  );
 }
 
 export function makeSessionKey(prefix: string, profileId: string, userLabel: string): string {
