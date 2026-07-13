@@ -4,9 +4,10 @@ import WebSocket from "ws";
 import type { ApprovalChoice } from "../domain/protocol/client-protocol.js";
 import { ApprovalChoiceSchema } from "../domain/protocol/client-protocol.js";
 import { HERMES_LIVE_PROTOCOL_VERSION } from "../domain/protocol/version.js";
+import { sanitizeOneShotApproval } from "./one-shot-approval.js";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
-const MAX_SERVER_MESSAGE_BYTES = 2_000_000;
+const MAX_SERVER_MESSAGE_BYTES = 8_000_000;
 const MAX_TERMINAL_TEXT_CHARS = 20_000;
 const MAX_RENDERED_TEXT_CHARS = 20_000;
 const MAX_PENDING_APPROVALS = 128;
@@ -26,7 +27,7 @@ export interface InteractiveTerminalOptions extends TerminalGatewaySessionOption
 
 export interface PendingTerminalApproval {
   runId: string;
-  approvalId?: string;
+  approvalId: string;
   command?: string;
   description?: string;
   patternKeys: string[];
@@ -262,15 +263,15 @@ export class TerminalGatewaySession {
     }
     if (socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "session.close", id: this.nextRequestId() }));
-      socket.close(1000, "terminal session closed");
     } else if (socket.readyState === WebSocket.CONNECTING) {
       socket.terminate();
     }
 
-    await Promise.race([this.closed, delay(750)]);
+    await Promise.race([this.closed, delay(Math.max(12_000, this.connectTimeoutMs))]);
     if (!this.closedResolved) {
       socket.terminate();
       await this.closed;
+      throw new Error("The gateway did not confirm session shutdown; verify any active Hermes task before reconnecting.");
     }
   }
 
@@ -339,6 +340,9 @@ export class TerminalGatewaySession {
       case "run.failed":
         this.renderRunTerminal("failed", message);
         break;
+      case "run.stopping":
+        this.line(`[Hermes] Task stop requested (${safeMessage(message.status, "stopping")}); waiting for terminal confirmation.`);
+        break;
       case "run.stopped":
         this.renderRunTerminal("stopped", message);
         break;
@@ -383,28 +387,24 @@ export class TerminalGatewaySession {
       return;
     }
     const approval = recordValue(message.approval);
-    const command = stringValue(approval?.command);
-    const description = stringValue(approval?.description);
-    const patternKeys = approvalPatternKeys(approval);
-    const informed = Boolean(command || description);
-    const allowPermanent = approval?.allowPermanent === true && patternKeys.length > 0;
-    let choices = approvalChoices(approval?.choices).filter((choice) =>
-      (informed || choice === "once" || choice === "deny") &&
-      (choice !== "always" || allowPermanent),
-    );
-    if (choices.length === 0) choices = ["once", "deny"];
+    const rawApprovalId = stringValue(approval?.approvalId) ?? "";
+    const approvalId = singleLine(rawApprovalId, 256);
+    if (!approvalId || approvalId !== rawApprovalId || !/[\p{L}\p{N}\p{P}\p{S}]/u.test(approvalId)) {
+      throw new Error("Gateway approval request did not include a safe approval id.");
+    }
+    const projected = sanitizeOneShotApproval(approval);
     const pending: PendingTerminalApproval = {
       runId,
-      ...(stringValue(approval?.approvalId) ? { approvalId: stringValue(approval?.approvalId) } : {}),
-      ...(command ? { command } : {}),
-      ...(description ? { description } : {}),
-      patternKeys,
-      choices,
-      allowPermanent: allowPermanent && choices.includes("always"),
+      approvalId,
+      ...(projected.command ? { command: projected.command } : {}),
+      ...(projected.description ? { description: projected.description } : {}),
+      patternKeys: projected.patternKeys,
+      choices: projected.choices,
+      allowPermanent: projected.allowPermanent,
     };
-    const existingIndex = pending.approvalId
-      ? this.pendingApprovals.findIndex((entry) => entry.runId === runId && entry.approvalId === pending.approvalId)
-      : -1;
+    const existingIndex = this.pendingApprovals.findIndex(
+      (entry) => entry.runId === runId && entry.approvalId === pending.approvalId,
+    );
     if (existingIndex >= 0) this.pendingApprovals[existingIndex] = pending;
     else {
       if (this.pendingApprovals.length >= MAX_PENDING_APPROVALS) {
@@ -456,6 +456,7 @@ export class TerminalGatewaySession {
         type: "approval.respond",
         id: this.nextRequestId(),
         runId: pending.runId,
+        approvalId: pending.approvalId,
         choice,
       })
     ) {
@@ -466,16 +467,11 @@ export class TerminalGatewaySession {
 
   private resolvePendingApprovals(message: Record<string, unknown>): void {
     const runId = stringValue(message.runId);
-    if (!runId) return;
-    const suppliedResolved = message.resolved;
-    let remaining = Number.isInteger(suppliedResolved) && Number(suppliedResolved) >= 0
-      ? Number(suppliedResolved)
-      : 1;
-    this.pendingApprovals = this.pendingApprovals.filter((entry) => {
-      if (entry.runId !== runId || remaining <= 0) return true;
-      remaining -= 1;
-      return false;
-    });
+    const approvalId = stringValue(message.approvalId);
+    if (!runId || !approvalId || message.resolved !== 1) return;
+    this.pendingApprovals = this.pendingApprovals.filter(
+      (entry) => entry.runId !== runId || entry.approvalId !== approvalId,
+    );
   }
 
   private renderActionableApproval(pending: PendingTerminalApproval): void {
@@ -483,6 +479,8 @@ export class TerminalGatewaySession {
     if (pending.command) this.line(`[approval] Command: ${singleLine(pending.command, 1_000)}`);
     if (pending.patternKeys.length > 0) {
       this.line(`[approval] Permission pattern: ${pending.patternKeys.map((value) => singleLine(value, 256)).join(", ")}`);
+    } else if (!pending.command && !pending.description) {
+      this.line("[approval] Hermes did not provide enough inspectable action details; this request can only be denied.");
     } else {
       this.line("[approval] Hermes did not provide an inspectable permission pattern; permanent approval is unavailable.");
     }
@@ -721,28 +719,8 @@ function sanitizeMetadata(value: string): string {
   return singleLine(value, 256) || "terminal";
 }
 
-function approvalChoices(value: unknown): ApprovalChoice[] {
-  if (!Array.isArray(value)) return ["once", "deny"];
-  const choices = value.flatMap((choice) => {
-    const parsed = ApprovalChoiceSchema.safeParse(choice);
-    return parsed.success ? [parsed.data] : [];
-  });
-  return choices.length > 0 ? [...new Set(choices)] : ["once", "deny"];
-}
-
-function approvalPatternKeys(approval: Record<string, unknown> | undefined): string[] {
-  const values = [
-    stringValue(approval?.patternKey),
-    ...(Array.isArray(approval?.patternKeys) ? approval.patternKeys.map(stringValue) : []),
-  ]
-    .map((value) => value ? singleLine(value, 256) : undefined)
-    .filter((value): value is string => Boolean(value));
-  return [...new Set(values)].slice(0, 32);
-}
-
 function pendingApprovalIdentity(pending: PendingTerminalApproval): string {
-  const key = pending.approvalId ?? (pending.patternKeys.join("|") || pending.command || "approval");
-  return `${pending.runId}:${key}`;
+  return `${pending.runId}:${pending.approvalId}`;
 }
 
 function clonePendingApproval(pending: PendingTerminalApproval): PendingTerminalApproval {

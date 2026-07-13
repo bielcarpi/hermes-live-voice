@@ -179,7 +179,7 @@ def test_url_and_payload_guards(plugin: Any) -> None:
             continue
         raise AssertionError(f"unsafe gateway URL accepted: {value!r}")
 
-    assert plugin._is_bounded_json_message('{"type":"session.start","protocolVersion":1}')
+    assert plugin._is_bounded_json_message('{"type":"session.start","protocolVersion":2}')
     assert not plugin._is_bounded_json_message("[]")
     assert not plugin._is_bounded_json_message('{"type":"audio.input","data":NaN}')
     assert not plugin._is_bounded_json_message('{"notType":"session.start"}')
@@ -189,7 +189,7 @@ def test_url_and_payload_guards(plugin: Any) -> None:
 def test_capability_sanitizing(plugin: Any) -> None:
     protocol, provider, model, audio = plugin._capabilities_summary(
         {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "realtime": {
                 "provider": "gemini",
                 "model": "gemini-live-2.5-flash",
@@ -209,7 +209,7 @@ def test_capability_sanitizing(plugin: Any) -> None:
             "secret": "must not escape",
         }
     )
-    assert protocol == 1
+    assert protocol == 2
     assert provider == "gemini"
     assert model == "gemini-live-2.5-flash"
     assert audio == {
@@ -257,7 +257,7 @@ async def test_status(plugin: Any) -> None:
             return plugin._Probe(
                 status=200,
                 body={
-                    "protocolVersion": 1,
+                    "protocolVersion": 2,
                     "realtime": {
                         "provider": "gemini",
                         "model": "gemini-live",
@@ -294,7 +294,7 @@ async def test_status(plugin: Any) -> None:
         "reachable": True,
         "ready": True,
         "gateway": {"mode": "server-proxied"},
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "provider": "gemini",
         "model": "gemini-live",
         "audio": {
@@ -313,7 +313,7 @@ async def test_status(plugin: Any) -> None:
 async def test_relay_and_route(plugin: Any) -> None:
     browser = _BrowserSocket(
         [
-            {"type": "websocket.receive", "text": '{"type":"session.start","protocolVersion":1}'},
+            {"type": "websocket.receive", "text": '{"type":"session.start","protocolVersion":2}'},
             {"type": "websocket.disconnect"},
         ]
     )
@@ -346,7 +346,7 @@ async def test_relay_and_route(plugin: Any) -> None:
     assert browser.accepted
     assert browser.closed == [1000]
     assert browser.sent == []
-    assert upstream.sent == ['{"type":"session.start","protocolVersion":1}']
+    assert upstream.sent == ['{"type":"session.start","protocolVersion":2}']
     assert captured["url"] == "wss://voice.example:9443/v1/live"
     assert captured["options"]["proxy"] is None
     assert captured["options"]["max_size"] == plugin.MAX_MESSAGE_BYTES
@@ -354,9 +354,9 @@ async def test_relay_and_route(plugin: Any) -> None:
     assert captured["options"]["additional_headers"] == {"Authorization": "Bearer server-owned-secret"}
 
     browser = _BrowserSocket()
-    upstream = _Upstream(['{"type":"session.ready","protocolVersion":1}'])
+    upstream = _Upstream(['{"type":"session.ready","protocolVersion":2}'])
     await plugin._relay_gateway_to_browser(upstream, browser)
-    assert browser.sent == ['{"type":"session.ready","protocolVersion":1}']
+    assert browser.sent == ['{"type":"session.ready","protocolVersion":2}']
 
     browser = _BrowserSocket([{"type": "websocket.receive", "bytes": b"binary"}])
     try:

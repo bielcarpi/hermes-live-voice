@@ -1,11 +1,12 @@
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_DISCONNECT_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_BUFFERED_AMOUNT_BYTES = 1_000_000;
 const DEFAULT_MAX_INBOUND_MESSAGE_BYTES = 8_000_000;
-const DEFAULT_MAX_QUEUED_AUDIO_MS = 30_000;
+const DEFAULT_MAX_QUEUED_AUDIO_MS = 5_000;
 const DEFAULT_SAMPLE_RATE = 24_000;
 const MAX_PENDING_APPROVALS = 128;
 const OPEN = 1;
-export const HERMES_LIVE_PROTOCOL_VERSION = 1;
+export const HERMES_LIVE_PROTOCOL_VERSION = 2;
 
 const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "session.ready",
@@ -17,13 +18,13 @@ const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "response.completed",
   "response.cancelled",
   "response.failed",
-  "realtime.message",
   "run.started",
   "run.event",
   "approval.request",
   "approval.responded",
   "run.completed",
   "run.failed",
+  "run.stopping",
   "run.stopped",
   "log",
 ]);
@@ -78,6 +79,7 @@ export class HermesLiveClient {
     this.profileId = optionalString(options.profileId);
     this.userLabel = optionalString(options.userLabel);
     this.connectTimeoutMs = positiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
+    this.disconnectTimeoutMs = positiveInteger(options.disconnectTimeoutMs, DEFAULT_DISCONNECT_TIMEOUT_MS);
     this.maxBufferedAmountBytes = positiveInteger(
       options.maxBufferedAmountBytes,
       DEFAULT_MAX_BUFFERED_AMOUNT_BYTES,
@@ -136,7 +138,19 @@ export class HermesLiveClient {
   }
 
   async openConnection(generation, signal) {
-    const socketUrl = await this.resolveSocketUrl();
+    const startedAt = Date.now();
+    let socketUrl;
+    try {
+      socketUrl = await settleConnectionPrerequisite(
+        this.resolveSocketUrl(),
+        this.connectTimeoutMs,
+        signal,
+      );
+    } catch (error) {
+      const normalized = toError(error);
+      if (normalized.name !== "AbortError") this.emitError(normalized, "url_resolution_failed");
+      throw normalized;
+    }
     if (generation !== this.generation) throw abortError();
     if (signal?.aborted) throw abortError();
 
@@ -154,6 +168,7 @@ export class HermesLiveClient {
     return await new Promise((resolve, reject) => {
       let settled = false;
       let ready = false;
+      let fatalServerErrorReceived = false;
       const finish = (error, session) => {
         if (settled) return;
         settled = true;
@@ -167,11 +182,12 @@ export class HermesLiveClient {
         this.emitError(normalized, code);
         finish(normalized);
       };
+      const remainingTimeoutMs = Math.max(1, this.connectTimeoutMs - (Date.now() - startedAt));
       const timeout = setTimeout(() => {
         const error = new Error(`Hermes Live session did not become ready within ${this.connectTimeoutMs}ms.`);
         failStartup(error, "connect_timeout");
         closeSocket(socket, 4000, "session ready timeout");
-      }, this.connectTimeoutMs);
+      }, remainingTimeoutMs);
       const onAbort = () => {
         const error = abortError();
         finish(error);
@@ -212,6 +228,7 @@ export class HermesLiveClient {
               finish(error);
               closeSocket(socket, 1008, "session startup rejected");
             } else if (message.type === "session.error" && message.recoverable === false) {
+              fatalServerErrorReceived = true;
               this.setState("failed");
               closeSocket(socket, 1011, "nonrecoverable session error");
             }
@@ -253,7 +270,7 @@ export class HermesLiveClient {
         this.emitter.emit("close", closeEvent);
         if (!ready) {
           finish(new Error(`Hermes Live connection closed before session readiness (${closeEvent.code}).`));
-        } else if (!closeEvent.clean && closeEvent.code !== 1000) {
+        } else if (!closeEvent.clean && closeEvent.code !== 1000 && !fatalServerErrorReceived) {
           this.emitError(new Error("Hermes Live connection was lost."), "connection_lost", closeEvent);
         }
       });
@@ -286,22 +303,36 @@ export class HermesLiveClient {
       return;
     }
     this.setState("closing");
+    this.updateSnapshot({ lastError: undefined });
+    let requestedProtocolClose = false;
     if (socket.readyState === OPEN) {
       try {
         this.sendRaw({ type: "session.close", id: this.createRequestId() });
+        requestedProtocolClose = true;
       } catch {
-        // The close below is authoritative.
+        // Fall back to a local WebSocket close below.
       }
     }
     let closeObserved = false;
+    let closeTimedOut = false;
+    let observedClose;
     await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 1_000);
-      socket.addEventListener("close", () => {
+      const timeout = setTimeout(() => {
+        closeTimedOut = true;
+        closeSocket(socket, 4000, "gateway close confirmation timeout");
+        resolve();
+      }, requestedProtocolClose ? this.disconnectTimeoutMs : 1_000);
+      socket.addEventListener("close", (event) => {
         closeObserved = true;
+        observedClose = {
+          code: Number(event.code ?? 1006),
+          reason: String(event.reason ?? ""),
+          clean: Boolean(event.wasClean),
+        };
         clearTimeout(timeout);
         resolve();
       }, { once: true });
-      closeSocket(socket, 1000, reason);
+      if (!requestedProtocolClose) closeSocket(socket, 1000, reason);
     });
     if (!closeObserved && this.isCurrentSocket(socket, this.generation)) {
       ++this.generation;
@@ -320,6 +351,16 @@ export class HermesLiveClient {
         reason: "disconnect timed out",
         clean: false,
       });
+    }
+    if (closeTimedOut) {
+      throw new Error("The gateway did not confirm session shutdown; verify any active Hermes task before reconnecting.");
+    }
+    await this.messageChain.catch(() => undefined);
+    if (observedClose && (observedClose.code !== 1000 || !observedClose.clean)) {
+      throw new Error(
+        this.snapshot.lastError?.error?.message ||
+        "The gateway closed abnormally and did not confirm complete session shutdown. Verify any active Hermes task.",
+      );
     }
   }
 
@@ -371,6 +412,9 @@ export class HermesLiveClient {
 
   respondToApproval(choice, runId = this.activeRunId, options = {}) {
     if (!runId) throw new Error("An approval response requires an active Hermes run ID.");
+    if (typeof options.approvalId !== "string" || !options.approvalId) {
+      throw new Error("An approval response requires the exact pending approval ID.");
+    }
     if (!["once", "session", "always", "deny"].includes(choice)) {
       throw new TypeError(`Unsupported Hermes approval choice: ${choice}`);
     }
@@ -379,8 +423,8 @@ export class HermesLiveClient {
       type: "approval.respond",
       id,
       runId,
+      approvalId: options.approvalId,
       choice,
-      ...(options.resolveAll === undefined ? {} : { resolveAll: Boolean(options.resolveAll) }),
     });
     return id;
   }
@@ -419,7 +463,7 @@ export class HermesLiveClient {
     } else {
       throw new TypeError("Hermes Live returned an unsupported WebSocket message type.");
     }
-    if (text.length > this.maxInboundMessageBytes) {
+    if (encodedMessageSize(text) > this.maxInboundMessageBytes) {
       throw new Error("Hermes Live server message exceeded the configured client limit.");
     }
     return validateServerMessage(JSON.parse(text));
@@ -458,13 +502,12 @@ export class HermesLiveClient {
         }
         break;
       case "approval.responded": {
-        let remaining = message.resolved === undefined ? 1 : message.resolved;
         this.updateSnapshot({
-          pendingApprovals: this.snapshot.pendingApprovals.filter((entry) => {
-            if (entry.runId !== message.runId || remaining <= 0) return true;
-            remaining -= 1;
-            return false;
-          }),
+          pendingApprovals: this.snapshot.pendingApprovals.filter(
+            (entry) =>
+              entry.runId !== message.runId ||
+              entry.approval.approvalId !== message.approvalId,
+          ),
         });
         break;
       }
@@ -486,6 +529,9 @@ export class HermesLiveClient {
         });
         break;
       }
+      case "run.stopping":
+        this.updateSnapshot({ run: { state: "stopping", runId: message.runId } });
+        break;
       case "session.error":
         if (message.requestId && message.requestId === this.pendingStopRequestId) {
           this.pendingStopRequestId = "";
@@ -949,11 +995,11 @@ export function validateServerMessage(value) {
       requireString(message, "mimeType");
       break;
     case "transcript.delta":
-      requireString(message, "speaker");
+      requireEnum(message, "speaker", ["user", "assistant", "system"]);
       requireString(message, "text", true);
       break;
     case "input.speech_started":
-      requireString(message, "provider");
+      requireEnum(message, "provider", ["openai"]);
       break;
     case "response.started":
     case "response.completed":
@@ -974,12 +1020,15 @@ export function validateServerMessage(value) {
       requireString(message, "runId");
       requireObject(message, "event");
       requireObject(message, "approval");
+      message.approval = normalizeApprovalDetails(message.approval);
       break;
     case "approval.responded":
+      requireString(message, "requestId");
       requireString(message, "runId");
-      requireString(message, "choice");
-      if (message.resolved !== undefined && (!Number.isInteger(message.resolved) || message.resolved < 0)) {
-        throw new TypeError("Hermes Live approval.responded message requires a non-negative integer resolved count.");
+      requireString(message, "approvalId");
+      requireEnum(message, "choice", ["once", "session", "always", "deny"]);
+      if (message.resolved !== 1) {
+        throw new TypeError("Hermes Live approval.responded message must confirm exactly one resolved approval.");
       }
       break;
     case "run.completed":
@@ -990,12 +1039,16 @@ export function validateServerMessage(value) {
       requireString(message, "runId");
       requireString(message, "error");
       break;
+    case "run.stopping":
+      requireString(message, "runId");
+      requireString(message, "status");
+      break;
     case "run.stopped":
       requireString(message, "runId");
       requireString(message, "status");
       break;
     case "log":
-      requireString(message, "level");
+      requireEnum(message, "level", ["debug", "info", "warn", "error"]);
       requireString(message, "message", true);
       break;
   }
@@ -1008,10 +1061,107 @@ function requireString(value, key, allowEmpty = false) {
   }
 }
 
+function requireEnum(value, key, allowed) {
+  requireString(value, key);
+  if (!allowed.includes(value[key])) {
+    throw new TypeError(`Hermes Live ${value.type} message contains an unsupported ${key}.`);
+  }
+}
+
 function requireObject(value, key) {
   if (!value[key] || typeof value[key] !== "object" || Array.isArray(value[key])) {
     throw new TypeError(`Hermes Live ${value.type} message requires ${key}.`);
   }
+}
+
+function normalizeApprovalDetails(value) {
+  const rawApprovalId = typeof value.approvalId === "string" ? value.approvalId : "";
+  const approvalId = safeInspectableText(rawApprovalId, 256);
+  if (!approvalId || approvalId !== rawApprovalId) {
+    throw new TypeError("Hermes Live approval.request requires a safe gateway approvalId.");
+  }
+  const commandProjection = exactApprovalDisplayText(value.command, 4_000);
+  const descriptionProjection = exactApprovalDisplayText(value.description, 2_000);
+  const command = commandProjection.value;
+  const description = descriptionProjection.value;
+  const displayComplete = commandProjection.exact && descriptionProjection.exact && Boolean(command || description);
+  const patterns = exactApprovalPatterns(value);
+  const inspectablePatterns = displayComplete && patterns.exact ? patterns.values : [];
+  const hasInspectablePermanentPattern = displayComplete && patterns.exact && inspectablePatterns.length > 0;
+  const allowedChoices = ["once", "session", "always", "deny"];
+  const suppliedChoices = Array.isArray(value.choices) &&
+      value.choices.length > 0 &&
+      value.choices.every((choice) => typeof choice === "string" && allowedChoices.includes(choice))
+    ? value.choices
+    : ["deny"];
+  const allowPermanent = hasInspectablePermanentPattern && value.allowPermanent === true;
+  const choices = [...new Set(suppliedChoices)]
+    .filter((choice) => displayComplete || choice === "deny")
+    .filter((choice) => !["session", "always"].includes(choice) || hasInspectablePermanentPattern)
+    .filter((choice) => choice !== "always" || allowPermanent);
+  if (!choices.includes("deny")) choices.push("deny");
+  return {
+    approvalId,
+    ...(command ? { command } : {}),
+    ...(description ? { description } : {}),
+    ...(inspectablePatterns[0] ? { patternKey: inspectablePatterns[0] } : {}),
+    ...(inspectablePatterns.length > 1 ? { patternKeys: inspectablePatterns.slice(1) } : {}),
+    choices,
+    allowPermanent: allowPermanent && choices.includes("always"),
+  };
+}
+
+function exactApprovalDisplayText(value, maximum) {
+  if (value === undefined || value === null || value === "") return { exact: true };
+  if (typeof value !== "string" || /[\r\n\t]/u.test(value)) return { exact: false };
+  const projected = safeDisplayText(value, maximum);
+  return projected && projected === value && /[\p{L}\p{N}\p{P}\p{S}]/u.test(projected)
+    ? { value: projected, exact: true }
+    : { exact: false };
+}
+
+function exactApprovalPatterns(value) {
+  const rawValues = [];
+  if (value.patternKey !== undefined && value.patternKey !== null && value.patternKey !== "") {
+    rawValues.push(value.patternKey);
+  }
+  if (value.patternKeys !== undefined && value.patternKeys !== null) {
+    if (!Array.isArray(value.patternKeys) || value.patternKeys.length > 32) {
+      return { values: [], exact: false };
+    }
+    rawValues.push(...value.patternKeys);
+  }
+  if (rawValues.length > 32) return { values: [], exact: false };
+
+  const values = [];
+  for (const raw of rawValues) {
+    const projected = safeInspectableText(raw, 256);
+    if (typeof raw !== "string" || !projected || projected !== raw) {
+      return { values: [], exact: false };
+    }
+    if (!values.includes(projected)) values.push(projected);
+  }
+  return { values, exact: true };
+}
+
+function safeDisplayText(value, maximum) {
+  if (typeof value !== "string") return "";
+  const withoutTerminalSequences = value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\|$)/g, "")
+    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "")
+    .replace(/\r\n?/g, "\n");
+  return Array.from(withoutTerminalSequences.normalize("NFC"))
+    .filter((character) =>
+      character === "\n" || character === "\t" || !/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}]/u.test(character))
+    .slice(0, maximum)
+    .join("")
+    .trim();
+}
+
+function safeInspectableText(value, maximum) {
+  const normalized = safeDisplayText(value, maximum).replace(/\s+/gu, " ").trim();
+  return /[\p{L}\p{N}\p{P}\p{S}]/u.test(normalized) ? normalized : "";
 }
 
 function requireNumber(value, key) {
@@ -1021,13 +1171,17 @@ function requireNumber(value, key) {
 }
 
 function validateRealtimeCapabilities(value) {
-  requireString({ type: "session.ready realtime", ...value }, "provider");
+  requireEnum({ type: "session.ready realtime", ...value }, "provider", ["gemini", "openai", "mock"]);
   requireString({ type: "session.ready realtime", ...value }, "model");
   requireObject({ type: "session.ready realtime", ...value }, "audio");
   const audio = value.audio;
   requireObject({ type: "session.ready realtime audio", ...audio }, "input");
   requireObject({ type: "session.ready realtime audio", ...audio }, "output");
-  requireString({ type: "session.ready realtime audio", ...audio }, "turnDetection");
+  requireEnum(
+    { type: "session.ready realtime audio", ...audio },
+    "turnDetection",
+    ["disabled", "semantic_vad", "server_vad", "provider", "none"],
+  );
   if (typeof audio.input.enabled !== "boolean" || typeof audio.output.enabled !== "boolean") {
     throw new TypeError("Hermes Live session.ready realtime audio capabilities require enabled flags.");
   }
@@ -1047,7 +1201,7 @@ function createSnapshot(connection) {
 }
 
 function approvalRequestId(message) {
-  const approvalId = message?.approval?.approvalId ?? message?.event?.approval_id;
+  const approvalId = message?.approval?.approvalId;
   return typeof approvalId === "string" && approvalId ? `${message.runId}:${approvalId}` : "";
 }
 
@@ -1057,7 +1211,7 @@ function defaultRequestId() {
 }
 
 function encodedMessageSize(data) {
-  if (typeof data === "string") return data.length;
+  if (typeof data === "string") return new TextEncoder().encode(data).byteLength;
   if (typeof data?.size === "number") return data.size;
   if (typeof data?.byteLength === "number") return data.byteLength;
   return 0;
@@ -1144,6 +1298,34 @@ function normalizeCloseReason(value) {
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function settleConnectionPrerequisite(promise, timeoutMs, signal) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const onAbort = () => finish(abortError());
+    const timeout = setTimeout(
+      () => finish(new Error(`Hermes Live gateway URL or token did not resolve within ${timeoutMs}ms.`)),
+      timeoutMs,
+    );
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => finish(undefined, value),
+      (error) => finish(toError(error)),
+    );
+  });
 }
 
 function optionalString(value) {

@@ -67,6 +67,8 @@ describe("TerminalGatewaySession", () => {
               },
             }),
           );
+        } else if (message.type === "session.close") {
+          socket.close(1000, "session closed");
         }
       });
     });
@@ -152,19 +154,35 @@ describe("TerminalGatewaySession", () => {
     await waitForMessage(received, "approval.respond");
     expect(received.find((message) => message.type === "approval.respond")).toMatchObject({
       runId: "run_terminal",
+      approvalId: "approval_terminal_1",
       choice: "always",
     });
 
-    peer?.send(JSON.stringify({ type: "approval.responded", runId: "run_terminal", choice: "always", resolved: 1 }));
+    peer?.send(JSON.stringify({
+      type: "approval.responded",
+      requestId: "terminal_approval_1",
+      runId: "run_terminal",
+      approvalId: "approval_terminal_1",
+      choice: "always",
+      resolved: 1,
+    }));
     await vi.waitFor(() => expect(session.snapshot.pendingApproval?.command).toBe("npm publish"));
     expect(lines).toContain("[approval] Command: npm publish");
     session.execute("/approve deny");
     await waitForMessageCount(received, "approval.respond", 2);
     expect(received.filter((message) => message.type === "approval.respond").at(-1)).toMatchObject({
       runId: "run_terminal",
+      approvalId: "approval_terminal_2",
       choice: "deny",
     });
-    peer?.send(JSON.stringify({ type: "approval.responded", runId: "run_terminal", choice: "deny", resolved: 1 }));
+    peer?.send(JSON.stringify({
+      type: "approval.responded",
+      requestId: "terminal_approval_2",
+      runId: "run_terminal",
+      approvalId: "approval_terminal_2",
+      choice: "deny",
+      resolved: 1,
+    }));
     await vi.waitFor(() => expect(session.snapshot.pendingApprovals).toEqual([]));
     peer?.send(JSON.stringify({
       type: "approval.request",
@@ -182,7 +200,41 @@ describe("TerminalGatewaySession", () => {
     expect(lines).toContain("[approval] Hermes did not provide an inspectable permission pattern; permanent approval is unavailable.");
     session.execute("/approve deny");
     await waitForMessageCount(received, "approval.respond", 3);
-    peer?.send(JSON.stringify({ type: "approval.responded", runId: "run_terminal", choice: "deny", resolved: 1 }));
+    peer?.send(JSON.stringify({
+      type: "approval.responded",
+      requestId: "terminal_approval_3",
+      runId: "run_terminal",
+      approvalId: "approval_terminal_3",
+      choice: "deny",
+      resolved: 1,
+    }));
+    await vi.waitFor(() => expect(session.snapshot.pendingApprovals).toEqual([]));
+    peer?.send(JSON.stringify({
+      type: "approval.request",
+      runId: "run_terminal",
+      event: { event: "approval.request", approval_id: "approval_terminal_4" },
+      approval: {
+        approvalId: "approval_terminal_4",
+        command: "deploy\nproduction",
+        patternKey: "terminal:deploy",
+        choices: ["once", "session", "deny"],
+        allowPermanent: true,
+      },
+    }));
+    await vi.waitFor(() => expect(session.snapshot.pendingApproval?.choices).toEqual(["deny"]));
+    expect(session.snapshot.pendingApproval?.patternKeys).toEqual([]);
+    session.execute("/approve once");
+    expect(lines).toContain("[approval] once is not allowed for this request. Choose: deny.");
+    session.execute("/approve deny");
+    await waitForMessageCount(received, "approval.respond", 4);
+    peer?.send(JSON.stringify({
+      type: "approval.responded",
+      requestId: "terminal_approval_4",
+      runId: "run_terminal",
+      approvalId: "approval_terminal_4",
+      choice: "deny",
+      resolved: 1,
+    }));
     await vi.waitFor(() => expect(session.snapshot.pendingApprovals).toEqual([]));
     session.execute("/interrupt");
     await waitForMessage(received, "response.cancel");
@@ -236,17 +288,22 @@ describe("TerminalGatewaySession", () => {
     let peer: WebSocket | undefined;
     server.on("connection", (socket) => {
       peer = socket;
-      socket.once("message", () => {
-        socket.send(
-          JSON.stringify({
-            type: "session.ready",
-            protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
-            sessionId: "audio_only",
-            model: "mock-live",
-            hermes: {},
-            realtime: { provider: "mock", model: "mock-live" },
-          }),
-        );
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({
+              type: "session.ready",
+              protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+              sessionId: "audio_only",
+              model: "mock-live",
+              hermes: {},
+              realtime: { provider: "mock", model: "mock-live" },
+            }),
+          );
+        } else if (message.type === "session.close") {
+          socket.close(1000, "session closed");
+        }
       });
     });
 

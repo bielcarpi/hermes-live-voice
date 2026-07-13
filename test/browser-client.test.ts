@@ -75,10 +75,52 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready", protocolVersion: 1 });
+    socket.message({ type: "session.ready", protocolVersion: 2 });
 
     await expect(connection).rejects.toThrow(/requires sessionId/);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
+  });
+
+  it("never widens malformed approval details beyond deny-only", () => {
+    const transformed = validateServerMessage({
+      type: "approval.request",
+      runId: "run_approval",
+      event: { event: "approval.request" },
+      approval: {
+        approvalId: "approval_safe",
+        command: "git\u001b[2J push",
+        description: "Deploy\nproduction",
+        patternKey: "terminal:git-push\u001b[31m",
+        choices: ["once", "session", "always", "deny"],
+        allowPermanent: true,
+      },
+    });
+    const invalidChoices = validateServerMessage({
+      type: "approval.request",
+      runId: "run_approval",
+      event: { event: "approval.request" },
+      approval: {
+        approvalId: "approval_safe_2",
+        command: "git push",
+        patternKey: "terminal:git-push",
+        choices: ["once", "forever", "deny"],
+        allowPermanent: true,
+      },
+    });
+
+    const transformedApproval = (transformed as any).approval;
+    const invalidChoiceApproval = (invalidChoices as any).approval;
+    expect(transformedApproval).toMatchObject({
+      approvalId: "approval_safe",
+      choices: ["deny"],
+      allowPermanent: false,
+    });
+    expect(transformedApproval).not.toHaveProperty("patternKey");
+    expect(invalidChoiceApproval).toMatchObject({
+      approvalId: "approval_safe_2",
+      choices: ["deny"],
+      allowPermanent: false,
+    });
   });
 
   it("decodes only the addressed typed-array slice", async () => {
@@ -91,6 +133,18 @@ describe("HermesLiveClient", () => {
     socket.message(payload.subarray(4, payload.length - 4));
 
     await expect(connection).resolves.toMatchObject({ sessionId: "live_slice" });
+  });
+
+  it("applies inbound message limits in UTF-8 bytes", async () => {
+    const payload = JSON.stringify({ ...readyMessage("live_utf8"), model: "🙂".repeat(30) });
+    const client = createClient({ maxInboundMessageBytes: payload.length });
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message(payload);
+
+    await expect(connection).rejects.toThrow("server message exceeded the configured client limit");
+    expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
   });
 
   it("drops microphone frames when the WebSocket is backed up", async () => {
@@ -142,6 +196,38 @@ describe("HermesLiveClient", () => {
     await connection;
   });
 
+  it("times out stalled ephemeral URL resolution before opening a socket", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = createClient({
+        url: undefined,
+        webSocketUrlProvider: () => new Promise(() => undefined),
+        connectTimeoutMs: 25,
+      });
+      const connection = client.connect();
+      const result = expect(connection).rejects.toThrow("gateway URL or token did not resolve within 25ms");
+      await vi.advanceTimersByTimeAsync(25);
+
+      await result;
+      expect(FakeWebSocket.instances).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts stalled ephemeral URL resolution", async () => {
+    const controller = new AbortController();
+    const client = createClient({
+      url: undefined,
+      webSocketUrlProvider: () => new Promise(() => undefined),
+    });
+    const connection = client.connect({ signal: controller.signal });
+    controller.abort();
+
+    await expect(connection).rejects.toMatchObject({ name: "AbortError" });
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
   it("ignores messages from a replaced socket generation", async () => {
     const client = createClient();
     const firstConnection = client.connect();
@@ -149,10 +235,14 @@ describe("HermesLiveClient", () => {
     first.open();
     first.message(readyMessage("old"));
     await firstConnection;
-    await client.disconnect();
+    const disconnecting = client.disconnect();
+    await vi.waitFor(() => expect(first.sent.some((message) => message.type === "session.close")).toBe(true));
+    first.serverClose(1000, "session closed");
+    await disconnecting;
 
     const secondConnection = client.connect();
-    const second = await nextSocket();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const second = FakeWebSocket.instances[1]!;
     first.message({ type: "run.started", runId: "stale", sessionId: "old" });
     second.open();
     second.message(readyMessage("new"));
@@ -178,7 +268,7 @@ describe("HermesLiveClient", () => {
     expect(unknown).toHaveBeenCalledWith({ type: "future.event", value: 42 });
   });
 
-  it("preserves approval FIFO order and removes only the resolved queue entries", async () => {
+  it("preserves approval FIFO order and resolves only the correlated approval id", async () => {
     const client = createClient();
     const connection = client.connect();
     const socket = await nextSocket();
@@ -193,22 +283,51 @@ describe("HermesLiveClient", () => {
       client.getSnapshot().pendingApprovals.map((entry: any) => entry.approval.command),
     ).toEqual(["updated first command", "second command"]));
 
-    socket.message({ type: "approval.responded", runId: "run_approval", choice: "once", resolved: 1 });
+    socket.message({
+      type: "approval.responded",
+      requestId: "response_1",
+      runId: "run_approval",
+      approvalId: "approval_1",
+      choice: "once",
+      resolved: 1,
+    });
     await flushMessages();
     expect(client.getSnapshot().pendingApprovals.map((entry: any) => entry.approval.command)).toEqual([
       "second command",
     ]);
 
     socket.message(approvalRequest("run_approval", "approval_3", "third command"));
-    socket.message({ type: "approval.responded", runId: "run_approval", choice: "deny", resolved: 0 });
+    socket.message({
+      type: "approval.responded",
+      requestId: "response_1",
+      runId: "run_approval",
+      approvalId: "approval_1",
+      choice: "once",
+      resolved: 1,
+    });
     await flushMessages();
     expect(client.getSnapshot().pendingApprovals).toHaveLength(2);
 
-    socket.message({ type: "approval.responded", runId: "run_approval", choice: "deny", resolved: 2 });
+    socket.message({
+      type: "approval.responded",
+      requestId: "response_2",
+      runId: "run_approval",
+      approvalId: "approval_2",
+      choice: "deny",
+      resolved: 1,
+    });
+    socket.message({
+      type: "approval.responded",
+      requestId: "response_3",
+      runId: "run_approval",
+      approvalId: "approval_3",
+      choice: "deny",
+      resolved: 1,
+    });
     await vi.waitFor(() => expect(client.getSnapshot().pendingApprovals).toEqual([]));
   });
 
-  it("bounds browser close reasons without failing disconnect cleanup", async () => {
+  it("waits for the gateway to confirm protocol shutdown", async () => {
     const client = createClient();
     const connection = client.connect();
     const socket = await nextSocket();
@@ -216,36 +335,50 @@ describe("HermesLiveClient", () => {
     socket.message(readyMessage("live_1"));
     await connection;
 
-    await expect(client.disconnect(`line one\n${"🚫".repeat(100)}`)).resolves.toBeUndefined();
-    const close = socket.closeCalls.at(-1);
-    expect(close?.code).toBe(1000);
-    expect(close?.reason).not.toContain("\n");
-    expect(Buffer.byteLength(close?.reason ?? "", "utf8")).toBeLessThanOrEqual(123);
+    const disconnecting = client.disconnect(`line one\n${"🚫".repeat(100)}`);
+    await vi.waitFor(() => expect(socket.sent.some((message) => message.type === "session.close")).toBe(true));
+    expect(socket.closeCalls).toEqual([]);
+    socket.serverClose(1000, "session closed");
+    await expect(disconnecting).resolves.toBeUndefined();
+  });
+
+  it("rejects abnormal shutdown with the gateway's actionable error", async () => {
+    const client = createClient();
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message(readyMessage("live_unconfirmed_close"));
+    await connection;
+
+    const disconnecting = client.disconnect();
+    await vi.waitFor(() => expect(socket.sent.some((message) => message.type === "session.close")).toBe(true));
+    socket.message({
+      type: "session.error",
+      code: "session_shutdown_unconfirmed",
+      message: "Verify the active task state in Hermes.",
+      recoverable: false,
+    });
+
+    await expect(disconnecting).rejects.toThrow("Verify the active task state in Hermes.");
+    expect(client.getSnapshot()).toMatchObject({ connection: "closed", run: { state: "idle" } });
   });
 
   it("recovers to a reconnectable state when a browser never emits close", async () => {
-    const client = createClient();
+    const client = createClient({ disconnectTimeoutMs: 25 });
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
     socket.message(readyMessage("live_stuck_close"));
     await connection;
     socket.suppressCloseEvent = true;
-    vi.useFakeTimers();
 
-    try {
-      const disconnecting = client.disconnect("test stuck close");
-      await vi.advanceTimersByTimeAsync(1_001);
-      await disconnecting;
-      expect(client.getSnapshot()).toMatchObject({
-        connection: "closed",
-        run: { state: "idle" },
-        pendingApprovals: [],
-      });
-      expect(client.connected).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
+    await expect(client.disconnect("test stuck close")).rejects.toThrow("did not confirm session shutdown");
+    expect(client.getSnapshot()).toMatchObject({
+      connection: "closed",
+      run: { state: "idle" },
+      pendingApprovals: [],
+    });
+    expect(client.connected).toBe(false);
   });
 });
 
@@ -383,6 +516,34 @@ describe("browser client utilities", () => {
   it("validates state-changing server messages", () => {
     expect(() => validateServerMessage({ type: "run.started", runId: "run" })).toThrow(/sessionId/);
   });
+
+  it("rejects out-of-contract enums from known server messages", () => {
+    expect(() => validateServerMessage({
+      ...readyMessage("live_invalid_provider"),
+      realtime: { ...readyMessage("x").realtime, provider: "other" },
+    })).toThrow(/unsupported provider/);
+    expect(() => validateServerMessage({
+      ...readyMessage("live_invalid_vad"),
+      realtime: {
+        ...readyMessage("x").realtime,
+        audio: { ...readyMessage("x").realtime.audio, turnDetection: "magic_vad" },
+      },
+    })).toThrow(/unsupported turnDetection/);
+    expect(() => validateServerMessage({ type: "transcript.delta", speaker: "tool", text: "hi" }))
+      .toThrow(/unsupported speaker/);
+    expect(() => validateServerMessage({ type: "input.speech_started", provider: "gemini" }))
+      .toThrow(/unsupported provider/);
+    expect(() => validateServerMessage({
+      type: "approval.responded",
+      requestId: "request_1",
+      runId: "run_1",
+      approvalId: "approval_1",
+      choice: "everything",
+      resolved: 1,
+    })).toThrow(/unsupported choice/);
+    expect(() => validateServerMessage({ type: "log", level: "fatal", message: "no" }))
+      .toThrow(/unsupported level/);
+  });
 });
 
 function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient {
@@ -400,7 +561,7 @@ function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient
 function readyMessage(sessionId: string) {
   return {
     type: "session.ready",
-    protocolVersion: 1,
+    protocolVersion: 2,
     sessionId,
     model: "mock-live",
     hermes: {},
@@ -487,6 +648,11 @@ class FakeWebSocket {
       this.readyState = 2;
       return;
     }
+    this.readyState = 3;
+    this.emit("close", { code, reason, wasClean: code === 1000 });
+  }
+
+  serverClose(code = 1000, reason = ""): void {
     this.readyState = 3;
     this.emit("close", { code, reason, wasClean: code === 1000 });
   }

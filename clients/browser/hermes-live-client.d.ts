@@ -8,12 +8,12 @@ export type HermesLiveClientState =
   | "failed";
 
 export type HermesApprovalChoice = "once" | "session" | "always" | "deny";
-export const HERMES_LIVE_PROTOCOL_VERSION: 1;
+export const HERMES_LIVE_PROTOCOL_VERSION: 2;
 export type HermesRunEvent = Record<string, unknown> & { event?: string; approval_id?: string };
 
 export interface HermesLiveSessionReady {
   type: "session.ready";
-  protocolVersion: 1;
+  protocolVersion: 2;
   sessionId: string;
   model: string;
   hermes: { model?: string; capabilities?: Record<string, unknown> };
@@ -40,12 +40,11 @@ export type HermesLiveServerMessage =
   | { type: "session.error"; code: string; message: string; requestId?: string; recoverable?: boolean }
   | { type: "audio.output"; data: string; mimeType: string; itemId?: string; contentIndex?: number }
   | { type: "transcript.delta"; speaker: "user" | "assistant" | "system"; text: string; final?: boolean }
-  | { type: "input.speech_started"; provider: string; itemId?: string; audioStartMs?: number }
+  | { type: "input.speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number }
   | { type: "response.started"; responseId?: string }
   | { type: "response.completed"; responseId?: string }
   | { type: "response.cancelled"; responseId?: string }
   | { type: "response.failed"; responseId?: string; error: string }
-  | { type: "realtime.message"; message: unknown }
   | { type: "run.started"; runId: string; sessionId: string }
   | { type: "run.event"; runId: string; event: HermesRunEvent }
   | {
@@ -53,7 +52,7 @@ export type HermesLiveServerMessage =
       runId: string;
       event: HermesRunEvent;
       approval: {
-        approvalId?: string;
+        approvalId: string;
         command?: string;
         description?: string;
         patternKey?: string;
@@ -62,9 +61,17 @@ export type HermesLiveServerMessage =
         allowPermanent: boolean;
       };
     }
-  | { type: "approval.responded"; runId: string; choice: HermesApprovalChoice; resolved?: number }
+  | {
+      type: "approval.responded";
+      requestId: string;
+      runId: string;
+      approvalId: string;
+      choice: HermesApprovalChoice;
+      resolved: 1;
+    }
   | { type: "run.completed"; runId: string; output: string; usage?: Record<string, unknown> }
   | { type: "run.failed"; runId: string; error: string }
+  | { type: "run.stopping"; runId: string; status: string }
   | { type: "run.stopped"; runId: string; status: string }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; data?: unknown }
   | (Record<string, unknown> & { type: string });
@@ -76,6 +83,7 @@ export interface HermesLiveClientOptions {
   profileId?: string;
   userLabel?: string;
   connectTimeoutMs?: number;
+  disconnectTimeoutMs?: number;
   maxBufferedAmountBytes?: number;
   maxInboundMessageBytes?: number;
   webSocketFactory?: (url: URL) => WebSocket;
@@ -121,9 +129,9 @@ export interface HermesLiveClientEventMap {
   "approval.responded": Extract<HermesLiveServerMessage, { type: "approval.responded" }>;
   "run.completed": Extract<HermesLiveServerMessage, { type: "run.completed" }>;
   "run.failed": Extract<HermesLiveServerMessage, { type: "run.failed" }>;
+  "run.stopping": Extract<HermesLiveServerMessage, { type: "run.stopping" }>;
   "run.stopped": Extract<HermesLiveServerMessage, { type: "run.stopped" }>;
   log: Extract<HermesLiveServerMessage, { type: "log" }>;
-  "realtime.message": Extract<HermesLiveServerMessage, { type: "realtime.message" }>;
   "listener.error": { type: keyof HermesLiveClientEventMap; error: Error };
 }
 
@@ -146,8 +154,8 @@ export class HermesLiveClient {
   stopRun(reason?: string, runId?: string, options?: { id?: string }): string;
   respondToApproval(
     choice: HermesApprovalChoice,
-    runId?: string,
-    options?: { id?: string; resolveAll?: boolean },
+    runId: string | undefined,
+    options: { approvalId: string; id?: string },
   ): string;
   sendMessage(message: Record<string, unknown> & { type: string; id?: string }): string;
 }

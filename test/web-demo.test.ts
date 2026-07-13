@@ -35,7 +35,19 @@ describe("web demo behavior", () => {
     expect(harness.client.stopRun).toHaveBeenCalledWith("demo user stopped Hermes task");
   });
 
-  it("limits opaque approvals to once or deny", async () => {
+  it("shows disconnect failures instead of leaving an unhandled rejection", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+    harness.client.disconnectError = new Error("Verify the active Hermes task");
+
+    harness.elements.connect.click();
+    await vi.waitFor(() => expect(harness.elements.status.textContent).toBe("Error"));
+
+    expect(harness.elements.log.entries.at(-1)?.strong.textContent).toBe("error");
+    expect(harness.elements.log.entries.at(-1)?.pre.textContent).toBe("Verify the active Hermes task");
+  });
+
+  it("limits opaque approvals to deny", async () => {
     const harness = loadWebDemo();
     await harness.api.connect();
 
@@ -45,7 +57,7 @@ describe("web demo behavior", () => {
       event: { event: "approval.request", approval_id: "approval_1" },
     });
 
-    expect(harness.elements.log.buttonLabels.at(-1)).toEqual(["once", "deny"]);
+    expect(harness.elements.log.buttonLabels.at(-1)).toEqual(["deny"]);
   });
 
   it("requires an inspectable pattern before offering permanent approval", async () => {
@@ -56,6 +68,7 @@ describe("web demo behavior", () => {
       type: "approval.request",
       runId: "run_1",
       approval: {
+        approvalId: "approval_1",
         command: "npm publish",
         patternKey: "\u001b[31m\u202e",
         choices: ["once", "always", "deny"],
@@ -104,15 +117,42 @@ describe("web demo behavior", () => {
     expect(harness.client.respondToApproval).not.toHaveBeenCalled();
     expect(always?.textContent).toBe("confirm always");
     always?.click();
-    expect(harness.client.respondToApproval).toHaveBeenCalledWith("always", "run_1");
+    expect(harness.client.respondToApproval).toHaveBeenCalledWith("always", "run_1", { approvalId: "approval_1" });
 
     harness.api.handleMessage({
       type: "approval.responded",
+      requestId: "response_1",
       runId: "run_1",
+      approvalId: "approval_1",
       choice: "always",
       resolved: 1,
     });
     expect(second.every((button) => !button.disabled)).toBe(true);
+  });
+
+  it("keeps an approval actionable when sending the response fails", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+    harness.client.respondToApproval.mockImplementationOnce(() => {
+      throw new Error("Gateway connection closed");
+    });
+
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_1",
+      approval: {
+        approvalId: "approval_retry",
+        command: "npm test",
+        choices: ["once", "deny"],
+        allowPermanent: false,
+      },
+    });
+    const buttons = harness.elements.log.entries.at(-1)?.buttons ?? [];
+    buttons.find((button) => button.textContent === "once")?.click();
+
+    expect(harness.elements.status.textContent).toBe("Error");
+    expect(buttons.every((button) => !button.disabled)).toBe(true);
+    expect(harness.elements.log.entries.at(-1)?.pre.textContent).toBe("Gateway connection closed");
   });
 });
 
@@ -190,6 +230,7 @@ class FakeHermesLiveClient {
   connected = false;
   state = "idle";
   activeRunId = "";
+  disconnectError?: Error;
   stopRun = vi.fn();
   respondToApproval = vi.fn();
   sendText = vi.fn();
@@ -211,6 +252,7 @@ class FakeHermesLiveClient {
   }
 
   async disconnect(): Promise<void> {
+    if (this.disconnectError) throw this.disconnectError;
     this.connected = false;
     this.state = "closed";
   }

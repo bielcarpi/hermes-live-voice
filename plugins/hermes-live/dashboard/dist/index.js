@@ -68,8 +68,7 @@
 
   function approvalKey(request, index) {
     const approval = request && request.approval ? request.approval : {};
-    const event = request && request.event ? request.event : {};
-    return String(approval.approvalId || event.approval_id || request.runId || "approval") + ":" + index;
+    return String(approval.approvalId || request.runId || "approval") + ":" + index;
   }
 
   function approvalPatternKeys(approval) {
@@ -383,12 +382,7 @@
               if (active) {
                 setConfirmPermanent("");
                 setBusyAction("");
-                if (message.resolved === 0) {
-                  setNotice({ tone: "warning", text: "Hermes did not resolve that approval; review it and try again." });
-                  addActivity("Approval still pending", approvalChoiceLabel(message.choice), "warning");
-                } else {
-                  addActivity("Approval answered", approvalChoiceLabel(message.choice), "success");
-                }
+                addActivity("Approval answered", approvalChoiceLabel(message.choice), "success");
               }
             }),
             client.on("run.completed", function (message) {
@@ -399,6 +393,9 @@
                 addActivity("Hermes task failed", message.error, "danger");
                 setNotice({ tone: "danger", text: clampText(message.error, 300) });
               }
+            }),
+            client.on("run.stopping", function (message) {
+              if (active) addActivity("Hermes task stopping", titleCase(message.status), "warning");
             }),
             client.on("run.stopped", function (message) {
               if (active) addActivity("Hermes task stopped", titleCase(message.status), "warning");
@@ -463,7 +460,7 @@
         audioRef.current = null;
         clientRef.current = null;
         if (audio) void audio.dispose();
-        if (client) void client.disconnect("dashboard page closed");
+        if (client) void client.disconnect("dashboard page closed").catch(function () { return undefined; });
       };
     }, [SDK, addActivity, addTranscript, finalizeAssistantTranscript]);
 
@@ -527,7 +524,9 @@
           .then(function () {
             setNotice({
               tone: "neutral",
-              text: activeRun ? "Disconnected. The active Hermes task was stopped." : "Live Voice disconnected.",
+              text: activeRun
+                ? "Disconnected. The gateway confirmed shutdown and accepted a stop request for the active Hermes task."
+                : "Live Voice disconnected.",
             });
           });
       });
@@ -575,6 +574,9 @@
       const client = clientRef.current;
       if (!text || !client) return;
       try {
+        const audio = audioRef.current;
+        if (audio) audio.interrupt("new Dashboard text input");
+        else client.cancelResponse("new Dashboard text input");
         client.sendText(text);
         addTranscript("user", text, true, "local");
         setTextInput("");
@@ -604,7 +606,7 @@
       if (!client) return;
       setBusyAction("approval:" + key);
       try {
-        client.respondToApproval(choice, request.runId);
+        client.respondToApproval(choice, request.runId, { approvalId: request.approval.approvalId });
         setConfirmPermanent("");
       } catch (error) {
         setBusyAction("");
@@ -665,11 +667,14 @@
       const suppliedChoices = Array.isArray(approval.choices) ? approval.choices : [];
       const choices = suppliedChoices
         .filter(function (choice) { return ["once", "session", "always", "deny"].includes(choice); })
-        .filter(function (choice) { return informed || choice === "once" || choice === "deny"; })
+        .filter(function (choice) { return informed || choice === "deny"; })
+        .filter(function (choice) {
+          return !["session", "always"].includes(choice) || patternKeys.length > 0;
+        })
         .filter(function (choice) {
           return choice !== "always" || (approval.allowPermanent === true && patternKeys.length > 0);
         });
-      if (!choices.length) choices.push("once", "deny");
+      if (!choices.includes("deny")) choices.push("deny");
       const key = approvalKey(request, index);
       const isBusy = busyAction === "approval:" + key;
       const permanentConfirmation = isActionable && confirmPermanent === key;
@@ -687,9 +692,13 @@
               "Permission pattern: ",
               h("code", null, patternKeys.join(", ")),
             )
-          : h("p", { className: "hlv-approval__opaque" },
-              "Hermes did not provide inspectable command details. Only a one-time approval is available.",
-            ),
+          : informed
+            ? h("p", { className: "hlv-approval__opaque" },
+                "No inspectable permission pattern was supplied. Only a one-time decision or denial is available.",
+              )
+            : h("p", { className: "hlv-approval__opaque" },
+                "Hermes did not provide enough inspectable action details. This request can only be denied.",
+              ),
         !isActionable
           ? h("p", { className: "hlv-approval__queued", role: "status" },
               "Answer the earlier approval first. Hermes resolves approval requests in FIFO order.",
@@ -755,7 +764,7 @@
         h("div", null,
           h("strong", null, "Hermes task is active"),
           h("span", null,
-            " Disconnecting, refreshing, or navigating away stops this task. Interrupt Speech only stops the current spoken response.",
+            " Disconnecting asks the gateway to stop this task; wait for shutdown confirmation. Refreshing or navigating away can only request cleanup. Interrupt Speech only stops the current spoken response.",
           ),
         ),
       ) : null,
@@ -763,7 +772,7 @@
       confirmDisconnect ? h("div", { className: "hlv-disconnect-confirm", role: "alert" },
         h("div", null,
           h("strong", null, "Disconnect and stop the active Hermes task?"),
-          h("p", null, "The voice session will close and run " + shortId(snapshot.run.runId) + " will be stopped."),
+          h("p", null, "The gateway will request a stop for run " + shortId(snapshot.run.runId) + " and confirm whether session shutdown completed."),
         ),
         h("div", { className: "hlv-button-row" },
           h(ControlButton, { variant: "danger", onClick: function () { disconnect(true); } }, "Disconnect & stop"),
@@ -977,8 +986,8 @@
             ? transcript.map(function (entry) {
                 return h("article", { key: entry.id, className: "hlv-message hlv-message--" + entry.speaker },
                   h("div", { className: "hlv-message__speaker" },
-                    h("span", { className: "hlv-message__avatar", "aria-hidden": "true" }, entry.speaker === "user" ? "Y" : entry.speaker === "assistant" ? "H" : "i"),
-                    h("strong", null, entry.speaker === "user" ? "You" : entry.speaker === "assistant" ? "Hermes" : "System"),
+                    h("span", { className: "hlv-message__avatar", "aria-hidden": "true" }, entry.speaker === "user" ? "Y" : entry.speaker === "assistant" ? "V" : "i"),
+                    h("strong", null, entry.speaker === "user" ? "You" : entry.speaker === "assistant" ? "Live voice" : "System"),
                     !entry.final ? h("span", { className: "hlv-message__streaming" }, "Live") : null,
                   ),
                   h("p", null, entry.text),
@@ -995,7 +1004,7 @@
 
       h("footer", { className: "hlv-footer" },
         h("p", null,
-          "Live Voice is a session surface, not a background job monitor. Leaving this page closes the voice session and stops its active Hermes task.",
+          "Live Voice is a session surface, not a background job monitor. Leaving this page closes the voice session and requests cleanup for its active Hermes task.",
         ),
       ),
     );

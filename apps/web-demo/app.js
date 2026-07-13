@@ -21,7 +21,7 @@ gatewayInput.value = `${location.protocol === "https:" ? "wss" : "ws"}://${locat
 
 connectButton.addEventListener("click", () => {
   if (client?.connected || client?.state === "starting") {
-    client.disconnect();
+    void client.disconnect().catch(showError);
     return;
   }
   if (client?.state === "connecting") return;
@@ -142,10 +142,12 @@ function handleMessage(message) {
     audio.clearPlayback();
     if (message.type === "session.error" && !message.recoverable) setInteractive(false);
     addLog("error", JSON.stringify(message, null, 2));
+  } else if (message.type === "run.stopping") {
+    addLog("run", `stop requested for ${message.runId}: ${message.status}`);
   } else if (message.type === "run.stopped") {
     audio.clearPlayback();
     addLog("run", `stopped ${message.runId}: ${message.status}`);
-  } else if (message.type !== "realtime.message") {
+  } else {
     addLog(message.type, JSON.stringify(message, null, 2));
   }
 }
@@ -199,28 +201,36 @@ function addApprovalRequest(message) {
   const body = document.createElement("pre");
   const approval = message.approval ?? {};
   const patternKeys = approvalPatternKeys(approval);
+  const informed =
+    (typeof approval.command === "string" && approval.command.length > 0) ||
+    (typeof approval.description === "string" && approval.description.length > 0);
   body.textContent = [
     approval.description,
     approval.command ? `Command: ${approval.command}` : undefined,
     approval.approvalId ? `Approval: ${approval.approvalId}` : undefined,
-    patternKeys.length ? `Permission pattern: ${patternKeys.join(", ")}` : "No inspectable permission pattern; permanent approval is unavailable.",
+    patternKeys.length
+      ? `Permission pattern: ${patternKeys.join(", ")}`
+      : informed
+        ? "No inspectable permission pattern; session and permanent approval are unavailable."
+        : "Request details are unavailable; denial is the only safe option.",
   ].filter(Boolean).join("\n") || "Hermes requested an approval without additional context.";
   const actions = document.createElement("div");
   actions.className = "approval-actions";
   const queueStatus = document.createElement("span");
   queueStatus.className = "approval-queue-status";
 
-  const informed = typeof approval.command === "string" || typeof approval.description === "string";
-  const suppliedChoices = Array.isArray(approval.choices) && approval.choices.length > 0
+  const allowedChoices = ["once", "session", "always", "deny"];
+  const suppliedChoices = Array.isArray(approval.choices) &&
+      approval.choices.length > 0 &&
+      approval.choices.every((choice) => typeof choice === "string" && allowedChoices.includes(choice))
     ? approval.choices
-    : informed
-      ? ["once", "session", "always", "deny"]
-      : ["once", "deny"];
+    : ["deny"];
   const choices = [...new Set(suppliedChoices)]
-    .filter((choice) => ["once", "session", "always", "deny"].includes(choice))
-    .filter((choice) => informed || choice === "once" || choice === "deny")
+    .filter((choice) => allowedChoices.includes(choice))
+    .filter((choice) => informed || choice === "deny")
+    .filter((choice) => !["session", "always"].includes(choice) || patternKeys.length > 0)
     .filter((choice) => choice !== "always" || (approval.allowPermanent === true && patternKeys.length > 0));
-  if (choices.length === 0) choices.push("once", "deny");
+  if (!choices.includes("deny")) choices.push("deny");
   const queued = {
     message,
     actions,
@@ -241,9 +251,16 @@ function addApprovalRequest(message) {
         queueStatus.textContent = "Permanent approval changes future policy. Click confirm always again to continue.";
         return;
       }
-      client.respondToApproval(choice, message.runId);
-      queued.submitted = true;
-      refreshApprovalQueue();
+      try {
+        client.respondToApproval(choice, message.runId, { approvalId: approval.approvalId });
+        queued.submitted = true;
+        refreshApprovalQueue();
+      } catch (error) {
+        queued.permanentArmed = false;
+        if (choice === "always") button.textContent = "always";
+        refreshApprovalQueue();
+        showError(error);
+      }
     });
     queued.buttons.push(button);
     actions.append(button);
@@ -282,21 +299,15 @@ function inspectablePattern(value) {
 }
 
 function resolveApprovalQueue(message) {
-  let remaining = Number.isInteger(message.resolved) && message.resolved >= 0 ? message.resolved : 1;
-  for (let index = 0; index < approvalQueue.length && remaining > 0;) {
+  const index = approvalQueue.findIndex((queued) =>
+    queued.message.runId === message.runId &&
+    queued.message.approval?.approvalId === message.approvalId);
+  if (index >= 0) {
     const queued = approvalQueue[index];
-    if (queued.message.runId !== message.runId) {
-      index += 1;
-      continue;
-    }
     queued.submitted = true;
     queued.queueStatus.textContent = `Resolved: ${message.choice}`;
     for (const button of queued.buttons) button.disabled = true;
     approvalQueue.splice(index, 1);
-    remaining -= 1;
-  }
-  if (message.resolved === 0 && approvalQueue[0]?.message.runId === message.runId) {
-    approvalQueue[0].submitted = false;
   }
   refreshApprovalQueue();
 }
