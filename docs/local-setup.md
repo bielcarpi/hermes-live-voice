@@ -82,7 +82,20 @@ Both commands report gateway, Hermes, and realtime provider readiness. A `503` r
 
 If you bind the gateway to `0.0.0.0`, set a strong `HERMES_LIVE_AUTH_TOKEN`; otherwise startup will fail unless you explicitly opt out with `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 
-## 5. Open Demo
+## 5. Open The Official Dashboard
+
+Install and enable the plugin, start the companion gateway, then start or restart Hermes Dashboard:
+
+```sh
+hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --enable
+hermes dashboard
+```
+
+Choose **Live Voice**. The tab reports gateway/provider capabilities before connection and uses Hermes Dashboard authentication for its same-origin HTTP and WebSocket proxy.
+
+When the gateway is remote, set `HERMES_LIVE_URL` in the Dashboard process to a credential-free HTTP(S) origin such as `https://voice.example.com`. Dashboard configuration rejects WS(S) URLs, paths, user information, query parameters, and fragments. Set `HERMES_LIVE_AUTH_TOKEN` separately in the Dashboard server environment; it is never returned to browser code.
+
+## 6. Open The Development Demo
 
 ```txt
 http://127.0.0.1:8788
@@ -102,7 +115,7 @@ Production runs default the demo off when `NODE_ENV=production`. If you want to 
 HERMES_LIVE_DEMO_ENABLED=true docker compose -f examples/docker-compose.yml up
 ```
 
-## 6. Terminal Clients
+## 7. Terminal Clients
 
 With the gateway running:
 
@@ -118,4 +131,6 @@ node dist/cli.js terminal
 
 The terminal console supports text turns, task progress, approvals, `/interrupt`, and `/stop`. It does not capture or play gateway audio. For local microphone use, run `hermes` and press Ctrl+B for Hermes Voice Mode; for remote gateway voice, use the Dashboard or browser UI.
 
-Set `HERMES_LIVE_URL` to an HTTP(S) gateway origin or a WS(S) endpoint when the gateway is running elsewhere. Set `HERMES_LIVE_AUTH_TOKEN` when the gateway requires bearer authentication.
+For the CLI clients, `HERMES_LIVE_URL` may be an HTTP(S) gateway origin or a WS(S) endpoint. The CLI normalizes an origin to `/v1/live` and sends `HERMES_LIVE_AUTH_TOKEN` as an upgrade header. Do not embed credentials in the URL.
+
+This CLI URL flexibility does not apply to the Dashboard backend. Its `HERMES_LIVE_URL` must be the credential-free HTTP(S) origin described in step 5.

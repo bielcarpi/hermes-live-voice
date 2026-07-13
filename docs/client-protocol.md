@@ -361,7 +361,9 @@ When Hermes asks for approval, the gateway emits:
 }
 ```
 
-Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then bounds and projects only the fields needed for an informed decision. When the event lacks a command and description, `choices` is restricted to `once` and `deny`; clients must not invent persistent approval options for an opaque request.
+Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then bounds and projects only the fields needed for an informed decision. The gateway always adds `deny` when Hermes omits it so a human can fail closed. When the event lacks a command and description, other `choices` are restricted to `once`; clients must not invent persistent approval options for an opaque request.
+
+The gateway also retains these sanitized envelopes server-side in FIFO order. It accepts a response only for the active run's queue head and only when `choice` was offered in that envelope. `always` additionally requires `allowPermanent: true` and a non-empty `patternKey` or `patternKeys`. Protocol v1 rejects `resolveAll: true`; clients must answer each request explicitly.
 
 The client responds:
 

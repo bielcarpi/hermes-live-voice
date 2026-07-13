@@ -11,16 +11,17 @@ The roadmap favors a small, trustworthy bridge over a broad voice platform.
 - Preserve the four-tool boundary between realtime providers and Hermes.
 - Keep credentials and Hermes session keys server-side.
 - Improve deterministic coverage with captured provider fixtures.
-- Document the difference between Hermes Voice Mode and this custom-client gateway.
+- Keep the official Dashboard, shared browser client, bundled demo, and terminal control surface aligned on protocol v1.
+- Collect installation, latency, interruption, and long-session evidence from real users.
 
 ## Next: excellent voice-agent experience
 
 - Safe structured narration for long Hermes runs, using allowlisted status messages rather than raw model reasoning or tool output.
 - Reconnect grace and explicit run reattachment for unreliable mobile networks.
-- Serialized client command handling and bounded audio backpressure.
-- A typed JavaScript client package and a polished reference client.
 - Session, delegation, interruption, latency, error, and cost telemetry hooks.
 - Explicit client event-detail policies for production integrations.
+- A curated extension for the community Hermes WebUI, paired with a small authenticated same-origin WebSocket proxy.
+- Accessibility testing with screen readers and real microphone permission flows across supported browsers.
 
 ## Later: proven deployment needs
 
@@ -31,6 +32,7 @@ These are demand-driven rather than assumed requirements:
 - WebRTC/Opus transport through an established media stack when real clients need it.
 - Additional realtime providers through the existing adapter port.
 - A separately maintained local speech adapter if users can demonstrate an offline deployment need.
+- Optional full-duplex terminal audio only if users demonstrate a need beyond official Hermes Voice Mode; it should not add native audio dependencies to the core package.
 
 The project does not plan to become a telephony platform, device fleet manager, generic agent framework, or bundled speech-model server.
 

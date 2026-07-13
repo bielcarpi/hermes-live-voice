@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  An open-source realtime speech bridge for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.<br>
+  The open-source realtime voice layer for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.<br>
   Gemini Live or OpenAI Realtime handles natural conversation and interruption;<br>
   Hermes keeps the memory, tools, skills, approvals, and work.
 </p>
@@ -18,9 +18,14 @@
   <a href="#quick-start">Quick start</a>
   · <a href="#why-not-just-use-hermes-voice-mode">Why this exists</a>
   · <a href="docs/plugin.md">Plugin</a>
+  · <a href="docs/ui-integration.md">UI integration</a>
   · <a href="docs/client-protocol.md">Client protocol</a>
   · <a href="docs/architecture.md">Architecture</a>
   · <a href="docs/roadmap.md">Roadmap</a>
+</p>
+
+<p align="center">
+  <img src="assets/dashboard-live-voice.jpg" alt="Hermes Live Voice running inside the official Hermes Dashboard" width="100%">
 </p>
 
 <p align="center">
@@ -49,7 +54,7 @@ Hermes Agent — memory, tools, skills, MCP, approvals
 The result returns to the live conversation
 ```
 
-The realtime provider receives four narrow gateway tools—not unrestricted access to the Hermes toolbelt. Provider credentials, Hermes credentials, and Hermes session keys remain on the server.
+The realtime provider receives three narrow gateway tools—not unrestricted access to the Hermes toolbelt. Provider credentials, Hermes credentials, Hermes session keys, and approval decisions remain outside the provider.
 
 ### What you get
 
@@ -59,6 +64,7 @@ The realtime provider receives four narrow gateway tools—not unrestricted acce
 - **Two live providers** — Gemini Live and OpenAI Realtime, plus a deterministic mock provider for local development.
 - **A client-ready gateway** — connect a browser, mobile app, desktop app, embedded device, or terminal client over WebSocket.
 - **Human approvals** — surface Hermes approval requests and send the decision back to the same run.
+- **A first-class Hermes Dashboard integration** — install a **Live Voice** tab with transcript, task progress, interruption, run stop, and approvals.
 - **A real Hermes plugin** — install `hermes-live`, check gateway status from Hermes, and keep voice integration discoverable.
 
 ## See The Difference
@@ -82,10 +88,22 @@ Use Hermes Live Voice when the product itself needs a persistent realtime conver
 | Interruption | CLI voice interaction | Client-controlled barge-in, playback truncation, and run stop |
 | Client protocol | Built into Hermes | Public JSON/WebSocket protocol |
 | Providers | Hermes voice configuration | Gemini Live, OpenAI Realtime, or mock |
-| Agent actions | Hermes | Hermes, through four gateway tools |
+| Agent actions | Hermes | Hermes, through three gateway tools |
 | Deployment shape | Local Hermes feature | Separate self-hosted gateway and optional Hermes plugin |
 
 This project does not replace Hermes Voice Mode. It serves the integration layer that Voice Mode is not designed to be.
+
+## Choose How You Use It
+
+| Surface | Best for | Audio |
+| --- | --- | --- |
+| **Official Hermes Dashboard — recommended** | Daily use with transcript, task progress, interruption, stop, and approvals | Browser microphone and playback |
+| **Bundled browser demo** | Local development and gateway troubleshooting | Browser microphone and playback |
+| **`hermes-live-voice/browser`** | Community web UIs and custom React, Vue, Svelte, vanilla, or Electron clients | Host-integrated microphone and playback |
+| **`hermes-live terminal`** | SSH, headless systems, automation, and remote text control | Text only |
+| **Hermes Ctrl+B Voice Mode** | The fastest local terminal voice experience | Hermes-managed voice |
+
+Generic chat UI compatibility is not the same as Hermes Live compatibility. A community UI needs the browser client or JSON/WebSocket protocol, microphone and playback controls, and a secure server-side authentication bridge. OpenAI-compatible chat support alone does not provide persistent realtime audio, barge-in, run events, or approvals. See [UI integration](docs/ui-integration.md) for the exact contract.
 
 ## Quick Start
 
@@ -134,7 +152,15 @@ HERMES_LIVE_PROVIDER=mock \
 npm run dev
 ```
 
-Open <http://127.0.0.1:8788>, connect, and send a text message. Mock mode verifies the gateway, plugin-facing runtime, client protocol, and Hermes run bridge without spending realtime-provider credits.
+Start or restart the official Dashboard after enabling the plugin:
+
+```sh
+hermes dashboard
+```
+
+Open **Live Voice**, connect, and send a text message. Mock mode verifies the Dashboard proxy, gateway, client protocol, and Hermes run bridge without spending realtime-provider credits. It intentionally disables microphone input and audio output.
+
+The standalone development UI remains available at <http://127.0.0.1:8788>. Use it when developing the gateway or debugging an installation without the Dashboard.
 
 ### 4. Turn on live speech
 
@@ -214,7 +240,7 @@ flowchart LR
 
   C <-->|"JSON + PCM16 over WebSocket"| G
   G <-->|"persistent realtime session"| R
-  R -->|"4 gateway tool calls"| G
+  R -->|"3 gateway tool calls"| G
   G <-->|"Runs API + SSE"| H
 ```
 
@@ -225,9 +251,8 @@ The provider can ask the gateway to:
 - `start_hermes_run`
 - `get_hermes_run_status`
 - `stop_hermes_run`
-- `submit_hermes_approval`
 
-It cannot call arbitrary Hermes tools directly.
+It cannot call arbitrary Hermes tools or submit approvals. Approval choices come only from a connected human client and are validated by the gateway against the FIFO approval envelope it emitted.
 
 Read the [architecture](docs/architecture.md) and [client protocol](docs/client-protocol.md) for the full lifecycle.
 
@@ -316,14 +341,13 @@ Send text for a smoke test:
 
 Or stream base64 PCM16 audio frames and end the turn with `audio.end`. The server emits provider audio/transcripts, Hermes run events, approvals, completion, and typed errors.
 
-The package also exposes a dependency-free browser client used by the bundled demo:
+The package also exposes the dependency-free browser client used by both the official Dashboard tab and the bundled demo:
 
 ```js
 import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
 
 const client = new HermesLiveClient({
-  url: "wss://voice.example.com/v1/live",
-  token: () => getShortLivedToken(),
+  webSocketUrlProvider: () => getAuthenticatedSameOriginWebSocketUrl(),
 });
 const audio = new HermesLiveAudio(client, {
   workletUrl: "/mic-worklet.js",
@@ -335,9 +359,11 @@ await client.connect();
 await audio.startMicrophone();
 ```
 
-The gateway serves the canonical worklet at `/mic-worklet.js`; package consumers can also resolve the `hermes-live-voice/browser/mic-worklet.js` export into their own static assets. The client validates lifecycle messages, returns request IDs, bounds microphone and playback buffering, and exposes `subscribe()`/`getSnapshot()` for React or other state-driven UIs. It accepts an async `webSocketUrlProvider`, so a host can mint short-lived same-origin WebSocket tickets without exposing a persistent gateway credential.
+The gateway serves the canonical worklet at `/mic-worklet.js`; package consumers can also resolve the `hermes-live-voice/browser/mic-worklet.js` export into their own static assets. The client validates lifecycle messages, returns request IDs, bounds microphone and playback buffering, and exposes `subscribe()`/`getSnapshot()` for React or other state-driven UIs.
 
-See [docs/client-protocol.md](docs/client-protocol.md) before building a client.
+`webSocketUrlProvider` lets a host return a same-origin authenticated proxy URL or a host-issued short-lived ticket. The Hermes Live gateway does not mint per-user tickets itself. Do not embed an installation-wide `HERMES_LIVE_AUTH_TOKEN` in a public web app; the official Dashboard keeps it server-side through its authenticated plugin proxy.
+
+See [UI integration](docs/ui-integration.md) and the [client protocol](docs/client-protocol.md) before building a client.
 
 ## Commands
 
@@ -345,6 +371,8 @@ See [docs/client-protocol.md](docs/client-protocol.md) before building a client.
 npm run dev                       # run the gateway from source
 npm run build                     # compile the distributable CLI/library
 node dist/cli.js client "..."     # one-shot text client
+node dist/cli.js terminal         # persistent text-control console
+node dist/cli.js chat             # alias for terminal
 node dist/cli.js check            # gateway + Hermes + provider config
 node dist/cli.js provider-smoke   # real provider connect/close test
 node dist/cli.js plugin install   # install the Hermes plugin
@@ -372,7 +400,7 @@ Never paste secrets into an issue. Report vulnerabilities privately according to
 
 ## Project Status
 
-The core bridge is implemented and covered by type checks, unit tests, built-gateway smokes, fake Hermes HTTP/SSE integration, CLI tests, plugin checks, package installation tests, and a Docker build in CI.
+The core bridge is implemented and covered by type checks, unit tests, built-gateway smokes, fake Hermes HTTP/SSE integration, browser-client and terminal tests, Dashboard frontend and authenticated-proxy tests, plugin checks, package installation tests, and a Docker build in CI. Release candidates are also exercised manually inside the current official Hermes Docker image through the Dashboard and terminal surfaces.
 
 What deterministic CI does **not** prove:
 
@@ -392,7 +420,7 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Ke
 
 ## License
 
-[MIT](LICENSE). Hermes Agent, Gemini, and OpenAI are separate projects and services governed by their own licenses and terms.
+[MIT](LICENSE). Hermes Live Voice is community-maintained and is not an official NousResearch distribution. Hermes Agent, Gemini, and OpenAI are separate projects and services governed by their own licenses and terms.
 
 ---
 

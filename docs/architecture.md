@@ -2,29 +2,35 @@
 
 `hermes-live-voice` is a Hermes Agent plugin package with a realtime voice gateway runtime. It installs the `hermes-live` CLI and Hermes plugin.
 
-It is not a replacement for Hermes. It deliberately gives the realtime model one narrow way to use Hermes: call gateway tools that start, stop, inspect, and approve Hermes runs.
+It is not a replacement for Hermes. It deliberately gives the realtime model one narrow way to use Hermes: call gateway tools that start, stop, and inspect Hermes runs. Approval decisions stay on the authenticated human-client path.
 
 ## Components
 
 ```txt
-Browser/mobile/desktop client
-  -> hermes-live WebSocket
-  -> realtime provider session
-  -> provider tool call
-  -> Hermes API Server
-  -> Hermes memory/tools/skills/MCP
+Hermes Dashboard browser
+  -> authenticated same-origin plugin WebSocket
+  -> Hermes Dashboard plugin backend
+  -> authenticated hermes-live gateway
+  -> realtime provider + Hermes API Server
+
+Custom browser/mobile/desktop client
+  -> authenticated hermes-live WebSocket
+  -> realtime provider + Hermes API Server
 ```
 
 ### Client
 
-The client captures microphone audio, encodes frames as base64 PCM16, and sends JSON messages to `/v1/live`. The gateway returns provider audio, transcript deltas, Hermes run events, approval requests, errors, and logs.
+Voice clients capture microphone audio, encode frames as base64 PCM16, and send JSON messages to `/v1/live`. The gateway returns provider audio, transcript deltas, Hermes run events, approval requests, errors, and logs. The shared browser client provides the connection lifecycle, protocol validation, request IDs, bounded buffering, microphone worklet, and audio playback helpers used by the official Dashboard and bundled demo.
+
+The terminal client is deliberately different: it keeps the same persistent session and control contract but sends and renders text only. Local terminal microphone use remains the responsibility of official Hermes Voice Mode.
 
 Clients may be:
 
 - A Hermes-focused web or mobile client.
-- A web demo.
+- The official Hermes Dashboard tab.
+- A community web UI integration or the bundled web demo.
 - A native desktop app.
-- A terminal/WebSocket test client.
+- The text-control terminal client.
 
 ### Hermes Plugin
 
@@ -33,10 +39,11 @@ The plugin owns the Hermes-facing discovery surface:
 - Gateway metadata.
 - `hermes_live_status` tool registration.
 - `/hermes-live` slash command.
+- An official Dashboard **Live Voice** tab.
+- Dashboard-packaged browser client, microphone worklet, and styles.
+- An authenticated same-origin HTTP/WebSocket proxy that keeps gateway credentials out of browser code.
 - Default local gateway URL.
 - WebSocket, readiness, and capability paths.
-- Future local launch helpers.
-- Future Hermes-native voice tools.
 
 The plugin should remain small and Hermes-specific. It should not turn Hermes core into a public audio/WebSocket server.
 
@@ -52,6 +59,12 @@ The gateway owns:
 - Tool-call routing.
 - Hermes run/event/approval/stop calls.
 - Static demo serving.
+
+### Dashboard Authentication Boundary
+
+The official Dashboard browser never receives `HERMES_LIVE_AUTH_TOKEN`. It authenticates to Hermes' own Dashboard, obtains a host-authorized same-origin WebSocket URL, and connects to the plugin backend. The backend revalidates Dashboard authentication and origin policy, then opens the upstream gateway socket with the installation credential server-side.
+
+Custom/community web UIs should use the same shape: an authenticated same-origin WebSocket proxy or a backend-issued short-lived ticket. A static frontend that embeds the shared gateway bearer is suitable only for trusted local development.
 
 The gateway code is organized as a small ports-and-adapters system:
 
@@ -117,7 +130,8 @@ It receives gateway tools:
 - `start_hermes_run`
 - `get_hermes_run_status`
 - `stop_hermes_run`
-- `submit_hermes_approval`
+
+The realtime provider cannot submit approvals. The gateway keeps the sanitized approval envelopes it has emitted in FIFO order and accepts a human `approval.respond` only when its choice is offered by the queue head. The sanitizer always preserves a fail-closed `deny` choice even if Hermes omits it. Permanent approval additionally requires the emitted envelope to contain an inspectable permission pattern. Bulk approval resolution is rejected in protocol v1.
 
 This preserves the intended chain:
 
