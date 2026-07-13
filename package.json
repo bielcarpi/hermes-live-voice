@@ -1,6 +1,6 @@
 {
   "name": "hermes-live-voice",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Realtime voice bridge for Hermes Agent with Gemini Live, OpenAI Realtime, barge-in, tools, memory, and approvals.",
   "type": "module",
   "main": "./dist/index.js",

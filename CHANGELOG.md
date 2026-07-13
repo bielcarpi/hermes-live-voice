@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-07-13
+
+- Replace session-label regex trimming with a linear sanitizer to prevent adversarial input from causing excessive processing.
+- Keep unexpected internal HTTP failure details in server logs while returning a generic error response to clients.
+- Add regression coverage for long hostile session labels and internal error-detail disclosure.
+- Document and verify native Hermes plugin installation directly from the repository subdirectory.
+
 ## 0.2.0 - 2026-07-12
 
 - Reposition the project as the realtime custom-client bridge for Hermes Agent, with a marketing-first README, honest Voice Mode comparison, provider compatibility roadmap, support guide, and release runbook.
