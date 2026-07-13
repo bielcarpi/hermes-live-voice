@@ -82,6 +82,7 @@ client.on("approval.request", renderApproval);
 client.on("audio.output", (message) => void audio.play(message).catch(renderError));
 client.on("input.speech_started", () => audio.interrupt("provider detected user speech"));
 
+await audio.primePlayback(); // Run directly inside the initiating click or tap handler.
 await client.connect();
 ```
 
@@ -140,9 +141,9 @@ client.respondToApproval(choice, request.runId, {
 
 - Microphone capture requires `localhost` or another secure context.
 - Copy `hermes-live-voice/browser/mic-worklet.js` into a same-origin static asset path.
-- Start `AudioContext` and microphone capture from a user gesture.
+- Call `audio.primePlayback()` synchronously from a click or tap before awaiting network work; start microphone capture from a user gesture as well.
 - Respect `session.ready.realtime.audio`; mock mode and some future providers may disable input or output.
-- Bound queued playback and clear it immediately on interruption or disconnect.
+- Bound queued playback before waiting for autoplay permission and clear it immediately on interruption or disconnect.
 - Await `client.disconnect()`. A clean resolution means the gateway confirmed session cleanup; rejection or `session_shutdown_unconfirmed` means the user must verify any active task in Hermes.
 - Test keyboard focus, screen-reader labels, reduced motion, narrow layouts, and permission denial.
 

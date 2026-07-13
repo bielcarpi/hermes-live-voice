@@ -14,6 +14,7 @@ const logEl = document.querySelector("#log");
 
 let client;
 let audio;
+let connectPending = false;
 const approvalQueue = [];
 
 setInteractive(false);
@@ -24,7 +25,7 @@ connectButton.addEventListener("click", () => {
     void client.disconnect().catch(showError);
     return;
   }
-  if (client?.state === "connecting") return;
+  if (connectPending || client?.state === "connecting") return;
   void connect().catch(showError);
 });
 
@@ -33,6 +34,7 @@ form.addEventListener("submit", (event) => {
   const text = textInput.value.trim();
   if (!text) return;
   try {
+    void audio.primePlayback().catch(showError);
     audio.interrupt("new text input");
     client.sendText(text);
     addLog("you", text);
@@ -63,18 +65,27 @@ stopButton.addEventListener("click", () => {
 });
 
 async function connect() {
-  await disposeSession();
-  client = new HermesLiveClient({
+  connectPending = true;
+  const disposing = disposeSession();
+  const nextClient = new HermesLiveClient({
     url: gatewayInput.value,
     token: tokenInput.value,
     profileId: "demo",
     userLabel: "web-demo",
   });
-  audio = new HermesLiveAudio(client, { workletUrl: "/mic-worklet.js" });
-  bindSession(client, audio);
+  const nextAudio = new HermesLiveAudio(nextClient, { workletUrl: "/mic-worklet.js" });
+  client = nextClient;
+  audio = nextAudio;
+  bindSession(nextClient, nextAudio);
   connectButton.textContent = "Disconnect";
   setInteractive(false);
-  await client.connect();
+  void nextAudio.primePlayback().catch(showError);
+  try {
+    await disposing;
+    await nextClient.connect();
+  } finally {
+    connectPending = false;
+  }
 }
 
 function bindSession(nextClient, nextAudio) {
@@ -96,6 +107,7 @@ function bindSession(nextClient, nextAudio) {
   });
   nextClient.on("close", () => {
     if (nextClient !== client) return;
+    resetApprovalQueue();
     setStatus("Disconnected");
     setInteractive(false);
     connectButton.textContent = "Connect";
@@ -140,7 +152,10 @@ function handleMessage(message) {
   } else if (message.type === "run.failed" || message.type === "session.error") {
     setStatus(message.type === "run.failed" ? "Run failed" : "Error");
     audio.clearPlayback();
-    if (message.type === "session.error" && !message.recoverable) setInteractive(false);
+    if (message.type === "session.error" && !message.recoverable) {
+      resetApprovalQueue();
+      setInteractive(false);
+    }
     addLog("error", JSON.stringify(message, null, 2));
   } else if (message.type === "run.stopping") {
     addLog("run", `stop requested for ${message.runId}: ${message.status}`);
@@ -167,6 +182,7 @@ async function toggleMicrophone() {
   if (audio.microphoneActive) {
     await audio.stopMicrophone();
   } else {
+    await audio.primePlayback();
     await audio.startMicrophone();
   }
 }

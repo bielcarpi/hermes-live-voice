@@ -496,9 +496,23 @@
         .finally(function () { setBusyAction(""); });
     }
 
+    function primePlaybackFromGesture() {
+      const createAudio = ensureAudioRef.current;
+      if (!createAudio) return null;
+      const audio = createAudio();
+      void audio.primePlayback().catch(function (error) {
+        setNotice({
+          tone: "warning",
+          text: friendlyError(error, "Browser audio is blocked. Allow playback, then try again."),
+        });
+      });
+      return audio;
+    }
+
     function connect() {
       const client = clientRef.current;
       if (!client) return;
+      primePlaybackFromGesture();
       runAction("connect", function () {
         return client.connect().then(function () {
           if (ensureAudioRef.current) ensureAudioRef.current();
@@ -533,9 +547,9 @@
     }
 
     function startMicrophone() {
-      const createAudio = ensureAudioRef.current;
-      if (!createAudio) return;
-      runAction("microphone", function () { return createAudio().startMicrophone(); });
+      const audio = primePlaybackFromGesture();
+      if (!audio) return;
+      runAction("microphone", function () { return audio.startMicrophone(); });
     }
 
     function stopMicrophone() {
@@ -574,7 +588,7 @@
       const client = clientRef.current;
       if (!text || !client) return;
       try {
-        const audio = audioRef.current;
+        const audio = primePlaybackFromGesture() || audioRef.current;
         if (audio) audio.interrupt("new Dashboard text input");
         else client.cancelResponse("new Dashboard text input");
         client.sendText(text);
