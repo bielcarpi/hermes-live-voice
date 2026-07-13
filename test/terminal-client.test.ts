@@ -32,6 +32,7 @@ describe("terminal gateway URL normalization", () => {
 
   it("rejects unsafe or ambiguous URLs", () => {
     expect(() => normalizeGatewayWebSocketUrl("ws://user:secret@voice.example/v1/live")).toThrow(/must not contain credentials/);
+    expect(() => normalizeGatewayWebSocketUrl("ws://voice.example/v1/live?token=secret")).toThrow(/token query/);
     expect(() => normalizeGatewayWebSocketUrl("ws://voice.example/v1/live#secret")).toThrow(/fragment/);
     expect(() => normalizeGatewayWebSocketUrl("file:///tmp/socket")).toThrow(/http, https, ws, or wss/);
     expect(() => normalizeGatewayWebSocketUrl("not a url")).toThrow(/absolute/);
@@ -113,16 +114,36 @@ describe("TerminalGatewaySession", () => {
         runId: "run_terminal",
         event: { event: "approval.request" },
         approval: {
+          approvalId: "approval_terminal_1",
           command: "npm test",
           description: "Run the test suite",
+          patternKey: "terminal:npm-test",
           choices: ["once", "session", "always", "deny"],
           allowPermanent: true,
         },
       }),
     );
+    peer?.send(
+      JSON.stringify({
+        type: "approval.request",
+        runId: "run_terminal",
+        event: { event: "approval.request", approval_id: "approval_terminal_2" },
+        approval: {
+          approvalId: "approval_terminal_2",
+          command: "npm publish",
+          description: "Publish the package",
+          patternKey: "terminal:npm-publish",
+          choices: ["once", "deny"],
+          allowPermanent: false,
+        },
+      }),
+    );
     await vi.waitFor(() => expect(session.snapshot.pendingApproval?.runId).toBe("run_terminal"));
+    await vi.waitFor(() => expect(session.snapshot.pendingApprovals).toHaveLength(2));
     expect(lines).toContain("[Hermes] tool.started: terminal");
     expect(lines).toContain("[approval] Command: npm test");
+    expect(lines).toContain("[approval] Permission pattern: terminal:npm-test");
+    expect(lines).toContain("[approval] Queued #2: Publish the package");
 
     session.execute("/approve always");
     expect(received.filter((message) => message.type === "approval.respond")).toHaveLength(0);
@@ -135,6 +156,34 @@ describe("TerminalGatewaySession", () => {
     });
 
     peer?.send(JSON.stringify({ type: "approval.responded", runId: "run_terminal", choice: "always", resolved: 1 }));
+    await vi.waitFor(() => expect(session.snapshot.pendingApproval?.command).toBe("npm publish"));
+    expect(lines).toContain("[approval] Command: npm publish");
+    session.execute("/approve deny");
+    await waitForMessageCount(received, "approval.respond", 2);
+    expect(received.filter((message) => message.type === "approval.respond").at(-1)).toMatchObject({
+      runId: "run_terminal",
+      choice: "deny",
+    });
+    peer?.send(JSON.stringify({ type: "approval.responded", runId: "run_terminal", choice: "deny", resolved: 1 }));
+    await vi.waitFor(() => expect(session.snapshot.pendingApprovals).toEqual([]));
+    peer?.send(JSON.stringify({
+      type: "approval.request",
+      runId: "run_terminal",
+      event: { event: "approval.request", approval_id: "approval_terminal_3" },
+      approval: {
+        approvalId: "approval_terminal_3",
+        command: "dangerous command",
+        patternKey: "\u001b[31m\u202e",
+        choices: ["always", "deny"],
+        allowPermanent: true,
+      },
+    }));
+    await vi.waitFor(() => expect(session.snapshot.pendingApproval?.choices).toEqual(["deny"]));
+    expect(lines).toContain("[approval] Hermes did not provide an inspectable permission pattern; permanent approval is unavailable.");
+    session.execute("/approve deny");
+    await waitForMessageCount(received, "approval.respond", 3);
+    peer?.send(JSON.stringify({ type: "approval.responded", runId: "run_terminal", choice: "deny", resolved: 1 }));
+    await vi.waitFor(() => expect(session.snapshot.pendingApprovals).toEqual([]));
     session.execute("/interrupt");
     await waitForMessage(received, "response.cancel");
     expect(received.find((message) => message.type === "response.cancel")).toMatchObject({
@@ -150,7 +199,7 @@ describe("TerminalGatewaySession", () => {
     peer?.send(JSON.stringify({ type: "run.completed", runId: "run_terminal", output: "\u001b[2JTests passed" }));
     await vi.waitFor(() => expect(session.snapshot.activeRunId).toBeUndefined());
     expect(lines.join("\n")).not.toContain("\u001b");
-    expect(lines.join("\n")).toContain("[2JTests passed");
+    expect(lines.join("\n")).toContain("Tests passed");
     expect(session.execute("/quit").closeRequested).toBe(true);
     await session.close();
   });
@@ -180,7 +229,7 @@ describe("TerminalGatewaySession", () => {
   });
 
   it("renders audio-only responses honestly and bounds terminal control characters", async () => {
-    expect(sanitizeTerminalText("safe\u001b[2J\u0007 text")).toBe("safe[2J text");
+    expect(sanitizeTerminalText("safe\u001b[2J\u0007 text\u202Espoof")).toBe("safe textspoof");
     expect(sanitizeTerminalText("abcdef", 3)).toBe("abc");
 
     const { server, url } = await listen();
@@ -225,4 +274,12 @@ async function listen(): Promise<{ server: WebSocketServer; url: string }> {
 
 async function waitForMessage(messages: Array<Record<string, unknown>>, type: string): Promise<void> {
   await vi.waitFor(() => expect(messages.some((message) => message.type === type)).toBe(true));
+}
+
+async function waitForMessageCount(
+  messages: Array<Record<string, unknown>>,
+  type: string,
+  count: number,
+): Promise<void> {
+  await vi.waitFor(() => expect(messages.filter((message) => message.type === type)).toHaveLength(count));
 }

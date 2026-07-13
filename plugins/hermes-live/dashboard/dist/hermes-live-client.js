@@ -3,6 +3,7 @@ const DEFAULT_MAX_BUFFERED_AMOUNT_BYTES = 1_000_000;
 const DEFAULT_MAX_INBOUND_MESSAGE_BYTES = 8_000_000;
 const DEFAULT_MAX_QUEUED_AUDIO_MS = 30_000;
 const DEFAULT_SAMPLE_RATE = 24_000;
+const MAX_PENDING_APPROVALS = 128;
 const OPEN = 1;
 export const HERMES_LIVE_PROTOCOL_VERSION = 1;
 
@@ -93,6 +94,7 @@ export class HermesLiveClient {
     this.messageChain = Promise.resolve();
     this.session = undefined;
     this.activeRunId = "";
+    this.pendingStopRequestId = "";
     this.state = "idle";
     this.generation = 0;
     this.snapshot = createSnapshot("idle");
@@ -236,6 +238,7 @@ export class HermesLiveClient {
         this.socket = undefined;
         this.session = undefined;
         this.activeRunId = "";
+        this.pendingStopRequestId = "";
         this.setState("closed");
         this.updateSnapshot({
           session: undefined,
@@ -278,6 +281,7 @@ export class HermesLiveClient {
       ++this.generation;
       this.session = undefined;
       this.activeRunId = "";
+      this.pendingStopRequestId = "";
       this.setState("closed");
       return;
     }
@@ -289,14 +293,34 @@ export class HermesLiveClient {
         // The close below is authoritative.
       }
     }
+    let closeObserved = false;
     await new Promise((resolve) => {
       const timeout = setTimeout(resolve, 1_000);
       socket.addEventListener("close", () => {
+        closeObserved = true;
         clearTimeout(timeout);
         resolve();
       }, { once: true });
       closeSocket(socket, 1000, reason);
     });
+    if (!closeObserved && this.isCurrentSocket(socket, this.generation)) {
+      ++this.generation;
+      this.socket = undefined;
+      this.session = undefined;
+      this.activeRunId = "";
+      this.pendingStopRequestId = "";
+      this.setState("closed");
+      this.updateSnapshot({
+        session: undefined,
+        run: { state: "idle" },
+        pendingApprovals: [],
+      });
+      this.emitter.emit("close", {
+        code: 1006,
+        reason: "disconnect timed out",
+        clean: false,
+      });
+    }
   }
 
   sendText(text, options = {}) {
@@ -340,6 +364,7 @@ export class HermesLiveClient {
     if (!runId) throw new Error("There is no active Hermes run to stop.");
     const id = options.id ?? this.createRequestId();
     this.send({ type: "run.stop", id, runId, reason });
+    this.pendingStopRequestId = id;
     this.updateSnapshot({ run: { state: "stopping", runId } });
     return id;
   }
@@ -413,23 +438,41 @@ export class HermesLiveClient {
         break;
       case "approval.request":
         this.activeRunId = message.runId;
+        {
+          const approvalId = approvalRequestId(message);
+          const pendingApprovals = [...this.snapshot.pendingApprovals];
+          const existingIndex = approvalId
+            ? pendingApprovals.findIndex((entry) => approvalRequestId(entry) === approvalId)
+            : -1;
+          if (existingIndex >= 0) pendingApprovals[existingIndex] = message;
+          else {
+            if (pendingApprovals.length >= MAX_PENDING_APPROVALS) {
+              throw new Error("Hermes Live exceeded the safe pending approval queue limit.");
+            }
+            pendingApprovals.push(message);
+          }
         this.updateSnapshot({
           run: { state: "running", runId: message.runId },
-          pendingApprovals: [
-            ...this.snapshot.pendingApprovals.filter((entry) => entry.event?.approval_id !== message.event?.approval_id),
-            message,
-          ],
+            pendingApprovals,
         });
+        }
         break;
-      case "approval.responded":
+      case "approval.responded": {
+        let remaining = message.resolved === undefined ? 1 : message.resolved;
         this.updateSnapshot({
-          pendingApprovals: this.snapshot.pendingApprovals.filter((entry) => entry.runId !== message.runId),
+          pendingApprovals: this.snapshot.pendingApprovals.filter((entry) => {
+            if (entry.runId !== message.runId || remaining <= 0) return true;
+            remaining -= 1;
+            return false;
+          }),
         });
         break;
+      }
       case "run.completed":
       case "run.failed":
       case "run.stopped": {
         if (!message.runId || message.runId === this.activeRunId) this.activeRunId = "";
+        this.pendingStopRequestId = "";
         const status = message.type === "run.completed" ? "completed" : message.type === "run.failed" ? "failed" : "stopped";
         this.updateSnapshot({
           run: { state: "idle" },
@@ -444,6 +487,12 @@ export class HermesLiveClient {
         break;
       }
       case "session.error":
+        if (message.requestId && message.requestId === this.pendingStopRequestId) {
+          this.pendingStopRequestId = "";
+          if (this.activeRunId) {
+            this.updateSnapshot({ run: { state: "running", runId: this.activeRunId } });
+          }
+        }
         this.emitError(new Error(message.message), message.code, message);
         break;
     }
@@ -520,7 +569,13 @@ export class HermesLiveAudio {
     this.playbackItems = new Map();
     this.playbackChain = Promise.resolve();
     this.playbackGeneration = 0;
+    this.playbackSuppressed = false;
     this.unsubscribeClose = client.on?.("close", () => void this.dispose());
+    this.unsubscribeResponseStarted = client.on?.("response.started", () => {
+      this.playbackSuppressed = false;
+    });
+    this.unsubscribeResponseCancelled = client.on?.("response.cancelled", () => this.clearPlayback());
+    this.unsubscribeResponseFailed = client.on?.("response.failed", () => this.clearPlayback());
   }
 
   on(type, listener) {
@@ -661,6 +716,7 @@ export class HermesLiveAudio {
   }
 
   play(message) {
+    if (this.playbackSuppressed) return Promise.resolve(false);
     const generation = this.playbackGeneration;
     const operation = this.playbackChain.then(() => this.schedulePlayback(message, generation));
     this.playbackChain = operation.catch(() => undefined);
@@ -668,7 +724,7 @@ export class HermesLiveAudio {
   }
 
   async schedulePlayback(message, generation) {
-    if (this.disposed || generation !== this.playbackGeneration) return false;
+    if (this.disposed || this.playbackSuppressed || generation !== this.playbackGeneration) return false;
     if (message?.type !== "audio.output") {
       throw new TypeError("HermesLiveAudio.play expects an audio.output message.");
     }
@@ -681,7 +737,7 @@ export class HermesLiveAudio {
       this.playbackCursor = 0;
     }
     if (this.playbackContext.state === "suspended") await this.playbackContext.resume();
-    if (this.disposed || generation !== this.playbackGeneration) return false;
+    if (this.disposed || this.playbackSuppressed || generation !== this.playbackGeneration) return false;
 
     const context = this.playbackContext;
     const queuedMs = this.calculateQueuedPlaybackMs(context.currentTime);
@@ -740,6 +796,7 @@ export class HermesLiveAudio {
   }
 
   interrupt(reason = "user interrupted") {
+    this.playbackSuppressed = true;
     const truncate = this.clearPlayback();
     if (this.client.connected) this.client.cancelResponse(reason, truncate);
     return truncate;
@@ -816,6 +873,9 @@ export class HermesLiveAudio {
     await this.playbackChain.catch(() => undefined);
     await this.closePlaybackContext();
     this.unsubscribeClose?.();
+    this.unsubscribeResponseStarted?.();
+    this.unsubscribeResponseCancelled?.();
+    this.unsubscribeResponseFailed?.();
     this.emitter.clear();
   }
 }
@@ -918,6 +978,9 @@ export function validateServerMessage(value) {
     case "approval.responded":
       requireString(message, "runId");
       requireString(message, "choice");
+      if (message.resolved !== undefined && (!Number.isInteger(message.resolved) || message.resolved < 0)) {
+        throw new TypeError("Hermes Live approval.responded message requires a non-negative integer resolved count.");
+      }
       break;
     case "run.completed":
       requireString(message, "runId");
@@ -983,6 +1046,11 @@ function createSnapshot(connection) {
   };
 }
 
+function approvalRequestId(message) {
+  const approvalId = message?.approval?.approvalId ?? message?.event?.approval_id;
+  return typeof approvalId === "string" && approvalId ? `${message.runId}:${approvalId}` : "";
+}
+
 function defaultRequestId() {
   if (typeof globalThis.crypto?.randomUUID === "function") return `req_${globalThis.crypto.randomUUID()}`;
   return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
@@ -1036,7 +1104,41 @@ function trimOldestMapEntries(map, maximum) {
 }
 
 function closeSocket(socket, code, reason) {
-  if (socket.readyState === OPEN || socket.readyState === 0) socket.close(code, reason);
+  if (socket.readyState !== OPEN && socket.readyState !== 0) return;
+  const closeCode = normalizeClientCloseCode(code);
+  const closeReason = normalizeCloseReason(reason);
+  try {
+    socket.close(closeCode, closeReason);
+  } catch {
+    try {
+      socket.close();
+    } catch {
+      // The socket is already unusable; cleanup callers must not fail again.
+    }
+  }
+}
+
+function normalizeClientCloseCode(value) {
+  const code = Number(value);
+  return code === 1000 || (Number.isInteger(code) && code >= 3000 && code <= 4999)
+    ? code
+    : 4000;
+}
+
+function normalizeCloseReason(value) {
+  const source = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .slice(0, 123);
+  if (typeof TextEncoder !== "function") return Array.from(source).slice(0, 30).join("");
+  const encoder = new TextEncoder();
+  if (encoder.encode(source).byteLength <= 123) return source;
+  let result = "";
+  for (const character of source) {
+    const candidate = result + character;
+    if (encoder.encode(candidate).byteLength > 123) break;
+    result = candidate;
+  }
+  return result;
 }
 
 function positiveInteger(value, fallback) {

@@ -47,6 +47,73 @@ describe("web demo behavior", () => {
 
     expect(harness.elements.log.buttonLabels.at(-1)).toEqual(["once", "deny"]);
   });
+
+  it("requires an inspectable pattern before offering permanent approval", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_1",
+      approval: {
+        command: "npm publish",
+        patternKey: "\u001b[31m\u202e",
+        choices: ["once", "always", "deny"],
+        allowPermanent: true,
+      },
+    });
+
+    expect(harness.elements.log.buttonLabels.at(-1)).toEqual(["once", "deny"]);
+  });
+
+  it("keeps approvals FIFO and reconfirms permanent policy changes", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_1",
+      approval: {
+        approvalId: "approval_1",
+        command: "npm test",
+        patternKey: "terminal:npm-test",
+        choices: ["once", "always", "deny"],
+        allowPermanent: true,
+      },
+    });
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_1",
+      approval: {
+        approvalId: "approval_2",
+        command: "npm publish",
+        choices: ["once", "deny"],
+        allowPermanent: false,
+      },
+    });
+
+    const first = harness.elements.log.entries.at(-2)?.buttons ?? [];
+    const second = harness.elements.log.entries.at(-1)?.buttons ?? [];
+    expect(first.every((button) => !button.disabled)).toBe(true);
+    expect(second.every((button) => button.disabled)).toBe(true);
+    second[0]?.click();
+    expect(harness.client.respondToApproval).not.toHaveBeenCalled();
+
+    const always = first.find((button) => button.textContent === "always");
+    always?.click();
+    expect(harness.client.respondToApproval).not.toHaveBeenCalled();
+    expect(always?.textContent).toBe("confirm always");
+    always?.click();
+    expect(harness.client.respondToApproval).toHaveBeenCalledWith("always", "run_1");
+
+    harness.api.handleMessage({
+      type: "approval.responded",
+      runId: "run_1",
+      choice: "always",
+      resolved: 1,
+    });
+    expect(second.every((button) => !button.disabled)).toBe(true);
+  });
 });
 
 function loadWebDemo(): {
@@ -182,7 +249,7 @@ class FakeHermesLiveAudio {
 class TestElement {
   className = "";
   disabled = false;
-  entries: Array<{ strong: TestElement; pre: TestElement }> = [];
+  entries: Array<{ strong: TestElement; pre: TestElement; buttons: TestElement[] }> = [];
   buttonLabels: string[][] = [];
   scrollHeight = 0;
   scrollTop = 0;
@@ -219,9 +286,17 @@ class TestElement {
     this.children.push(...children);
     for (const child of children) {
       if (child.className === "entry") {
-        this.entries.push({ strong: child.childElement("strong"), pre: child.childElement("pre") });
         const actions = child.children.find((entry) => entry.className === "approval-actions");
-        if (actions) this.buttonLabels.push(actions.children.map((entry) => entry.textContent));
+        this.entries.push({
+          strong: child.childElement("strong"),
+          pre: child.childElement("pre"),
+          buttons: actions ? actions.children.filter((entry) => entry.tagName === "button") : [],
+        });
+        if (actions) {
+          this.buttonLabels.push(
+            actions.children.filter((entry) => entry.tagName === "button").map((entry) => entry.textContent),
+          );
+        }
       }
     }
     this.scrollHeight = this.entries.length;

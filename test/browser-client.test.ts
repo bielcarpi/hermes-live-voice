@@ -31,6 +31,29 @@ describe("HermesLiveClient", () => {
     expect(client.getSnapshot().run).toEqual({ state: "stopping", runId: "run_1" });
   });
 
+  it("restores run controls when a correlated stop request fails", async () => {
+    const client = createClient();
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message(readyMessage("live_stop_error"));
+    await connection;
+    socket.message({ type: "run.started", runId: "run_stop", sessionId: "live_stop_error" });
+    await flushMessages();
+
+    const stopRequestId = client.stopRun();
+    expect(client.getSnapshot().run).toEqual({ state: "stopping", runId: "run_stop" });
+    socket.message({
+      type: "session.error",
+      code: "client_message_failed",
+      message: "Hermes rejected the stop request.",
+      requestId: stopRequestId,
+      recoverable: true,
+    });
+
+    await vi.waitFor(() => expect(client.getSnapshot().run).toEqual({ state: "running", runId: "run_stop" }));
+  });
+
   it("rejects recoverable startup errors immediately instead of waiting for timeout", async () => {
     const client = createClient({ connectTimeoutMs: 10_000 });
     const connection = client.connect();
@@ -44,7 +67,7 @@ describe("HermesLiveClient", () => {
     });
 
     await expect(connection).rejects.toThrow("Provider did not connect");
-    expect(socket.closeCalls.at(-1)).toMatchObject({ code: 1008 });
+    expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "session startup rejected" });
   });
 
   it("rejects malformed readiness messages", async () => {
@@ -55,7 +78,7 @@ describe("HermesLiveClient", () => {
     socket.message({ type: "session.ready", protocolVersion: 1 });
 
     await expect(connection).rejects.toThrow(/requires sessionId/);
-    expect(socket.closeCalls.at(-1)).toMatchObject({ code: 1003 });
+    expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
   });
 
   it("decodes only the addressed typed-array slice", async () => {
@@ -154,6 +177,76 @@ describe("HermesLiveClient", () => {
 
     expect(unknown).toHaveBeenCalledWith({ type: "future.event", value: 42 });
   });
+
+  it("preserves approval FIFO order and removes only the resolved queue entries", async () => {
+    const client = createClient();
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message(readyMessage("live_approval_queue"));
+    await connection;
+
+    socket.message(approvalRequest("run_approval", "approval_1", "first command"));
+    socket.message(approvalRequest("run_approval", "approval_2", "second command"));
+    socket.message(approvalRequest("run_approval", "approval_1", "updated first command"));
+    await vi.waitFor(() => expect(
+      client.getSnapshot().pendingApprovals.map((entry: any) => entry.approval.command),
+    ).toEqual(["updated first command", "second command"]));
+
+    socket.message({ type: "approval.responded", runId: "run_approval", choice: "once", resolved: 1 });
+    await flushMessages();
+    expect(client.getSnapshot().pendingApprovals.map((entry: any) => entry.approval.command)).toEqual([
+      "second command",
+    ]);
+
+    socket.message(approvalRequest("run_approval", "approval_3", "third command"));
+    socket.message({ type: "approval.responded", runId: "run_approval", choice: "deny", resolved: 0 });
+    await flushMessages();
+    expect(client.getSnapshot().pendingApprovals).toHaveLength(2);
+
+    socket.message({ type: "approval.responded", runId: "run_approval", choice: "deny", resolved: 2 });
+    await vi.waitFor(() => expect(client.getSnapshot().pendingApprovals).toEqual([]));
+  });
+
+  it("bounds browser close reasons without failing disconnect cleanup", async () => {
+    const client = createClient();
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message(readyMessage("live_1"));
+    await connection;
+
+    await expect(client.disconnect(`line one\n${"🚫".repeat(100)}`)).resolves.toBeUndefined();
+    const close = socket.closeCalls.at(-1);
+    expect(close?.code).toBe(1000);
+    expect(close?.reason).not.toContain("\n");
+    expect(Buffer.byteLength(close?.reason ?? "", "utf8")).toBeLessThanOrEqual(123);
+  });
+
+  it("recovers to a reconnectable state when a browser never emits close", async () => {
+    const client = createClient();
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message(readyMessage("live_stuck_close"));
+    await connection;
+    socket.suppressCloseEvent = true;
+    vi.useFakeTimers();
+
+    try {
+      const disconnecting = client.disconnect("test stuck close");
+      await vi.advanceTimersByTimeAsync(1_001);
+      await disconnecting;
+      expect(client.getSnapshot()).toMatchObject({
+        connection: "closed",
+        run: { state: "idle" },
+        pendingApprovals: [],
+      });
+      expect(client.connected).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("HermesLiveAudio", () => {
@@ -198,6 +291,23 @@ describe("HermesLiveAudio", () => {
     await expect(second).resolves.toBe(false);
     expect(context.sources).toHaveLength(0);
     expect(client.cancelResponse).toHaveBeenCalledWith("test interruption", undefined);
+    await audio.dispose();
+  });
+
+  it("suppresses late audio after interruption until the next response starts", async () => {
+    const client = audioClient();
+    const audio = createAudio({ client });
+    const frame = pcmFrame([0, 1]);
+
+    client.emit("response.started", {});
+    audio.interrupt("stop this response");
+    await expect(audio.play({ type: "audio.output", data: frame, mimeType: "audio/pcm;rate=24000" })).resolves.toBe(false);
+
+    client.emit("response.cancelled", {});
+    await expect(audio.play({ type: "audio.output", data: frame, mimeType: "audio/pcm;rate=24000" })).resolves.toBe(false);
+
+    client.emit("response.started", {});
+    await expect(audio.play({ type: "audio.output", data: frame, mimeType: "audio/pcm;rate=24000" })).resolves.toBe(true);
     await audio.dispose();
   });
 
@@ -302,6 +412,22 @@ function readyMessage(sessionId: string) {
   };
 }
 
+function approvalRequest(runId: string, approvalId: string, command: string) {
+  return {
+    type: "approval.request",
+    runId,
+    event: { event: "approval.request", approval_id: approvalId },
+    approval: {
+      approvalId,
+      command,
+      description: `Allow ${command}`,
+      patternKey: `terminal:${approvalId}`,
+      choices: ["once", "always", "deny"],
+      allowPermanent: true,
+    },
+  };
+}
+
 async function nextSocket(): Promise<FakeWebSocket> {
   await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
   const socket = FakeWebSocket.instances.at(-1);
@@ -316,6 +442,7 @@ class FakeWebSocket {
   readonly closeCalls: Array<{ code: number; reason: string }> = [];
   readyState = 0;
   bufferedAmount = 0;
+  suppressCloseEvent = false;
 
   constructor(readonly url: URL) {
     FakeWebSocket.instances.push(this);
@@ -349,7 +476,17 @@ class FakeWebSocket {
   }
 
   close(code = 1000, reason = ""): void {
+    if (code !== 1000 && (code < 3000 || code > 4999)) {
+      throw new DOMException("The close code is reserved.", "InvalidAccessError");
+    }
+    if (Buffer.byteLength(reason, "utf8") > 123) {
+      throw new DOMException("The close reason is too long.", "SyntaxError");
+    }
     this.closeCalls.push({ code, reason });
+    if (this.suppressCloseEvent) {
+      this.readyState = 2;
+      return;
+    }
     this.readyState = 3;
     this.emit("close", { code, reason, wasClean: code === 1000 });
   }
@@ -372,9 +509,18 @@ function createAudio(overrides: Record<string, unknown> = {}): HermesLiveAudio {
 }
 
 function audioClient() {
+  const listeners = new Map<string, Set<(value: unknown) => void>>();
   return {
     connected: true,
-    on: vi.fn(() => () => undefined),
+    on: vi.fn((type: string, listener: (value: unknown) => void) => {
+      const values = listeners.get(type) ?? new Set();
+      values.add(listener);
+      listeners.set(type, values);
+      return () => values.delete(listener);
+    }),
+    emit(type: string, value: unknown) {
+      for (const listener of listeners.get(type) ?? []) listener(value);
+    },
     cancelResponse: vi.fn(),
     sendAudio: vi.fn(),
     endAudio: vi.fn(),

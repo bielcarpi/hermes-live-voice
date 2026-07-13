@@ -72,6 +72,30 @@
     return String(approval.approvalId || event.approval_id || request.runId || "approval") + ":" + index;
   }
 
+  function approvalPatternKeys(approval) {
+    const values = [];
+    const primary = inspectablePattern(approval.patternKey);
+    if (primary) values.push(primary);
+    if (Array.isArray(approval.patternKeys)) {
+      approval.patternKeys.forEach(function (value) {
+        const pattern = inspectablePattern(value);
+        if (pattern) values.push(pattern);
+      });
+    }
+    return Array.from(new Set(values)).slice(0, 32);
+  }
+
+  function inspectablePattern(value) {
+    if (typeof value !== "string") return "";
+    return value
+      .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\|$)/g, "")
+      .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\u001b[@-_]/g, "")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+      .trim()
+      .slice(0, 256);
+  }
+
   function approvalChoiceLabel(choice) {
     const labels = {
       once: "Allow once",
@@ -323,12 +347,16 @@
             }),
             client.on("response.cancelled", function () {
               if (active) {
+                const audio = audioRef.current;
+                if (audio) audio.clearPlayback();
                 finalizeAssistantTranscript();
                 addActivity("Assistant speech interrupted", "The active realtime response was cancelled.", "warning");
               }
             }),
             client.on("response.failed", function (message) {
               if (active) {
+                const audio = audioRef.current;
+                if (audio) audio.clearPlayback();
                 finalizeAssistantTranscript();
                 setNotice({ tone: "danger", text: clampText(message.error, 300) });
               }
@@ -342,17 +370,25 @@
               if (summary) addActivity(summary.label, summary.detail, summary.tone);
             }),
             client.on("approval.request", function (message) {
-              if (active) addActivity(
-                "Approval required",
-                message.approval.description || "Hermes is waiting for your decision.",
-                "warning",
-              );
+              if (active) {
+                setConfirmPermanent("");
+                addActivity(
+                  "Approval required",
+                  message.approval.description || "Hermes is waiting for your decision.",
+                  "warning",
+                );
+              }
             }),
             client.on("approval.responded", function (message) {
               if (active) {
                 setConfirmPermanent("");
                 setBusyAction("");
-                addActivity("Approval answered", approvalChoiceLabel(message.choice), "success");
+                if (message.resolved === 0) {
+                  setNotice({ tone: "warning", text: "Hermes did not resolve that approval; review it and try again." });
+                  addActivity("Approval still pending", approvalChoiceLabel(message.choice), "warning");
+                } else {
+                  addActivity("Approval answered", approvalChoiceLabel(message.choice), "success");
+                }
               }
             }),
             client.on("run.completed", function (message) {
@@ -368,7 +404,11 @@
               if (active) addActivity("Hermes task stopped", titleCase(message.status), "warning");
             }),
             client.on("input.speech_started", function () {
-              if (active) addActivity("You started speaking", "Assistant playback is interruptible.", "active");
+              if (active) {
+                const audio = audioRef.current;
+                if (audio) audio.interrupt("provider detected user speech");
+                addActivity("You started speaking", "Assistant playback interrupted for barge-in.", "active");
+              }
             }),
             client.on("audio.dropped", function () {
               if (active) setNotice({
@@ -377,12 +417,16 @@
               });
             }),
             client.on("error", function (event) {
-              if (active) setNotice({
-                tone: "danger",
-                text: friendlyError(event.error, "The Live Voice session reported an error."),
-              });
+              if (active) {
+                setBusyAction("");
+                setConfirmPermanent("");
+                setNotice({
+                  tone: "danger",
+                  text: friendlyError(event.error, "The Live Voice session reported an error."),
+                });
+              }
             }),
-            client.on("close", function () {
+            client.on("close", function (event) {
               if (!active) return;
               const oldAudio = audioRef.current;
               audioRef.current = null;
@@ -391,6 +435,12 @@
               setMicrophone(initialMicrophone());
               setPlayback(initialPlayback());
               setConfirmDisconnect(false);
+              setNotice({
+                tone: event && !event.clean ? "warning" : "neutral",
+                text: event && !event.clean
+                  ? "Live Voice connection was lost. Check the gateway and reconnect."
+                  : "Live Voice disconnected.",
+              });
             }),
           );
         })
@@ -535,6 +585,17 @@
 
     function respondToApproval(request, index, choice, confirmed) {
       const key = approvalKey(request, index);
+      if (index !== 0) {
+        setNotice({ tone: "warning", text: "Answer the earliest approval first; Hermes resolves approvals in queue order." });
+        return;
+      }
+      if (choice === "always" && (
+        request.approval.allowPermanent !== true || approvalPatternKeys(request.approval).length === 0
+      )) {
+        setNotice({ tone: "danger", text: "Permanent approval requires an inspectable permission pattern." });
+        setConfirmPermanent("");
+        return;
+      }
       if (choice === "always" && !confirmed) {
         setConfirmPermanent(key);
         return;
@@ -599,33 +660,41 @@
     function ApprovalCard(request, index) {
       const approval = request.approval || {};
       const informed = Boolean(approval.command || approval.description);
+      const patternKeys = approvalPatternKeys(approval);
+      const isActionable = index === 0;
       const suppliedChoices = Array.isArray(approval.choices) ? approval.choices : [];
       const choices = suppliedChoices
         .filter(function (choice) { return ["once", "session", "always", "deny"].includes(choice); })
         .filter(function (choice) { return informed || choice === "once" || choice === "deny"; })
-        .filter(function (choice) { return choice !== "always" || approval.allowPermanent === true; });
+        .filter(function (choice) {
+          return choice !== "always" || (approval.allowPermanent === true && patternKeys.length > 0);
+        });
       if (!choices.length) choices.push("once", "deny");
       const key = approvalKey(request, index);
       const isBusy = busyAction === "approval:" + key;
-      const permanentConfirmation = confirmPermanent === key;
+      const permanentConfirmation = isActionable && confirmPermanent === key;
       return h("article", { className: "hlv-approval", key: key },
         h("div", { className: "hlv-approval__header" },
           h("span", { className: "hlv-approval__shield", "aria-hidden": "true" }, "!"),
           h("div", null,
-            h("span", { className: "hlv-eyebrow" }, "Approval required"),
+            h("span", { className: "hlv-eyebrow" }, isActionable ? "Approval required" : "Approval queued"),
             h("h3", null, approval.description || "Hermes wants permission to continue"),
           ),
         ),
         approval.command ? h("pre", { className: "hlv-command" }, h("code", null, approval.command)) : null,
-        approval.patternKey || (approval.patternKeys && approval.patternKeys.length)
+        patternKeys.length
           ? h("p", { className: "hlv-approval__pattern" },
               "Permission pattern: ",
-              h("code", null, approval.patternKey || approval.patternKeys.join(", ")),
+              h("code", null, patternKeys.join(", ")),
             )
           : h("p", { className: "hlv-approval__opaque" },
               "Hermes did not provide inspectable command details. Only a one-time approval is available.",
             ),
-        permanentConfirmation
+        !isActionable
+          ? h("p", { className: "hlv-approval__queued", role: "status" },
+              "Answer the earlier approval first. Hermes resolves approval requests in FIFO order.",
+            )
+          : permanentConfirmation
           ? h("div", { className: "hlv-permanent", role: "alert" },
               h("strong", null, "Make this permission permanent?"),
               h("p", null,

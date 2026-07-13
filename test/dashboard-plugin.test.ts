@@ -62,5 +62,23 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).toContain('client.stopRun("stopped from Hermes Dashboard")');
     expect(source).toContain("Interrupt speech");
     expect(source).toContain("Stop Hermes task");
+    expect(source).toContain('audio.interrupt("provider detected user speech")');
+    expect(source).toContain("audio.clearPlayback()");
+  });
+
+  it("keeps queued approvals read-only and permanent approval pattern-bound", () => {
+    const source = readFileSync(new URL("dist/index.js", dashboardUrl), "utf8");
+
+    expect(source).toContain("const isActionable = index === 0");
+    expect(source).toContain("Hermes resolves approval requests in FIFO order.");
+    expect(source).toContain("approval.allowPermanent === true && patternKeys.length > 0");
+    expect(source).toContain("Permanent approval requires an inspectable permission pattern.");
+  });
+
+  it("replaces stale connected notices when the gateway socket closes", () => {
+    const source = readFileSync(new URL("dist/index.js", dashboardUrl), "utf8");
+
+    expect(source).toContain("Live Voice connection was lost. Check the gateway and reconnect.");
+    expect(source).toContain("Live Voice disconnected.");
   });
 });

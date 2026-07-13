@@ -10,11 +10,12 @@ import WebSocket from "ws";
 import { assertRuntimeConfig, loadConfig } from "./config.js";
 import type { AppConfig } from "./config.js";
 import { createLogger } from "./logger.js";
-import { ApprovalChoiceSchema, HERMES_LIVE_PROTOCOL_VERSION } from "./protocol.js";
+import { HERMES_LIVE_PROTOCOL_VERSION } from "./protocol.js";
 import { buildReadinessReport } from "./readiness.js";
 import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
+import { promptForOneShotApproval } from "./cli/one-shot-approval.js";
 import { normalizeGatewayWebSocketUrl, runInteractiveTerminal } from "./cli/terminal-session.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
@@ -440,10 +441,10 @@ async function respondToApproval(
   event: unknown,
 ): Promise<void> {
   console.error(`Approval requested for ${runId}:`);
-  console.error(JSON.stringify(event, null, 2));
-  const answer = await approvalReader.question("Approve once/session/always, or deny? [deny] ");
-  const parsed = ApprovalChoiceSchema.safeParse(answer.trim() || "deny");
-  const choice = parsed.success ? parsed.data : "deny";
+  const choice = await promptForOneShotApproval(approvalReader, event, {
+    interactive: input.isTTY === true,
+    writeLine: (line) => console.error(line),
+  });
   ws.send(JSON.stringify({ type: "approval.respond", runId, choice }));
 }
 
