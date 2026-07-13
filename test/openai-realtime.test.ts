@@ -62,6 +62,23 @@ describe("OpenAI Realtime adapter helpers", () => {
     });
   });
 
+  it("normalizes provider response lifecycle events", () => {
+    expect(
+      normalizeOpenAIRealtimeEvent({ type: "response.created", response: { id: "resp_1", status: "in_progress" } }),
+    ).toContainEqual({ type: "response", status: "started", responseId: "resp_1" });
+    expect(
+      normalizeOpenAIRealtimeEvent({ type: "response.done", response: { id: "resp_1", status: "completed" } }),
+    ).toContainEqual({ type: "response", status: "completed", responseId: "resp_1" });
+    expect(
+      normalizeOpenAIRealtimeEvent({ type: "response.done", response: { id: "resp_2", status: "failed" } }),
+    ).toContainEqual({
+      type: "response",
+      status: "failed",
+      responseId: "resp_2",
+      error: "OpenAI Realtime response failed.",
+    });
+  });
+
   it("builds PCM append events at 24 kHz", () => {
     const input = Buffer.alloc(48).toString("base64");
 

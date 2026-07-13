@@ -113,6 +113,7 @@ The first message must be `session.start`.
 ```json
 {
   "type": "session.start",
+  "protocolVersion": 1,
   "profileId": "default",
   "userLabel": "alice"
 }
@@ -125,13 +126,32 @@ The server replies:
 ```json
 {
   "type": "session.ready",
+  "protocolVersion": 1,
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
   "hermes": {
     "model": "hermes-agent"
+  },
+  "realtime": {
+    "provider": "openai",
+    "model": "gpt-realtime-2.1",
+    "audio": {
+      "input": {
+        "enabled": true,
+        "mimeType": "audio/pcm;rate=24000",
+        "recommendedFrameMs": 50
+      },
+      "output": {
+        "enabled": true,
+        "mimeType": "audio/pcm;rate=24000"
+      },
+      "turnDetection": "disabled"
+    }
   }
 }
 ```
+
+The current protocol version is `1`. The gateway still accepts legacy clients that omit `protocolVersion`, but rejects an explicit unsupported version before opening a provider session. New clients should send the version and use the negotiated audio contract in `session.ready`; they must not assume every deployment uses PCM16.
 
 ## Audio Input
 
@@ -248,6 +268,17 @@ Raw realtime provider message:
 
 Clients usually do not need to show raw provider messages. They are useful for debugging and provider-specific telemetry.
 
+Provider-neutral response lifecycle:
+
+```json
+{ "type": "response.started", "responseId": "resp_..." }
+{ "type": "response.completed", "responseId": "resp_..." }
+{ "type": "response.cancelled", "responseId": "resp_..." }
+{ "type": "response.failed", "responseId": "resp_...", "error": "Realtime response failed." }
+```
+
+`responseId` is optional because not every provider exposes one. Clients should use these normalized events for UI state and completion instead of parsing `realtime.message` for provider-specific OpenAI or Gemini shapes.
+
 Hermes run started:
 
 ```json
@@ -316,9 +347,19 @@ When Hermes asks for approval, the gateway emits:
   "runId": "run_...",
   "event": {
     "event": "approval.request"
+  },
+  "approval": {
+    "approvalId": "approval_...",
+    "command": "git push origin feature",
+    "description": "This command changes a remote repository.",
+    "patternKey": "git_push",
+    "choices": ["once", "session", "always", "deny"],
+    "allowPermanent": true
   }
 }
 ```
+
+Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then bounds and projects only the fields needed for an informed decision. When the event lacks a command and description, `choices` is restricted to `once` and `deny`; clients must not invent persistent approval options for an opaque request.
 
 The client responds:
 

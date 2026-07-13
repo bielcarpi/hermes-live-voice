@@ -15,7 +15,7 @@ describe("HermesLiveClient", () => {
 
     socket.open();
     expect(socket.sent[0]).toMatchObject({ type: "session.start", id: "req_1", profileId: "demo" });
-    socket.message({ type: "session.ready", sessionId: "live_1", model: "mock-live", hermes: {} });
+    socket.message(readyMessage("live_1"));
 
     await expect(connection).resolves.toMatchObject({ sessionId: "live_1" });
     expect(client.connected).toBe(true);
@@ -52,7 +52,7 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready" });
+    socket.message({ type: "session.ready", protocolVersion: 1 });
 
     await expect(connection).rejects.toThrow(/requires sessionId/);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 1003 });
@@ -63,7 +63,7 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    const json = JSON.stringify({ type: "session.ready", sessionId: "live_slice", model: "mock", hermes: {} });
+    const json = JSON.stringify(readyMessage("live_slice"));
     const payload = Buffer.from(`junk${json}junk`);
     socket.message(payload.subarray(4, payload.length - 4));
 
@@ -77,7 +77,7 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready", sessionId: "live_1", model: "mock", hermes: {} });
+    socket.message(readyMessage("live_1"));
     await connection;
     socket.bufferedAmount = 11;
 
@@ -99,7 +99,7 @@ describe("HermesLiveClient", () => {
     expect("token" in client).toBe(false);
     expect("tokenProvider" in client).toBe(false);
     socket.open();
-    socket.message({ type: "session.ready", sessionId: "live_1", model: "mock", hermes: {} });
+    socket.message(readyMessage("live_1"));
     await connection;
   });
 
@@ -108,7 +108,7 @@ describe("HermesLiveClient", () => {
     const firstConnection = client.connect();
     const first = await nextSocket();
     first.open();
-    first.message({ type: "session.ready", sessionId: "old", model: "mock", hermes: {} });
+    first.message(readyMessage("old"));
     await firstConnection;
     await client.disconnect();
 
@@ -116,7 +116,7 @@ describe("HermesLiveClient", () => {
     const second = await nextSocket();
     first.message({ type: "run.started", runId: "stale", sessionId: "old" });
     second.open();
-    second.message({ type: "session.ready", sessionId: "new", model: "mock", hermes: {} });
+    second.message(readyMessage("new"));
     await secondConnection;
     await flushMessages();
 
@@ -131,7 +131,7 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready", sessionId: "live_1", model: "mock", hermes: {} });
+    socket.message(readyMessage("live_1"));
     await connection;
     socket.message({ type: "future.event", value: 42 });
     await flushMessages();
@@ -206,6 +206,21 @@ describe("HermesLiveAudio", () => {
     expect(audio.microphoneState).toBe("disposed");
   });
 
+  it("rejects negotiated G.711 microphone sessions before requesting permission", async () => {
+    const client = audioClient() as ReturnType<typeof audioClient> & { session: unknown };
+    client.session = {
+      realtime: {
+        audio: { input: { enabled: true, mimeType: "audio/pcmu;rate=8000" } },
+      },
+    };
+    const getUserMedia = vi.fn();
+    const audio = createAudio({ client, mediaDevices: { getUserMedia } });
+
+    await expect(audio.startMicrophone()).rejects.toThrow(/supports PCM16 input/);
+    expect(getUserMedia).not.toHaveBeenCalled();
+    await audio.dispose();
+  });
+
   it("rejects non-PCM provider output instead of corrupting it", async () => {
     const audio = createAudio();
 
@@ -254,6 +269,21 @@ function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient
     webSocketFactory: (url) => new FakeWebSocket(url) as unknown as WebSocket,
     ...overrides,
   });
+}
+
+function readyMessage(sessionId: string) {
+  return {
+    type: "session.ready",
+    protocolVersion: 1,
+    sessionId,
+    model: "mock-live",
+    hermes: {},
+    realtime: {
+      provider: "mock",
+      model: "mock-live",
+      audio: { input: { enabled: false }, output: { enabled: false }, turnDetection: "none" },
+    },
+  };
 }
 
 async function nextSocket(): Promise<FakeWebSocket> {

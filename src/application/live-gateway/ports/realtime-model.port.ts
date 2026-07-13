@@ -16,6 +16,7 @@ export interface LiveModelAudio {
 export type LiveModelEvent =
   | { type: "audio"; audio: LiveModelAudio }
   | { type: "text"; text: string }
+  | { type: "response"; status: "started" | "completed" | "cancelled" | "failed"; responseId?: string; error?: string }
   | { type: "tool_call"; call: LiveToolCall }
   | { type: "input_speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number }
   | { type: "raw"; message: unknown };

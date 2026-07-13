@@ -132,6 +132,7 @@ export function buildGeminiToolResponse(
 export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
   const events: LiveModelEvent[] = [];
   const root = unwrapMessage(message);
+  const serverContent = root?.serverContent ?? root?.server_content;
 
   for (const call of extractFunctionCalls(root)) {
     events.push({ type: "tool_call", call });
@@ -156,6 +157,11 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
         audio: { data, mimeType: inlineData.mimeType ?? inlineData.mime_type ?? "audio/pcm;rate=24000" },
       });
     }
+  }
+  if (serverContent?.interrupted === true) {
+    events.push({ type: "response", status: "cancelled" });
+  } else if (serverContent?.turnComplete === true || serverContent?.turn_complete === true) {
+    events.push({ type: "response", status: "completed" });
   }
   events.push({ type: "raw", message });
   return events;

@@ -47,15 +47,25 @@ describe("live gateway WebSocket", () => {
 
     expect(ready).toMatchObject({
       type: "session.ready",
+      protocolVersion: 1,
       model: "mock-live",
+      realtime: {
+        provider: "mock",
+        audio: { input: { enabled: false }, output: { enabled: false }, turnDetection: "none" },
+      },
     });
     expect(ready.sessionKey).toBeUndefined();
     expect(ready.hermes.baseUrl).toBeUndefined();
 
+    const responseStarted = waitForMessage(socket, "response.started");
+    const responseCompleted = waitForMessage(socket, "response.completed");
+    const completedMessage = waitForMessage(socket, "run.completed");
     send(socket, { type: "text.input", text: "What is my status?" });
-    const completed = await waitForMessage(socket, "run.completed");
+    const completed = await completedMessage;
 
     expect(completed).toMatchObject({ type: "run.completed", runId: "run_ws", output: "Hermes says done." });
+    await expect(responseStarted).resolves.toMatchObject({ type: "response.started" });
+    await expect(responseCompleted).resolves.toMatchObject({ type: "response.completed" });
     expect(hermes.startRun).toHaveBeenCalledWith(
       expect.objectContaining({
         input: "What is my status?",
@@ -149,6 +159,28 @@ describe("live gateway WebSocket", () => {
       message: "Hermes capabilities unavailable",
       requestId: "req_start_1",
       recoverable: true,
+    });
+  });
+
+  it("rejects unsupported client protocol versions before starting a provider session", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start", id: "req_version", protocolVersion: 2 });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "unsupported_protocol_version",
+      requestId: "req_version",
+      recoverable: false,
+      message: expect.stringContaining("use 1"),
     });
   });
 
@@ -353,7 +385,15 @@ describe("live gateway WebSocket", () => {
     const approvalSubmitted = deferred<void>();
     const hermes = fakeHermes({
       streamEvents: async function* () {
-        yield { event: "approval.request", run_id: "run_ws", approval_id: "approval_1" };
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_1",
+          command: "git push origin feature",
+          description: "This command changes a remote repository.",
+          pattern_key: "git_push",
+          choices: ["once", "session", "always", "deny"],
+        };
         await approvalSubmitted.promise;
         yield { event: "run.completed", output: "Approved." };
       },
@@ -376,7 +416,17 @@ describe("live gateway WebSocket", () => {
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
     send(socket, { type: "text.input", text: "Delete the stale build" });
-    await waitForMessage(socket, "approval.request");
+    const approval = await waitForMessage(socket, "approval.request");
+    expect(approval).toMatchObject({
+      approval: {
+        approvalId: "approval_1",
+        command: "git push origin feature",
+        description: "This command changes a remote repository.",
+        patternKey: "git_push",
+        choices: ["once", "session", "always", "deny"],
+        allowPermanent: true,
+      },
+    });
     const approvalResponded = waitForMessage(socket, "approval.responded");
     const completed = waitForMessage(socket, "run.completed");
     send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
@@ -417,7 +467,10 @@ describe("live gateway WebSocket", () => {
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
     send(socket, { type: "text.input", text: "Delete the stale build" });
-    await waitForMessage(socket, "approval.request");
+    const opaqueApproval = await waitForMessage(socket, "approval.request");
+    expect(opaqueApproval).toMatchObject({
+      approval: { approvalId: "approval_1", choices: ["once", "deny"], allowPermanent: false },
+    });
     send(socket, { type: "approval.respond", runId: "other_run", choice: "once" });
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({

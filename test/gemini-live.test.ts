@@ -48,6 +48,14 @@ describe("Gemini Live adapter helpers", () => {
       audio: { data: "base64-audio", mimeType: "audio/pcm;rate=24000" },
     });
     expect(events.at(-1)).toMatchObject({ type: "raw" });
+    expect(events).toContainEqual({ type: "response", status: "completed" });
+  });
+
+  it("normalizes Gemini interruption lifecycle", () => {
+    expect(normalizeGeminiLiveMessage({ serverContent: { interrupted: true } })).toContainEqual({
+      type: "response",
+      status: "cancelled",
+    });
   });
 
   it("still unwraps SDK or event wrappers whose data field contains a message object", () => {

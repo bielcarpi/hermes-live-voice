@@ -3,7 +3,10 @@ import { HERMES_LIVE_TOOL_DECLARATIONS, OPENAI_HERMES_LIVE_TOOLS, parseClientMes
 
 describe("protocol", () => {
   it("validates known client messages", () => {
-    expect(parseClientMessage({ type: "session.start", profileId: "default" }).type).toBe("session.start");
+    expect(parseClientMessage({ type: "session.start", protocolVersion: 1, profileId: "default" })).toMatchObject({
+      type: "session.start",
+      protocolVersion: 1,
+    });
     expect(parseClientMessage({ type: "text.input", text: "hello" }).type).toBe("text.input");
     expect(parseClientMessage({ type: "response.cancel", reason: "user interrupted" }).type).toBe("response.cancel");
     expect(
@@ -30,6 +33,7 @@ describe("protocol", () => {
   });
 
   it("rejects invalid client messages", () => {
+    expect(() => parseClientMessage({ type: "session.start", protocolVersion: 0 })).toThrow();
     expect(() => parseClientMessage({ type: "text.input", text: "" })).toThrow();
     expect(() => parseClientMessage({ type: "approval.respond", runId: "run_1", choice: "forever" })).toThrow();
   });

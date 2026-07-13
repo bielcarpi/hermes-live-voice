@@ -11,9 +11,12 @@ import {
 } from "../../domain/protocol/client-protocol.js";
 import {
   serverMessage,
+  type HermesApprovalDetails,
   type HermesRunEvent,
   type ServerMessage,
 } from "../../domain/protocol/server-protocol.js";
+import { HERMES_LIVE_PROTOCOL_VERSION } from "../../domain/protocol/version.js";
+import { realtimeClientCapabilities } from "./client-capabilities.js";
 import type { ClientConnectionPort, ClientInboundFrame } from "./ports/client-connection.port.js";
 import type { HermesRunsPort } from "./ports/hermes-runs.port.js";
 import {
@@ -62,6 +65,17 @@ export class LiveGatewaySession {
   }
 
   async start(message: Extract<ClientMessage, { type: "session.start" }>): Promise<void> {
+    if (message.protocolVersion !== undefined && message.protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
+      this.fail(
+        "unsupported_protocol_version",
+        new Error(
+          `Hermes Live protocol version ${message.protocolVersion} is not supported; use ${HERMES_LIVE_PROTOCOL_VERSION}.`,
+        ),
+        false,
+        message.id,
+      );
+      return;
+    }
     if (this.liveSession || this.starting) {
       this.fail("session_already_started", new Error("Realtime session is already started."), true, message.id);
       return;
@@ -127,9 +141,11 @@ export class LiveGatewaySession {
         }
         this.send({
           type: "session.ready",
+          protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
           sessionId: this.id,
           model: this.deps.config.realtime.model,
           hermes: hermesInfo,
+          realtime: realtimeClientCapabilities(this.deps.config),
         });
         readySent = true;
         resolveProviderReady();
@@ -328,6 +344,19 @@ export class LiveGatewaySession {
         ...(event.itemId ? { itemId: event.itemId } : {}),
         ...(event.audioStartMs === undefined ? {} : { audioStartMs: event.audioStartMs }),
       });
+    } else if (event.type === "response") {
+      if (event.status === "failed") {
+        this.send({
+          type: "response.failed",
+          ...(event.responseId ? { responseId: event.responseId } : {}),
+          error: event.error ?? "Realtime response failed.",
+        });
+      } else {
+        const responseId = event.responseId ? { responseId: event.responseId } : {};
+        if (event.status === "started") this.send({ type: "response.started", ...responseId });
+        else if (event.status === "completed") this.send({ type: "response.completed", ...responseId });
+        else this.send({ type: "response.cancelled", ...responseId });
+      }
     } else {
       this.send({ type: "realtime.message", message: event.message });
     }
@@ -433,7 +462,12 @@ export class LiveGatewaySession {
       this.send({ type: "run.event", runId, event: publicEvent });
     }
     if (event.event === "approval.request") {
-      this.send({ type: "approval.request", runId, event: publicEvent ?? publicHermesRunEvent(event, "summary")! });
+      this.send({
+        type: "approval.request",
+        runId,
+        event: publicEvent ?? publicHermesRunEvent(event, "summary")!,
+        approval: publicApprovalDetails(event),
+      });
     } else if (event.event === "run.failed") {
       this.send({ type: "run.failed", runId, error: "Hermes run failed. Check the gateway logs for details." });
     } else if (event.event === "run.cancelled") {
@@ -577,4 +611,45 @@ function publicHermesRunEvent(
     }
   }
   return summary as HermesRunEvent;
+}
+
+function publicApprovalDetails(event: HermesRunEvent): HermesApprovalDetails {
+  const approvalId = boundedString(event.approval_id, 256);
+  const command = boundedString(event.command, 4_000);
+  const description = boundedString(event.description, 2_000);
+  const patternKey = boundedString(event.pattern_key, 256);
+  const patternKeys = Array.isArray(event.pattern_keys)
+    ? event.pattern_keys
+        .map((value) => boundedString(value, 256))
+        .filter((value): value is string => Boolean(value))
+        .slice(0, 32)
+    : undefined;
+  const informed = Boolean(command || description);
+  const suppliedChoices = Array.isArray(event.choices)
+    ? event.choices.filter((choice): choice is "once" | "session" | "always" | "deny" =>
+        typeof choice === "string" && ["once", "session", "always", "deny"].includes(choice),
+      )
+    : [];
+  const fallbackChoices: Array<"once" | "session" | "always" | "deny"> = informed
+    ? ["once", "session", "always", "deny"]
+    : ["once", "deny"];
+  const choices = (suppliedChoices.length > 0 ? suppliedChoices : fallbackChoices).filter((choice) =>
+    (informed || choice === "once" || choice === "deny") &&
+    (event.allow_permanent !== false || choice !== "always"),
+  );
+  return {
+    ...(approvalId ? { approvalId } : {}),
+    ...(command ? { command } : {}),
+    ...(description ? { description } : {}),
+    ...(patternKey ? { patternKey } : {}),
+    ...(patternKeys && patternKeys.length > 0 ? { patternKeys } : {}),
+    choices,
+    allowPermanent: informed && event.allow_permanent !== false && choices.includes("always"),
+  };
+}
+
+function boundedString(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, maximum) : undefined;
 }

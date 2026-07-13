@@ -15,6 +15,8 @@ import { buildReadinessReport } from "../../../readiness.js";
 import { serveStatic } from "./static.js";
 import { WebSocketClientConnection } from "./websocket-client-connection.js";
 import { errorToMessage } from "../../../domain/error-message.js";
+import { HERMES_LIVE_PROTOCOL_VERSION } from "../../../domain/protocol/version.js";
+import { realtimeClientCapabilities } from "../../../application/live-gateway/client-capabilities.js";
 
 export interface StartServerOptions {
   config: AppConfig;
@@ -175,7 +177,9 @@ async function handleHttp(
     json(req, res, 200, {
       object: "hermes_live.capabilities",
       service: "hermes-live",
+      protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },
+      realtime: realtimeClientCapabilities(options.config),
       features: {
         auth_required: Boolean(options.config.server.authToken),
         server_managed_identity: !options.config.server.trustClientIdentity,

@@ -279,6 +279,7 @@ Start a session:
 ```json
 {
   "type": "session.start",
+  "protocolVersion": 1,
   "profileId": "default",
   "userLabel": "alice"
 }

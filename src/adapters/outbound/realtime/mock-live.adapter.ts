@@ -32,6 +32,7 @@ class MockLiveSession implements LiveModelSession {
   }
 
   async sendText(text: string): Promise<void> {
+    this.callbacks.onEvent({ type: "response", status: "started" });
     this.callbacks.onEvent({
       type: "tool_call",
       call: {
@@ -51,6 +52,7 @@ class MockLiveSession implements LiveModelSession {
   async sendToolResponse(_call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
     const output = typeof response.output === "string" ? response.output : JSON.stringify(response);
     this.callbacks.onEvent({ type: "text", text: output });
+    this.callbacks.onEvent({ type: "response", status: "completed" });
   }
 
   async close(): Promise<void> {}

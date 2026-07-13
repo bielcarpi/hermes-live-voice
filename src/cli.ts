@@ -10,7 +10,7 @@ import WebSocket from "ws";
 import { assertRuntimeConfig, loadConfig } from "./config.js";
 import type { AppConfig } from "./config.js";
 import { createLogger } from "./logger.js";
-import { ApprovalChoiceSchema } from "./protocol.js";
+import { ApprovalChoiceSchema, HERMES_LIVE_PROTOCOL_VERSION } from "./protocol.js";
 import { buildReadinessReport } from "./readiness.js";
 import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
@@ -307,7 +307,12 @@ async function runTextClient(config: AppConfig, text: string): Promise<void> {
       };
 
       ws.once("open", () => {
-        ws.send(JSON.stringify({ type: "session.start", profileId: "terminal", userLabel: process.env.USER ?? "terminal" }));
+        ws.send(JSON.stringify({
+          type: "session.start",
+          protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+          profileId: "terminal",
+          userLabel: process.env.USER ?? "terminal",
+        }));
       });
       ws.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
       ws.once("close", (code, reason) => {
@@ -350,17 +355,17 @@ async function handleClientServerMessage(
       break;
     case "realtime.message":
       if (!state.hermesRunStarted && isRealtimeResponseComplete(message.message)) {
-        const output = state.directTranscript.join("").trim();
-        if (output) {
-          console.log(output);
-          finish();
-        } else {
-          finish(new Error("Realtime provider completed without text output. Use the web demo or a voice client for audio-only responses."));
-        }
+        finishDirectResponse(state, finish);
       }
       break;
+    case "response.completed":
+      if (!state.hermesRunStarted) finishDirectResponse(state, finish);
+      break;
+    case "response.failed":
+      if (!state.hermesRunStarted) finish(new Error(message.error ?? "Realtime provider response failed."));
+      break;
     case "approval.request":
-      await respondToApproval(ws, approvalReader, String(message.runId), message.event);
+      await respondToApproval(ws, approvalReader, String(message.runId), message.approval ?? message.event);
       break;
     case "run.completed":
       console.log(String(message.output ?? ""));
@@ -370,6 +375,16 @@ async function handleClientServerMessage(
     case "session.error":
       finish(new Error(message.message ?? message.error ?? "Gateway request failed."));
       break;
+  }
+}
+
+function finishDirectResponse(state: TextClientState, finish: (error?: Error) => void): void {
+  const output = state.directTranscript.join("").trim();
+  if (output) {
+    console.log(output);
+    finish();
+  } else {
+    finish(new Error("Realtime provider completed without text output. Use the web client for audio-only responses."));
   }
 }
 

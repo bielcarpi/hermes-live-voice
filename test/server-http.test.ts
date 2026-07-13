@@ -27,6 +27,16 @@ describe("HTTP server", () => {
     });
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       object: "hermes_live.capabilities",
+      protocolVersion: 1,
+      realtime: {
+        provider: "openai",
+        model: "gpt-realtime-2.1",
+        audio: {
+          input: { enabled: true, mimeType: "audio/pcm;rate=24000", recommendedFrameMs: 50 },
+          output: { enabled: true, mimeType: "audio/pcm;rate=24000" },
+          turnDetection: "disabled",
+        },
+      },
       features: { hermes_runs: true, openai_realtime: true },
     });
   });

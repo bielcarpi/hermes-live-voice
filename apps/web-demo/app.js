@@ -194,12 +194,21 @@ function addApprovalRequest(message) {
   const title = document.createElement("strong");
   title.textContent = "approval";
   const body = document.createElement("pre");
-  body.textContent = JSON.stringify(message.event, null, 2);
+  const approval = message.approval ?? {};
+  body.textContent = [
+    approval.description,
+    approval.command ? `Command: ${approval.command}` : undefined,
+    approval.approvalId ? `Approval: ${approval.approvalId}` : undefined,
+  ].filter(Boolean).join("\n") || "Hermes requested an approval without additional context.";
   const actions = document.createElement("div");
   actions.className = "approval-actions";
 
-  const informed = typeof message.event?.command === "string" || typeof message.event?.description === "string";
-  const choices = informed ? ["once", "session", "always", "deny"] : ["once", "deny"];
+  const informed = typeof approval.command === "string" || typeof approval.description === "string";
+  const choices = Array.isArray(approval.choices) && approval.choices.length > 0
+    ? approval.choices
+    : informed
+      ? ["once", "session", "always", "deny"]
+      : ["once", "deny"];
   for (const choice of choices) {
     const button = document.createElement("button");
     button.type = "button";

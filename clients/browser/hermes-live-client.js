@@ -4,6 +4,7 @@ const DEFAULT_MAX_INBOUND_MESSAGE_BYTES = 8_000_000;
 const DEFAULT_MAX_QUEUED_AUDIO_MS = 30_000;
 const DEFAULT_SAMPLE_RATE = 24_000;
 const OPEN = 1;
+export const HERMES_LIVE_PROTOCOL_VERSION = 1;
 
 const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "session.ready",
@@ -11,6 +12,10 @@ const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "audio.output",
   "transcript.delta",
   "input.speech_started",
+  "response.started",
+  "response.completed",
+  "response.cancelled",
+  "response.failed",
   "realtime.message",
   "run.started",
   "run.event",
@@ -179,6 +184,7 @@ export class HermesLiveClient {
           this.sendRaw({
             type: "session.start",
             id: this.createRequestId(),
+            protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
             ...(this.profileId ? { profileId: this.profileId } : {}),
             ...(this.userLabel ? { userLabel: this.userLabel } : {}),
           });
@@ -528,11 +534,20 @@ export class HermesLiveAudio {
     if (this.microphoneStopPromise) await this.microphoneStopPromise;
     if (!this.client.connected) throw new Error("Connect to Hermes Live before starting the microphone.");
     if (!this.mediaDevices?.getUserMedia) throw new Error("This browser does not provide microphone access.");
+    const negotiatedInput = this.client.session?.realtime?.audio?.input;
+    if (negotiatedInput?.enabled === false) {
+      throw new Error("This Hermes Live provider session does not accept microphone audio.");
+    }
+    if (negotiatedInput?.mimeType && !isPcmMimeType(negotiatedInput.mimeType)) {
+      throw new Error(
+        `Hermes Live browser microphone supports PCM16 input, not ${negotiatedInput.mimeType}. Configure the gateway for PCM16.`,
+      );
+    }
 
     this.interrupt("microphone started");
     const generation = ++this.captureGeneration;
     this.setMicrophoneState("starting");
-    const start = this.startMicrophonePipeline(generation);
+    const start = this.startMicrophonePipeline(generation, negotiatedInput);
     this.microphoneStartPromise = start;
     try {
       await start;
@@ -541,7 +556,7 @@ export class HermesLiveAudio {
     }
   }
 
-  async startMicrophonePipeline(generation) {
+  async startMicrophonePipeline(generation, negotiatedInput) {
     let stream;
     let context;
     let source;
@@ -551,7 +566,8 @@ export class HermesLiveAudio {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
       });
       this.assertCaptureGeneration(generation);
-      context = this.audioContextFactory({ sampleRate: this.sampleRate });
+      const negotiatedRate = negotiatedInput?.mimeType ? parsePcmRate(negotiatedInput.mimeType) : this.sampleRate;
+      context = this.audioContextFactory({ sampleRate: negotiatedRate });
       if (context.state === "suspended") await context.resume();
       this.assertCaptureGeneration(generation);
       await context.audioWorklet.addModule(this.workletUrl);
@@ -844,9 +860,17 @@ export function validateServerMessage(value) {
   const message = value;
   switch (message.type) {
     case "session.ready":
+      requireNumber(message, "protocolVersion");
+      if (message.protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
+        throw new TypeError(
+          `Hermes Live protocol version ${message.protocolVersion} is not supported by this client.`,
+        );
+      }
       requireString(message, "sessionId");
       requireString(message, "model");
       requireObject(message, "hermes");
+      requireObject(message, "realtime");
+      validateRealtimeCapabilities(message.realtime);
       break;
     case "session.error":
       requireString(message, "code");
@@ -863,14 +887,25 @@ export function validateServerMessage(value) {
     case "input.speech_started":
       requireString(message, "provider");
       break;
+    case "response.started":
+    case "response.completed":
+    case "response.cancelled":
+      break;
+    case "response.failed":
+      requireString(message, "error");
+      break;
     case "run.started":
       requireString(message, "runId");
       requireString(message, "sessionId");
       break;
     case "run.event":
+      requireString(message, "runId");
+      requireObject(message, "event");
+      break;
     case "approval.request":
       requireString(message, "runId");
       requireObject(message, "event");
+      requireObject(message, "approval");
       break;
     case "approval.responded":
       requireString(message, "runId");
@@ -908,6 +943,27 @@ function requireObject(value, key) {
   }
 }
 
+function requireNumber(value, key) {
+  if (typeof value[key] !== "number" || !Number.isFinite(value[key])) {
+    throw new TypeError(`Hermes Live ${value.type} message requires ${key}.`);
+  }
+}
+
+function validateRealtimeCapabilities(value) {
+  requireString({ type: "session.ready realtime", ...value }, "provider");
+  requireString({ type: "session.ready realtime", ...value }, "model");
+  requireObject({ type: "session.ready realtime", ...value }, "audio");
+  const audio = value.audio;
+  requireObject({ type: "session.ready realtime audio", ...audio }, "input");
+  requireObject({ type: "session.ready realtime audio", ...audio }, "output");
+  requireString({ type: "session.ready realtime audio", ...audio }, "turnDetection");
+  if (typeof audio.input.enabled !== "boolean" || typeof audio.output.enabled !== "boolean") {
+    throw new TypeError("Hermes Live session.ready realtime audio capabilities require enabled flags.");
+  }
+  if (audio.input.enabled) requireString({ type: "session.ready realtime audio input", ...audio.input }, "mimeType");
+  if (audio.output.enabled) requireString({ type: "session.ready realtime audio output", ...audio.output }, "mimeType");
+}
+
 function createSnapshot(connection) {
   return {
     connection,
@@ -938,6 +994,10 @@ function parsePcmRate(mimeType) {
   }
   const match = /(?:^|;)\s*rate=(\d+)(?:;|$)/i.exec(normalized);
   return positiveInteger(match?.[1], DEFAULT_SAMPLE_RATE);
+}
+
+function isPcmMimeType(mimeType) {
+  return String(mimeType).split(";")[0]?.trim().toLowerCase() === "audio/pcm";
 }
 
 function decodePcm16(data, decodeBase64) {
