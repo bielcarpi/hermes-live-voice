@@ -3,7 +3,7 @@
   "label": "Live Voice",
   "description": "Talk to Hermes in real time with interruption, task progress, and approvals.",
   "icon": "Zap",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "tab": {
     "path": "/live-voice",
     "position": "after:chat"

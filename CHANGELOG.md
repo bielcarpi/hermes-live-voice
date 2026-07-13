@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-13
+
+- Add a first-class **Live Voice** tab to the official Hermes Dashboard with responsive desktop/mobile layouts, browser microphone and playback, text fallback, transcript, capability status, task activity, separate response interruption and Hermes run cancellation, and approval controls.
+- Add an authenticated same-origin Dashboard HTTP/WebSocket proxy that delegates to Hermes' own Dashboard authentication and origin checks while keeping the upstream gateway URL and bearer out of browser code.
+- Publish a dependency-free `hermes-live-voice/browser` client and microphone worklet with strict protocol/lifecycle validation, bounded input and playback queues, request IDs, state subscriptions, and host-provided authenticated WebSocket URLs.
+- Normalize client close frames to browser-legal codes and bounded UTF-8 reasons, recover from missing close events, suppress late audio after interruption until the next response begins, and replace stale connected notices when a gateway connection drops.
+- Negotiate protocol v1 explicitly and expose provider-neutral response lifecycle, model/provider metadata, audio capabilities, turn-detection mode, structured approvals, and UI-safe run state.
+- Enable Gemini Live input/output audio transcription, preserve speaker/final metadata, avoid duplicate transcript events, and emit a normalized response-start lifecycle before assistant output.
+- Preserve concurrent approvals in FIFO order across the browser client, Dashboard, demo, persistent terminal, and one-shot CLI; only the queue head is actionable and only resolved entries are removed.
+- Limit permanent approvals to choices backed by displayable permission patterns and require a second confirmation in every interactive client.
+- Remove approval submission from realtime-provider tools and enforce human approval choices against a sanitized server-side FIFO queue, with fail-closed denial and no bulk resolution.
+- Harden the default unauthenticated loopback WebSocket policy against DNS rebinding while retaining headerless terminal/native clients and exact configured browser origins.
+- Add `hermes-live terminal` and its `chat` alias for persistent remote/headless text control with transcripts, task progress, approvals, `/interrupt`, `/stop`, and safe exit behavior.
+- Package the Dashboard frontend/backend assets and browser client in plugin, npm tarball, and Docker runtime outputs, with generated-asset parity and smoke checks.
+- Promote the official Dashboard to the recommended UI, document secure community UI integration, clarify Hermes Voice Mode and OpenAI-compatible UI boundaries, and add a real Dashboard screenshot.
+- Align the Docker Compose OpenAI Realtime default with `gpt-realtime-2.1`.
+- Make tagged release jobs fail when the Git tag does not match `package.json` or point at the exact protected `main` commit.
+
 ## 0.2.1 - 2026-07-13
 
 - Replace session-label regex trimming with a linear sanitizer to prevent adversarial input from causing excessive processing.
