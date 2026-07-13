@@ -18,6 +18,16 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - name: Verify tag matches package version
+        run: |
+          package_version="$(node -p 'require("./package.json").version')"
+          test "$GITHUB_REF_NAME" = "v$package_version"
+      - name: Verify tag points at protected main
+        run: |
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          test "$GITHUB_SHA" = "$main_sha"
+        env:
+          GH_TOKEN: ${{ github.token }}
       - run: npm ci
       - run: npm run verify
       - run: npm audit --audit-level=moderate
@@ -43,6 +53,10 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
           cache: npm
+      - name: Verify tag matches package version
+        run: |
+          package_version="$(node -p 'require("./package.json").version')"
+          test "$GITHUB_REF_NAME" = "v$package_version"
       - run: npm ci
       - run: npm run verify
       - run: npm publish --access public --provenance

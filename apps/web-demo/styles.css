@@ -398,6 +398,13 @@ input:focus {
   font-size: 12px;
 }
 
+.approval-queue-status {
+  flex-basis: 100%;
+  color: #9aa6b5;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto;

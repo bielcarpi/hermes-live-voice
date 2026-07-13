@@ -25,6 +25,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("session.start"),
     id: RequestIdSchema,
+    protocolVersion: z.number().int().positive().max(1_000).optional(),
     profileId: ClientMetadataStringSchema.optional(),
     userLabel: ClientMetadataStringSchema.optional(),
   }),

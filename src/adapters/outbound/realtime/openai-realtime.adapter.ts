@@ -210,6 +210,9 @@ export function normalizeOpenAIRealtimeEvent(
   const events: LiveModelEvent[] = [];
   const root = event as any;
 
+  const response = normalizeOpenAIResponseLifecycle(root);
+  if (response) events.push(response);
+
   if ((root?.type === "response.output_audio.delta" || root?.type === "response.audio.delta") && typeof root.delta === "string") {
     events.push({ type: "audio", audio: { data: root.delta, mimeType: openAiAudioMimeType(outputAudioFormat) } });
     const audio = events[events.length - 1];
@@ -243,6 +246,37 @@ export function normalizeOpenAIRealtimeEvent(
   }
   events.push({ type: "raw", message: event });
   return events;
+}
+
+function normalizeOpenAIResponseLifecycle(root: any): LiveModelEvent | undefined {
+  const responseId = typeof root?.response?.id === "string"
+    ? root.response.id
+    : typeof root?.response_id === "string"
+      ? root.response_id
+      : undefined;
+  if (root?.type === "response.created") {
+    return { type: "response", status: "started", ...(responseId ? { responseId } : {}) };
+  }
+  const providerStatus = root?.response?.status;
+  if (root?.type === "response.cancelled" || providerStatus === "cancelled") {
+    return { type: "response", status: "cancelled", ...(responseId ? { responseId } : {}) };
+  }
+  if (
+    root?.type === "response.failed" ||
+    providerStatus === "failed" ||
+    providerStatus === "incomplete"
+  ) {
+    return {
+      type: "response",
+      status: "failed",
+      ...(responseId ? { responseId } : {}),
+      error: "OpenAI Realtime response failed.",
+    };
+  }
+  if (root?.type === "response.done" || providerStatus === "completed") {
+    return { type: "response", status: "completed", ...(responseId ? { responseId } : {}) };
+  }
+  return undefined;
 }
 
 export function buildOpenAIRealtimeAudioAppend(

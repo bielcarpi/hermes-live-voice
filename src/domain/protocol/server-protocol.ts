@@ -1,20 +1,47 @@
 import type { ApprovalChoice } from "./client-protocol.js";
+import type { HermesLiveProtocolVersion } from "./version.js";
+
+export interface RealtimeClientCapabilities {
+  provider: "gemini" | "openai" | "mock";
+  model: string;
+  audio: {
+    input: { enabled: boolean; mimeType?: string; recommendedFrameMs?: number };
+    output: { enabled: boolean; mimeType?: string };
+    turnDetection: "disabled" | "semantic_vad" | "server_vad" | "provider" | "none";
+  };
+}
+
+export interface HermesApprovalDetails {
+  approvalId?: string;
+  command?: string;
+  description?: string;
+  patternKey?: string;
+  patternKeys?: string[];
+  choices: ApprovalChoice[];
+  allowPermanent: boolean;
+}
 
 export type ServerMessage =
   | {
       type: "session.ready";
+      protocolVersion: HermesLiveProtocolVersion;
       sessionId: string;
       model: string;
       hermes: { model?: string; capabilities?: Record<string, unknown> };
+      realtime: RealtimeClientCapabilities;
     }
   | { type: "session.error"; code: string; message: string; requestId?: string; recoverable?: boolean }
   | { type: "audio.output"; data: string; mimeType: string; itemId?: string; contentIndex?: number }
   | { type: "transcript.delta"; speaker: "user" | "assistant" | "system"; text: string; final?: boolean }
   | { type: "input.speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number }
+  | { type: "response.started"; responseId?: string }
+  | { type: "response.completed"; responseId?: string }
+  | { type: "response.cancelled"; responseId?: string }
+  | { type: "response.failed"; responseId?: string; error: string }
   | { type: "realtime.message"; message: unknown }
   | { type: "run.started"; runId: string; sessionId: string }
   | { type: "run.event"; runId: string; event: HermesRunEvent }
-  | { type: "approval.request"; runId: string; event: HermesRunEvent }
+  | { type: "approval.request"; runId: string; event: HermesRunEvent; approval: HermesApprovalDetails }
   | { type: "approval.responded"; runId: string; choice: ApprovalChoice; resolved?: number }
   | { type: "run.completed"; runId: string; output: string; usage?: Record<string, unknown> }
   | { type: "run.failed"; runId: string; error: string }

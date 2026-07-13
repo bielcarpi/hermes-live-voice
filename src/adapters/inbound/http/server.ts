@@ -15,6 +15,8 @@ import { buildReadinessReport } from "../../../readiness.js";
 import { serveStatic } from "./static.js";
 import { WebSocketClientConnection } from "./websocket-client-connection.js";
 import { errorToMessage } from "../../../domain/error-message.js";
+import { HERMES_LIVE_PROTOCOL_VERSION } from "../../../domain/protocol/version.js";
+import { realtimeClientCapabilities } from "../../../application/live-gateway/client-capabilities.js";
 
 export interface StartServerOptions {
   config: AppConfig;
@@ -37,6 +39,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
   const hermes = providedHermes ?? new HermesClient(config.hermes);
   const liveModel = providedLiveModel ?? createLiveModelAdapter(config);
   const demoRoot = resolveDemoRoot();
+  const browserClientRoot = resolveBrowserClientRoot();
   const sessions = new Set<LiveGatewaySession>();
 
   const server = createServer(async (req, res) => {
@@ -45,6 +48,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
         config,
         hermes,
         demoRoot,
+        browserClientRoot,
         requireHermesApiKey: !providedHermes,
         requireRealtimeProviderConfig: !providedLiveModel,
       });
@@ -120,6 +124,7 @@ async function handleHttp(
     config: AppConfig;
     hermes: HermesRunsPort;
     demoRoot: string;
+    browserClientRoot: string;
     requireHermesApiKey: boolean;
     requireRealtimeProviderConfig: boolean;
   },
@@ -172,7 +177,9 @@ async function handleHttp(
     json(req, res, 200, {
       object: "hermes_live.capabilities",
       service: "hermes-live",
+      protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },
+      realtime: realtimeClientCapabilities(options.config),
       features: {
         auth_required: Boolean(options.config.server.authToken),
         server_managed_identity: !options.config.server.trustClientIdentity,
@@ -192,6 +199,13 @@ async function handleHttp(
     return;
   }
   if (options.config.server.demoEnabled && serveStatic(req, res, { root: options.demoRoot })) {
+    return;
+  }
+  if (
+    options.config.server.demoEnabled &&
+    (url.pathname === "/hermes-live-client.js" || url.pathname === "/mic-worklet.js") &&
+    serveStatic(req, res, { root: options.browserClientRoot })
+  ) {
     return;
   }
   json(req, res, 404, { status: "not_found" });
@@ -221,11 +235,74 @@ function isWebSocketOriginAllowed(req: IncomingMessage, config: AppConfig): bool
   if (config.server.allowOrigin) {
     return origin === config.server.allowOrigin;
   }
-  try {
-    return new URL(origin).host === req.headers.host;
-  } catch {
-    return false;
+
+  const originUrl = parseBrowserOrigin(origin);
+  const requestHost = originUrl
+    ? parseHttpHost(req.headers.host, originUrl.protocol === "https:" ? "https:" : "http:")
+    : undefined;
+  return (
+    originUrl !== undefined &&
+    requestHost !== undefined &&
+    isLoopbackHostname(originUrl.hostname) &&
+    isLoopbackHostname(requestHost.hostname) &&
+    effectivePort(originUrl) === effectivePort(requestHost)
+  );
+}
+
+function parseBrowserOrigin(origin: string): URL | undefined {
+  if (origin !== origin.trim()) {
+    return undefined;
   }
+  try {
+    const parsed = new URL(origin);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.origin !== origin
+    ) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseHttpHost(host: string | undefined, protocol: "http:" | "https:"): URL | undefined {
+  if (!host || host !== host.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(`${protocol}//${host}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (normalized === "localhost" || normalized === "::1") {
+    return true;
+  }
+  const octets = normalized.split(".");
+  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => /^(?:0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+}
+
+function effectivePort(url: URL): string | undefined {
+  if (url.protocol === "http:") {
+    return url.port || "80";
+  }
+  if (url.protocol === "https:") {
+    return url.port || "443";
+  }
+  return undefined;
 }
 
 function addCors(req: IncomingMessage, res: ServerResponse, config: AppConfig): void {
@@ -302,6 +379,11 @@ function clientWebSocketMaxPayload(config: AppConfig): number {
 function resolveDemoRoot(): string {
   const current = dirname(fileURLToPath(import.meta.url));
   return join(current, "..", "..", "..", "..", "apps", "web-demo");
+}
+
+function resolveBrowserClientRoot(): string {
+  const current = dirname(fileURLToPath(import.meta.url));
+  return join(current, "..", "..", "..", "..", "clients", "browser");
 }
 
 function listenHttpServer(server: ReturnType<typeof createServer>, port: number, host: string): Promise<void> {

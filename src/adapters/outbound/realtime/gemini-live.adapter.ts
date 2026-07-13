@@ -17,22 +17,15 @@ export class GeminiLiveAdapter implements LiveModelAdapter {
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
     this.assertConfigured();
     const ai = this.createClient();
+    const forwardMessage = createGeminiLiveEventForwarder(params.callbacks.onEvent);
     const session: any = await (ai as any).live.connect({
       model: this.config.model,
-      config: {
-        responseModalities: [Modality.AUDIO],
-        systemInstruction: params.systemInstruction,
-        tools: [{ functionDeclarations: HERMES_LIVE_TOOL_DECLARATIONS }],
-      },
+      config: buildGeminiLiveConnectConfig(params.systemInstruction),
       callbacks: {
         onopen: () => params.callbacks.onOpen?.(),
         onclose: (event: unknown) => params.callbacks.onClose?.(event),
         onerror: (event: unknown) => params.callbacks.onError?.(event),
-        onmessage: (message: unknown) => {
-          for (const event of normalizeGeminiLiveMessage(message)) {
-            params.callbacks.onEvent(event);
-          }
-        },
+        onmessage: forwardMessage,
       },
     });
     return new GeminiLiveSession(session);
@@ -61,6 +54,32 @@ export class GeminiLiveAdapter implements LiveModelAdapter {
       ...(this.config.apiVersion ? { apiVersion: this.config.apiVersion } : {}),
     } as any);
   }
+}
+
+export function createGeminiLiveEventForwarder(onEvent: (event: LiveModelEvent) => void) {
+  let responseActive = false;
+  return (message: unknown): void => {
+    for (const event of normalizeGeminiLiveMessage(message)) {
+      const startsAssistantResponse = event.type === "audio" ||
+        (event.type === "text" && (event.speaker ?? "assistant") === "assistant");
+      if (startsAssistantResponse && !responseActive) {
+        responseActive = true;
+        onEvent({ type: "response", status: "started" });
+      }
+      onEvent(event);
+      if (event.type === "response" && event.status !== "started") responseActive = false;
+    }
+  };
+}
+
+export function buildGeminiLiveConnectConfig(systemInstruction: string) {
+  return {
+    responseModalities: [Modality.AUDIO],
+    inputAudioTranscription: {},
+    outputAudioTranscription: {},
+    systemInstruction,
+    tools: [{ functionDeclarations: HERMES_LIVE_TOOL_DECLARATIONS }],
+  };
 }
 
 export class GeminiLiveSession implements LiveModelSession {
@@ -132,6 +151,26 @@ export function buildGeminiToolResponse(
 export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
   const events: LiveModelEvent[] = [];
   const root = unwrapMessage(message);
+  const serverContent = root?.serverContent ?? root?.server_content;
+
+  const inputTranscription = extractTranscription(serverContent, "inputTranscription", "input_transcription");
+  const interimInputTranscription = extractTranscription(
+    serverContent,
+    "interimInputTranscription",
+    "interim_input_transcription",
+  );
+  const outputTranscription = extractTranscription(serverContent, "outputTranscription", "output_transcription");
+
+  // A finalized/standard input transcript supersedes a low-latency interim
+  // transcript when Gemini includes both in one server message. Fall back to
+  // the interim value if the standard field is present but has no text yet.
+  const userTranscriptEvent =
+    normalizeTranscription(inputTranscription, "user") ??
+    normalizeTranscription(interimInputTranscription, "user", false);
+  if (userTranscriptEvent) events.push(userTranscriptEvent);
+
+  const assistantTranscriptEvent = normalizeTranscription(outputTranscription, "assistant");
+  if (assistantTranscriptEvent) events.push(assistantTranscriptEvent);
 
   for (const call of extractFunctionCalls(root)) {
     events.push({ type: "tool_call", call });
@@ -145,7 +184,10 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
   }
   for (const part of extractParts(root)) {
     const text = typeof part.text === "string" ? part.text : undefined;
-    if (text) {
+    // Native-audio responses may expose the same spoken content as both a
+    // model text part and outputTranscription. Prefer the transcript because
+    // it carries Gemini's completion signal.
+    if (text && !assistantTranscriptEvent) {
       events.push({ type: "text", text });
     }
     const inlineData = part.inlineData ?? part.inline_data;
@@ -157,8 +199,36 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
       });
     }
   }
+  if (serverContent?.interrupted === true) {
+    events.push({ type: "response", status: "cancelled" });
+  } else if (serverContent?.turnComplete === true || serverContent?.turn_complete === true) {
+    events.push({ type: "response", status: "completed" });
+  }
   events.push({ type: "raw", message });
   return events;
+}
+
+function extractTranscription(serverContent: any, camelCaseKey: string, snakeCaseKey: string): any {
+  return serverContent?.[camelCaseKey] ?? serverContent?.[snakeCaseKey];
+}
+
+function normalizeTranscription(
+  transcription: any,
+  speaker: "user" | "assistant",
+  finalOverride?: boolean,
+): Extract<LiveModelEvent, { type: "text" }> | undefined {
+  const text = transcription?.text;
+  if (typeof text !== "string" || text.length === 0) {
+    return undefined;
+  }
+  const finished = transcription?.finished ?? transcription?.is_finished;
+  const final = finalOverride ?? (typeof finished === "boolean" ? finished : undefined);
+  return {
+    type: "text",
+    speaker,
+    text,
+    ...(final === undefined ? {} : { final }),
+  };
 }
 
 function unwrapMessage(message: unknown): any {

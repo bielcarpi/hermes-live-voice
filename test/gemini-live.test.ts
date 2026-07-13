@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildGeminiLiveConnectConfig,
+  createGeminiLiveEventForwarder,
   buildGeminiRealtimeAudioInput,
   buildGeminiRealtimeTextInput,
   buildGeminiTextTurn,
@@ -10,6 +12,28 @@ import {
 } from "../src/adapters/outbound/realtime/gemini-live.adapter.js";
 
 describe("Gemini Live adapter helpers", () => {
+  it("enables input and output audio transcription for live sessions", () => {
+    expect(buildGeminiLiveConnectConfig("test instruction")).toMatchObject({
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+      systemInstruction: "test instruction",
+    });
+  });
+
+  it("emits one response start per Gemini turn before assistant output", () => {
+    const events: any[] = [];
+    const forward = createGeminiLiveEventForwarder((event) => events.push(event));
+
+    forward({ serverContent: { outputTranscription: { text: "Hello", finished: false } } });
+    forward({ serverContent: { outputTranscription: { text: " there", finished: true } } });
+    forward({ serverContent: { turnComplete: true } });
+    forward({ serverContent: { outputTranscription: { text: "Next turn", finished: true }, turnComplete: true } });
+
+    expect(events.filter((event) => event.type === "response" && event.status === "started")).toHaveLength(2);
+    expect(events[0]).toEqual({ type: "response", status: "started" });
+    expect(events).toContainEqual({ type: "response", status: "completed" });
+  });
+
   it("normalizes function calls from Gemini toolCall messages", () => {
     const events = normalizeGeminiLiveMessage({
       toolCall: {
@@ -48,6 +72,73 @@ describe("Gemini Live adapter helpers", () => {
       audio: { data: "base64-audio", mimeType: "audio/pcm;rate=24000" },
     });
     expect(events.at(-1)).toMatchObject({ type: "raw" });
+    expect(events).toContainEqual({ type: "response", status: "completed" });
+  });
+
+  it("normalizes input and output transcriptions with speaker and final metadata", () => {
+    const events = normalizeGeminiLiveMessage({
+      serverContent: {
+        inputTranscription: { text: "What time is it?", finished: true },
+        outputTranscription: { text: "It is noon.", finished: false },
+      },
+    });
+
+    expect(events).toContainEqual({
+      type: "text",
+      speaker: "user",
+      text: "What time is it?",
+      final: true,
+    });
+    expect(events).toContainEqual({
+      type: "text",
+      speaker: "assistant",
+      text: "It is noon.",
+      final: false,
+    });
+  });
+
+  it("normalizes interim input transcription as a non-final user delta", () => {
+    expect(
+      normalizeGeminiLiveMessage({
+        server_content: {
+          interim_input_transcription: { text: "What ti", finished: true },
+        },
+      }),
+    ).toContainEqual({ type: "text", speaker: "user", text: "What ti", final: false });
+  });
+
+  it("falls back to interim text while the standard input transcript is empty", () => {
+    expect(
+      normalizeGeminiLiveMessage({
+        serverContent: {
+          inputTranscription: { text: "", finished: false },
+          interimInputTranscription: { text: "Still speaking", finished: false },
+        },
+      }),
+    ).toContainEqual({ type: "text", speaker: "user", text: "Still speaking", final: false });
+  });
+
+  it("does not duplicate authoritative transcriptions through interim or model text", () => {
+    const events = normalizeGeminiLiveMessage({
+      serverContent: {
+        inputTranscription: { text: "Hello", finished: true },
+        interimInputTranscription: { text: "Hello", finished: false },
+        outputTranscription: { text: "Hi there", finished: true },
+        modelTurn: { parts: [{ text: "Hi there" }] },
+      },
+    });
+
+    expect(events.filter((event) => event.type === "text")).toEqual([
+      { type: "text", speaker: "user", text: "Hello", final: true },
+      { type: "text", speaker: "assistant", text: "Hi there", final: true },
+    ]);
+  });
+
+  it("normalizes Gemini interruption lifecycle", () => {
+    expect(normalizeGeminiLiveMessage({ serverContent: { interrupted: true } })).toContainEqual({
+      type: "response",
+      status: "cancelled",
+    });
   });
 
   it("still unwraps SDK or event wrappers whose data field contains a message object", () => {

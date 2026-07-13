@@ -14,6 +14,36 @@ For a one-shot terminal smoke test, use:
 node dist/cli.js client "What is the current status?"
 ```
 
+For a persistent text-control session, use `node dist/cli.js terminal`. It exercises this same protocol while exposing task progress, approvals, provider interruption, and Hermes task stop as terminal commands. It intentionally has no native audio dependency: use official Hermes Voice Mode (Ctrl+B) for a local microphone, or the Dashboard/browser client for remote gateway audio.
+
+## Browser Client
+
+`hermes-live-voice/browser` is the canonical framework-independent browser client. It has no Node, provider SDK, or UI-framework runtime dependencies. The bundled web demo consumes the same module that is included in the packed npm artifact.
+
+```js
+import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
+
+const client = new HermesLiveClient({
+  url: "wss://voice.example.com/v1/live",
+  token: async () => getShortLivedToken(),
+  profileId: "default",
+  userLabel: "browser",
+});
+
+client.on("transcript.delta", ({ speaker, text }) => renderTranscript(speaker, text));
+client.on("approval.request", renderApproval);
+client.on("error", ({ code, error }) => renderError(code, error.message));
+
+await client.connect();
+client.sendText("Inspect this repository");
+```
+
+Every command method returns its generated request ID. `sendAudio()` returns `undefined` and emits `audio.dropped` when the browser WebSocket exceeds the configured backpressure limit. Unknown future server message types emit `unknownmessage`; malformed known lifecycle messages close the connection instead of corrupting local state.
+
+For microphone capture and PCM16 playback, compose `HermesLiveAudio` with a worklet URL owned by the host application. The gateway serves it at `/mic-worklet.js`, and the package exposes the source as `hermes-live-voice/browser/mic-worklet.js` for clients that copy or bundle static assets. Playback is serialized and bounded, and `interrupt()` returns OpenAI-compatible truncation metadata before sending `response.cancel`.
+
+The browser audio helper intentionally rejects G.711 output rather than decoding it as PCM16. Keep `OPENAI_REALTIME_INPUT_AUDIO_FORMAT=pcm16` and `OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT=pcm16` for browser voice clients until a client explicitly implements negotiated G.711 codecs.
+
 ## Authentication
 
 If `HERMES_LIVE_AUTH_TOKEN` is configured, clients must authenticate to:
@@ -85,6 +115,7 @@ The first message must be `session.start`.
 ```json
 {
   "type": "session.start",
+  "protocolVersion": 1,
   "profileId": "default",
   "userLabel": "alice"
 }
@@ -97,13 +128,32 @@ The server replies:
 ```json
 {
   "type": "session.ready",
+  "protocolVersion": 1,
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
   "hermes": {
     "model": "hermes-agent"
+  },
+  "realtime": {
+    "provider": "openai",
+    "model": "gpt-realtime-2.1",
+    "audio": {
+      "input": {
+        "enabled": true,
+        "mimeType": "audio/pcm;rate=24000",
+        "recommendedFrameMs": 50
+      },
+      "output": {
+        "enabled": true,
+        "mimeType": "audio/pcm;rate=24000"
+      },
+      "turnDetection": "disabled"
+    }
   }
 }
 ```
+
+The current protocol version is `1`. The gateway still accepts legacy clients that omit `protocolVersion`, but rejects an explicit unsupported version before opening a provider session. New clients should send the version and use the negotiated audio contract in `session.ready`; they must not assume every deployment uses PCM16.
 
 ## Audio Input
 
@@ -220,6 +270,17 @@ Raw realtime provider message:
 
 Clients usually do not need to show raw provider messages. They are useful for debugging and provider-specific telemetry.
 
+Provider-neutral response lifecycle:
+
+```json
+{ "type": "response.started", "responseId": "resp_..." }
+{ "type": "response.completed", "responseId": "resp_..." }
+{ "type": "response.cancelled", "responseId": "resp_..." }
+{ "type": "response.failed", "responseId": "resp_...", "error": "Realtime response failed." }
+```
+
+`responseId` is optional because not every provider exposes one. Clients should use these normalized events for UI state and completion instead of parsing `realtime.message` for provider-specific OpenAI or Gemini shapes.
+
 Hermes run started:
 
 ```json
@@ -288,9 +349,21 @@ When Hermes asks for approval, the gateway emits:
   "runId": "run_...",
   "event": {
     "event": "approval.request"
+  },
+  "approval": {
+    "approvalId": "approval_...",
+    "command": "git push origin feature",
+    "description": "This command changes a remote repository.",
+    "patternKey": "git_push",
+    "choices": ["once", "session", "always", "deny"],
+    "allowPermanent": true
   }
 }
 ```
+
+Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then bounds and projects only the fields needed for an informed decision. The gateway always adds `deny` when Hermes omits it so a human can fail closed. When the event lacks a command and description, other `choices` are restricted to `once`; clients must not invent persistent approval options for an opaque request.
+
+The gateway also retains these sanitized envelopes server-side in FIFO order. It accepts a response only for the active run's queue head and only when `choice` was offered in that envelope. `always` additionally requires `allowPermanent: true` and a non-empty `patternKey` or `patternKeys`. Protocol v1 rejects `resolveAll: true`; clients must answer each request explicitly.
 
 The client responds:
 

@@ -10,11 +10,13 @@ import WebSocket from "ws";
 import { assertRuntimeConfig, loadConfig } from "./config.js";
 import type { AppConfig } from "./config.js";
 import { createLogger } from "./logger.js";
-import { ApprovalChoiceSchema } from "./protocol.js";
+import { HERMES_LIVE_PROTOCOL_VERSION } from "./protocol.js";
 import { buildReadinessReport } from "./readiness.js";
 import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
+import { promptForOneShotApproval } from "./cli/one-shot-approval.js";
+import { normalizeGatewayWebSocketUrl, runInteractiveTerminal } from "./cli/terminal-session.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
 
@@ -49,6 +51,19 @@ async function main(): Promise<void> {
       return;
     }
     await runTextClient(config, text);
+    return;
+  }
+
+  if (command === "terminal" || command === "chat") {
+    const config = loadConfig();
+    await runInteractiveTerminal({
+      url: process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config),
+      ...(config.server.authToken ? { authToken: config.server.authToken } : {}),
+      userLabel: process.env.USER ?? "terminal",
+    });
+    // A piped stdin remains referenced after readline closes; release it so
+    // non-interactive terminal sessions exit just as cleanly as TTY sessions.
+    input.destroy();
     return;
   }
 
@@ -115,6 +130,8 @@ Usage:
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one text prompt through a running gateway
+  hermes-live terminal      Open the interactive text-control gateway console
+  hermes-live chat          Alias for terminal
   hermes-live check         Check Hermes capabilities and realtime provider config
   hermes-live provider-smoke Open and close a real Gemini/OpenAI provider session
   hermes-live print-config  Print resolved config with secrets redacted
@@ -129,6 +146,7 @@ Required environment:
   OPENAI_API_KEY            OpenAI API key when HERMES_LIVE_PROVIDER=openai
 
 Optional:
+  HERMES_LIVE_URL           Remote gateway HTTP/WS URL for client and terminal
   HERMES_LIVE_PORT          Gateway port, default 8788
   HERMES_LIVE_AUTH_TOKEN    Require auth for /v1/live, /ready, and /v1/capabilities
   HERMES_LIVE_ALLOW_UNAUTHENTICATED  Unsafe opt-out for network-accessible binds
@@ -141,6 +159,11 @@ Optional:
   HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2.1
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
+
+Terminal voice:
+  The terminal console controls a remote Hermes Live session without native
+  audio dependencies. For local microphone use, run Hermes and press Ctrl+B
+  for official Hermes Voice Mode. Use the Dashboard/browser UI for gateway audio.
 
 Plugin options:
   --dir <path>              Hermes plugins directory, default ~/.hermes/plugins
@@ -286,7 +309,7 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 async function runTextClient(config: AppConfig, text: string): Promise<void> {
-  const url = process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config);
+  const url = normalizeGatewayWebSocketUrl(process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config));
   const headers = config.server.authToken ? { authorization: `Bearer ${config.server.authToken}` } : undefined;
   const ws = new WebSocket(url, { headers });
   const approvalReader = createInterface({ input, output: approvalOutput });
@@ -307,7 +330,12 @@ async function runTextClient(config: AppConfig, text: string): Promise<void> {
       };
 
       ws.once("open", () => {
-        ws.send(JSON.stringify({ type: "session.start", profileId: "terminal", userLabel: process.env.USER ?? "terminal" }));
+        ws.send(JSON.stringify({
+          type: "session.start",
+          protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+          profileId: "terminal",
+          userLabel: process.env.USER ?? "terminal",
+        }));
       });
       ws.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
       ws.once("close", (code, reason) => {
@@ -350,17 +378,17 @@ async function handleClientServerMessage(
       break;
     case "realtime.message":
       if (!state.hermesRunStarted && isRealtimeResponseComplete(message.message)) {
-        const output = state.directTranscript.join("").trim();
-        if (output) {
-          console.log(output);
-          finish();
-        } else {
-          finish(new Error("Realtime provider completed without text output. Use the web demo or a voice client for audio-only responses."));
-        }
+        finishDirectResponse(state, finish);
       }
       break;
+    case "response.completed":
+      if (!state.hermesRunStarted) finishDirectResponse(state, finish);
+      break;
+    case "response.failed":
+      if (!state.hermesRunStarted) finish(new Error(message.error ?? "Realtime provider response failed."));
+      break;
     case "approval.request":
-      await respondToApproval(ws, approvalReader, String(message.runId), message.event);
+      await respondToApproval(ws, approvalReader, String(message.runId), message.approval ?? message.event);
       break;
     case "run.completed":
       console.log(String(message.output ?? ""));
@@ -370,6 +398,16 @@ async function handleClientServerMessage(
     case "session.error":
       finish(new Error(message.message ?? message.error ?? "Gateway request failed."));
       break;
+  }
+}
+
+function finishDirectResponse(state: TextClientState, finish: (error?: Error) => void): void {
+  const output = state.directTranscript.join("").trim();
+  if (output) {
+    console.log(output);
+    finish();
+  } else {
+    finish(new Error("Realtime provider completed without text output. Use the web client for audio-only responses."));
   }
 }
 
@@ -403,10 +441,10 @@ async function respondToApproval(
   event: unknown,
 ): Promise<void> {
   console.error(`Approval requested for ${runId}:`);
-  console.error(JSON.stringify(event, null, 2));
-  const answer = await approvalReader.question("Approve once/session/always, or deny? [deny] ");
-  const parsed = ApprovalChoiceSchema.safeParse(answer.trim() || "deny");
-  const choice = parsed.success ? parsed.data : "deny";
+  const choice = await promptForOneShotApproval(approvalReader, event, {
+    interactive: input.isTTY === true,
+    writeLine: (line) => console.error(line),
+  });
   ws.send(JSON.stringify({ type: "approval.respond", runId, choice }));
 }
 

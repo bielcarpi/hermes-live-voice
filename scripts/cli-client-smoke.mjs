@@ -49,7 +49,7 @@ if (!port) {
 }
 
 try {
-  await runClient(port, hermesPrompt, expectedHermesOutput);
+  await runClient(port, hermesPrompt, expectedHermesOutput, { httpOrigin: true });
   await runClient(port, directPrompt, expectedDirectOutput);
   await runClient(port, audioOnlyPrompt, "", {
     expectFailure: true,
@@ -74,7 +74,9 @@ async function runClient(port, prompt, expectedOutput, options = {}) {
     env: {
       ...process.env,
       HERMES_LIVE_PROVIDER: "mock",
-      HERMES_LIVE_URL: `ws://127.0.0.1:${port}/v1/live`,
+      HERMES_LIVE_URL: options.httpOrigin
+        ? `http://127.0.0.1:${port}`
+        : `ws://127.0.0.1:${port}/v1/live`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

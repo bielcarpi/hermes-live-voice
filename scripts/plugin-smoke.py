@@ -14,6 +14,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "hermes-live"
+DASHBOARD_DIR = PLUGIN_DIR / "dashboard"
 
 
 class FakeHermesPluginContext:
@@ -29,7 +30,12 @@ class FakeHermesPluginContext:
 
 
 def main() -> None:
-    for path in [PLUGIN_DIR / "__init__.py", PLUGIN_DIR / "schemas.py", PLUGIN_DIR / "tools.py"]:
+    for path in [
+        PLUGIN_DIR / "__init__.py",
+        PLUGIN_DIR / "schemas.py",
+        PLUGIN_DIR / "tools.py",
+        DASHBOARD_DIR / "plugin_api.py",
+    ]:
         py_compile.compile(str(path), doraise=True)
 
     plugin = load_plugin()
@@ -69,7 +75,44 @@ def main() -> None:
         raise AssertionError("plugin.yaml is missing a version")
     assert_equal(version_match.group(1), package["version"], "plugin/package version")
 
-    print("Plugin smoke ok: manifest, register(ctx), tool handler, and slash command verified")
+    dashboard_manifest = json.loads((DASHBOARD_DIR / "manifest.json").read_text(encoding="utf-8"))
+    assert_equal(dashboard_manifest["name"], "hermes-live", "dashboard plugin name")
+    assert_equal(dashboard_manifest["version"], package["version"], "dashboard/package version")
+    assert_equal(dashboard_manifest["tab"]["path"], "/live-voice", "dashboard tab path")
+    assert_equal(dashboard_manifest["entry"], "dist/index.js", "dashboard entry")
+    assert_equal(dashboard_manifest["css"], "dist/style.css", "dashboard CSS")
+    assert_equal(dashboard_manifest["api"], "plugin_api.py", "dashboard API")
+
+    canonical_assets = {
+        ROOT / "clients" / "browser" / "hermes-live-client.js": DASHBOARD_DIR / "dist" / "hermes-live-client.js",
+        ROOT / "clients" / "browser" / "mic-worklet.js": DASHBOARD_DIR / "dist" / "mic-worklet.js",
+    }
+    for source, copy in canonical_assets.items():
+        if source.read_bytes() != copy.read_bytes():
+            raise AssertionError(f"dashboard asset is stale: {copy.relative_to(ROOT)}")
+
+    static_assets = [
+        DASHBOARD_DIR / "dist" / "index.js",
+        DASHBOARD_DIR / "dist" / "style.css",
+        *canonical_assets.values(),
+    ]
+    forbidden_secret_markers = [
+        "__HERMES_SESSION_TOKEN__",
+        "HERMES_LIVE_AUTH_TOKEN",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "HERMES_AGENT_API_SERVER_KEY",
+    ]
+    for path in static_assets:
+        source = path.read_text(encoding="utf-8")
+        found = [marker for marker in forbidden_secret_markers if marker in source]
+        if found:
+            raise AssertionError(f"dashboard static asset {path.relative_to(ROOT)} contains secret marker(s): {found}")
+
+    print(
+        "Plugin smoke ok: Hermes and Dashboard manifests, register(ctx), API syntax, synced assets, "
+        "tool handler, and slash command verified"
+    )
 
 
 def load_plugin() -> Any:

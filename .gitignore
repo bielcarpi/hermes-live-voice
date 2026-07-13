@@ -1,5 +1,7 @@
 node_modules
 dist
+!plugins/hermes-live/dashboard/dist/
+!plugins/hermes-live/dashboard/dist/**
 .env
 *.tgz
 __pycache__

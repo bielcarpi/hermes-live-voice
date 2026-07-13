@@ -1,7 +1,10 @@
+import { HermesLiveAudio, HermesLiveClient } from "/hermes-live-client.js";
+
 const gatewayInput = document.querySelector("#gateway");
 const tokenInput = document.querySelector("#token");
 const connectButton = document.querySelector("#connect");
 const micButton = document.querySelector("#mic");
+const interruptButton = document.querySelector("#interrupt");
 const stopButton = document.querySelector("#stop");
 const form = document.querySelector("#text-form");
 const textInput = document.querySelector("#text");
@@ -9,35 +12,20 @@ const sendButton = document.querySelector("#send");
 const statusEl = document.querySelector("#status");
 const logEl = document.querySelector("#log");
 
-let socket;
-let activeRunId = "";
-let audioContext;
-let playbackContext;
-let playbackCursor = 0;
-const playbackSources = new Set();
-const playbackItems = new Map();
-let lastPlaybackItem;
-let mediaStream;
-let workletNode;
+let client;
+let audio;
+const approvalQueue = [];
 
 setInteractive(false);
-
 gatewayInput.value = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/v1/live`;
 
 connectButton.addEventListener("click", () => {
-  if (socket?.readyState === WebSocket.OPEN) {
-    clearPlayback();
-    socket.close(1000, "user disconnected");
+  if (client?.connected || client?.state === "starting") {
+    client.disconnect();
     return;
   }
-  if (socket?.readyState === WebSocket.CONNECTING) {
-    return;
-  }
-  try {
-    connect();
-  } catch (error) {
-    showError(error);
-  }
+  if (client?.state === "connecting") return;
+  void connect().catch(showError);
 });
 
 form.addEventListener("submit", (event) => {
@@ -45,9 +33,8 @@ form.addEventListener("submit", (event) => {
   const text = textInput.value.trim();
   if (!text) return;
   try {
-    const truncate = clearPlayback();
-    requestResponseCancel("new text input", truncate);
-    send({ type: "text.input", text });
+    audio.interrupt("new text input");
+    client.sendText(text);
     addLog("you", text);
     textInput.value = "";
   } catch (error) {
@@ -55,68 +42,75 @@ form.addEventListener("submit", (event) => {
   }
 });
 
-micButton.addEventListener("click", async () => {
+micButton.addEventListener("click", () => {
+  void toggleMicrophone().catch(showError);
+});
+
+interruptButton.addEventListener("click", () => {
   try {
-    if (workletNode) {
-      await stopMic();
-      return;
-    }
-    await startMic();
+    audio.interrupt("demo user interrupted speech");
   } catch (error) {
     showError(error);
-    await stopMic({ notify: false, status: socket?.readyState === WebSocket.OPEN ? "Connected" : "Disconnected" });
   }
 });
 
 stopButton.addEventListener("click", () => {
   try {
-    const truncate = clearPlayback();
-    requestResponseCancel("demo user clicked stop", truncate);
-    if (activeRunId) {
-      send({ type: "run.stop", runId: activeRunId, reason: "demo user clicked stop" });
-    }
+    if (client.activeRunId) client.stopRun("demo user stopped Hermes task");
   } catch (error) {
     showError(error);
   }
 });
 
-function connect() {
-  const url = new URL(gatewayInput.value);
-  const token = tokenInput.value.trim();
-  if (token) url.searchParams.set("token", token);
-
-  const nextSocket = new WebSocket(url);
-  socket = nextSocket;
-  setStatus("Connecting");
-  nextSocket.addEventListener("open", () => {
-    if (socket !== nextSocket) return;
-    activeRunId = "";
-    setStatus("Starting session");
-    setInteractive(false);
-    connectButton.textContent = "Disconnect";
-    nextSocket.send(JSON.stringify({ type: "session.start", profileId: "demo", userLabel: "web-demo" }));
+async function connect() {
+  await disposeSession();
+  client = new HermesLiveClient({
+    url: gatewayInput.value,
+    token: tokenInput.value,
+    profileId: "demo",
+    userLabel: "web-demo",
   });
-  nextSocket.addEventListener("close", () => {
-    if (socket !== nextSocket) return;
-    activeRunId = "";
-    socket = undefined;
-    clearPlayback();
+  audio = new HermesLiveAudio(client, { workletUrl: "/mic-worklet.js" });
+  bindSession(client, audio);
+  connectButton.textContent = "Disconnect";
+  setInteractive(false);
+  await client.connect();
+}
+
+function bindSession(nextClient, nextAudio) {
+  nextClient.on("state", ({ state }) => {
+    if (nextClient !== client) return;
+    if (state === "connecting") setStatus("Connecting");
+    if (state === "starting") setStatus("Starting session");
+    if (state === "closing") setStatus("Disconnecting");
+    if (state === "failed") setStatus("Connection failed");
+  });
+  nextClient.on("message", (message) => {
+    if (nextClient === client) handleMessage(message);
+  });
+  nextClient.on("error", ({ error, code }) => {
+    if (nextClient === client && code !== "session_error") showError(error);
+  });
+  nextClient.on("audio.dropped", ({ bufferedAmount }) => {
+    if (nextClient === client) addLog("audio", `Microphone frame dropped under backpressure (${bufferedAmount} bytes queued).`);
+  });
+  nextClient.on("close", () => {
+    if (nextClient !== client) return;
     setStatus("Disconnected");
     setInteractive(false);
     connectButton.textContent = "Connect";
-    if (workletNode) void stopMic({ notify: false, status: "Disconnected" });
+    void nextAudio.dispose();
   });
-  nextSocket.addEventListener("error", () => {
-    if (socket !== nextSocket) return;
-    setStatus("WebSocket error");
+  nextAudio.on("microphone", ({ active }) => {
+    if (nextAudio !== audio) return;
+    micButton.textContent = active ? "Stop mic" : "Start mic";
+    setStatus(active ? "Streaming microphone" : nextClient.connected ? "Connected" : "Disconnected");
   });
-  nextSocket.addEventListener("message", (event) => {
-    if (socket !== nextSocket) return;
-    try {
-      handleMessage(JSON.parse(event.data));
-    } catch (error) {
-      showError(error);
-    }
+  nextAudio.on("error", ({ error }) => {
+    if (nextAudio === audio) showError(error);
+  });
+  nextAudio.on("audio.dropped", ({ queuedMs }) => {
+    if (nextAudio === audio) addLog("audio", `Provider audio dropped because ${Math.round(queuedMs)}ms was already queued.`);
   });
 }
 
@@ -128,33 +122,28 @@ function handleMessage(message) {
   } else if (message.type === "transcript.delta") {
     addLog(message.speaker ?? "assistant", message.text ?? "");
   } else if (message.type === "input.speech_started") {
-    const truncate = clearPlayback();
-    requestResponseCancel("provider detected user speech", truncate);
+    audio.interrupt("provider detected user speech");
     addLog("speech", `started${message.audioStartMs === undefined ? "" : ` at ${message.audioStartMs}ms`}`);
   } else if (message.type === "audio.output") {
-    void playPcmAudio(message.data, message.mimeType, message.itemId, message.contentIndex);
+    void audio.play(message).catch(showError);
   } else if (message.type === "run.started") {
-    activeRunId = message.runId;
     addLog("run", `started ${message.runId}`);
   } else if (message.type === "run.event") {
     handleRunEvent(message);
   } else if (message.type === "run.completed") {
-    activeRunId = "";
     addLog("hermes", message.output ?? "");
   } else if (message.type === "approval.request") {
-    activeRunId = message.runId;
     addApprovalRequest(message);
   } else if (message.type === "approval.responded") {
+    resolveApprovalQueue(message);
     addLog("approval", `submitted ${message.choice} for ${message.runId}`);
   } else if (message.type === "run.failed" || message.type === "session.error") {
-    if (message.type === "run.failed") activeRunId = "";
     setStatus(message.type === "run.failed" ? "Run failed" : "Error");
-    clearPlayback();
+    audio.clearPlayback();
     if (message.type === "session.error" && !message.recoverable) setInteractive(false);
     addLog("error", JSON.stringify(message, null, 2));
   } else if (message.type === "run.stopped") {
-    activeRunId = "";
-    clearPlayback();
+    audio.clearPlayback();
     addLog("run", `stopped ${message.runId}: ${message.status}`);
   } else if (message.type !== "realtime.message") {
     addLog(message.type, JSON.stringify(message, null, 2));
@@ -167,165 +156,29 @@ function handleRunEvent(message) {
     addLog("hermes", event.delta);
     return;
   }
-  if (event.event === "approval.request" || event.event === "run.completed" || event.event === "run.failed") {
-    return;
-  }
+  if (event.event === "approval.request" || event.event === "run.completed" || event.event === "run.failed") return;
   addLog("run.event", JSON.stringify(event, null, 2));
 }
 
-async function startMic() {
-  ensureOpen();
-  const truncate = clearPlayback();
-  requestResponseCancel("microphone started", truncate);
-  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  audioContext = new AudioContext({ sampleRate: 24000 });
-  await audioContext.audioWorklet.addModule("/mic-worklet.js");
-  const source = audioContext.createMediaStreamSource(mediaStream);
-  workletNode = new AudioWorkletNode(audioContext, "pcm-capture");
-  const captureRate = Math.round(audioContext.sampleRate);
-  workletNode.port.onmessage = (event) => {
-    if (event.data?.type === "flushed") return;
-    send({ type: "audio.input", data: arrayBufferToBase64(event.data), mimeType: `audio/pcm;rate=${captureRate}` });
-  };
-  source.connect(workletNode);
-  micButton.textContent = "Stop mic";
-  setStatus("Streaming microphone");
-}
-
-async function stopMic({ notify = true, status = "Connected" } = {}) {
-  await flushMicWorklet();
-  if (notify && socket?.readyState === WebSocket.OPEN) {
-    send({ type: "audio.end" });
-  }
-  workletNode?.disconnect();
-  workletNode = undefined;
-  mediaStream?.getTracks().forEach((track) => track.stop());
-  mediaStream = undefined;
-  await audioContext?.close();
-  audioContext = undefined;
-  micButton.textContent = "Start mic";
-  setStatus(status);
-}
-
-async function flushMicWorklet() {
-  const node = workletNode;
-  if (!node) return;
-  await new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, 80);
-    const onMessage = (event) => {
-      if (event.data?.type !== "flushed") return;
-      cleanup();
-      resolve();
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      node.port.removeEventListener("message", onMessage);
-    };
-    node.port.addEventListener("message", onMessage);
-    node.port.postMessage({ type: "flush" });
-  });
-}
-
-async function playPcmAudio(base64, mimeType, itemId, contentIndex = 0) {
-  const rate = Number(/rate=(\d+)/.exec(mimeType || "")?.[1] || 24000);
-  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-  const samples = new Float32Array(bytes.length / 2);
-  const view = new DataView(bytes.buffer);
-  for (let i = 0; i < samples.length; i += 1) {
-    samples[i] = view.getInt16(i * 2, true) / 32768;
-  }
-  if (!playbackContext || playbackContext.state === "closed" || playbackContext.sampleRate !== rate) {
-    playbackContext = new AudioContext({ sampleRate: rate });
-    playbackCursor = 0;
-  }
-  if (playbackContext.state === "suspended") {
-    await playbackContext.resume();
-  }
-  const ctx = playbackContext;
-  const buffer = ctx.createBuffer(1, samples.length, rate);
-  buffer.copyToChannel(samples, 0);
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(ctx.destination);
-  const startAt = Math.max(ctx.currentTime + 0.02, playbackCursor || 0);
-  source.start(startAt);
-  const itemKey = itemId ? `${itemId}:${contentIndex}` : "";
-  if (itemId) {
-    lastPlaybackItem = { itemId, contentIndex };
-    if (!playbackItems.has(itemKey)) {
-      playbackItems.set(itemKey, { itemId, contentIndex, playedMs: 0 });
-    }
-  }
-  const sourceRecord = { source, context: ctx, itemKey, startAt, duration: buffer.duration, stopped: false };
-  playbackSources.add(sourceRecord);
-  playbackCursor = startAt + buffer.duration;
-  source.addEventListener(
-    "ended",
-    () => {
-      playbackSources.delete(sourceRecord);
-      if (!sourceRecord.stopped && sourceRecord.itemKey) {
-        addPlayedAudio(sourceRecord.itemKey, sourceRecord.duration * 1000);
-      }
-      if (playbackCursor <= ctx.currentTime) {
-        playbackCursor = 0;
-      }
-    },
-    { once: true },
-  );
-}
-
-function clearPlayback() {
-  const hadQueuedAudio = playbackSources.size > 0;
-  playbackCursor = 0;
-  for (const sourceRecord of playbackSources) {
-    if (sourceRecord.itemKey) {
-      const playedSeconds = Math.max(0, Math.min(sourceRecord.duration, sourceRecord.context.currentTime - sourceRecord.startAt));
-      addPlayedAudio(sourceRecord.itemKey, playedSeconds * 1000);
-    }
-    sourceRecord.stopped = true;
-    try {
-      sourceRecord.source.stop();
-    } catch {
-      // The source may already have ended.
-    }
-  }
-  playbackSources.clear();
-  const truncate =
-    hadQueuedAudio && lastPlaybackItem
-      ? playbackItems.get(`${lastPlaybackItem.itemId}:${lastPlaybackItem.contentIndex}`)
-      : undefined;
-  playbackItems.clear();
-  lastPlaybackItem = undefined;
-  return truncate
-    ? { itemId: truncate.itemId, contentIndex: truncate.contentIndex, audioEndMs: Math.max(0, Math.floor(truncate.playedMs)) }
-    : undefined;
-}
-
-function addPlayedAudio(itemKey, playedMs) {
-  const item = playbackItems.get(itemKey);
-  if (item) {
-    item.playedMs += Math.max(0, playedMs);
+async function toggleMicrophone() {
+  if (!audio) throw new Error("Connect before starting the microphone.");
+  if (audio.microphoneActive) {
+    await audio.stopMicrophone();
+  } else {
+    await audio.startMicrophone();
   }
 }
 
-function send(message) {
-  ensureOpen();
-  socket.send(JSON.stringify(message));
-}
-
-function requestResponseCancel(reason, truncate) {
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "response.cancel", reason, ...(truncate ? { truncate } : {}) }));
-  }
-}
-
-function ensureOpen() {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    throw new Error("Connect before sending messages.");
-  }
+async function disposeSession() {
+  const previousAudio = audio;
+  const previousClient = client;
+  resetApprovalQueue();
+  audio = undefined;
+  client = undefined;
+  await Promise.allSettled([
+    previousClient?.disconnect("replaced by new connection"),
+    previousAudio?.dispose(),
+  ]);
 }
 
 function addLog(kind, value) {
@@ -344,26 +197,129 @@ function addApprovalRequest(message) {
   const title = document.createElement("strong");
   title.textContent = "approval";
   const body = document.createElement("pre");
-  body.textContent = JSON.stringify(message.event, null, 2);
+  const approval = message.approval ?? {};
+  const patternKeys = approvalPatternKeys(approval);
+  body.textContent = [
+    approval.description,
+    approval.command ? `Command: ${approval.command}` : undefined,
+    approval.approvalId ? `Approval: ${approval.approvalId}` : undefined,
+    patternKeys.length ? `Permission pattern: ${patternKeys.join(", ")}` : "No inspectable permission pattern; permanent approval is unavailable.",
+  ].filter(Boolean).join("\n") || "Hermes requested an approval without additional context.";
   const actions = document.createElement("div");
   actions.className = "approval-actions";
+  const queueStatus = document.createElement("span");
+  queueStatus.className = "approval-queue-status";
 
-  for (const choice of ["once", "session", "always", "deny"]) {
+  const informed = typeof approval.command === "string" || typeof approval.description === "string";
+  const suppliedChoices = Array.isArray(approval.choices) && approval.choices.length > 0
+    ? approval.choices
+    : informed
+      ? ["once", "session", "always", "deny"]
+      : ["once", "deny"];
+  const choices = [...new Set(suppliedChoices)]
+    .filter((choice) => ["once", "session", "always", "deny"].includes(choice))
+    .filter((choice) => informed || choice === "once" || choice === "deny")
+    .filter((choice) => choice !== "always" || (approval.allowPermanent === true && patternKeys.length > 0));
+  if (choices.length === 0) choices.push("once", "deny");
+  const queued = {
+    message,
+    actions,
+    buttons: [],
+    queueStatus,
+    permanentArmed: false,
+    submitted: false,
+  };
+  for (const choice of choices) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = choice;
     button.addEventListener("click", () => {
-      send({ type: "approval.respond", runId: message.runId, choice });
-      for (const control of actions.querySelectorAll("button")) {
-        control.disabled = true;
+      if (approvalQueue[0] !== queued || queued.submitted) return;
+      if (choice === "always" && (!queued.permanentArmed || button.textContent !== "confirm always")) {
+        queued.permanentArmed = true;
+        button.textContent = "confirm always";
+        queueStatus.textContent = "Permanent approval changes future policy. Click confirm always again to continue.";
+        return;
       }
+      client.respondToApproval(choice, message.runId);
+      queued.submitted = true;
+      refreshApprovalQueue();
     });
+    queued.buttons.push(button);
     actions.append(button);
   }
+  actions.append(queueStatus);
 
   entry.append(title, body, actions);
   logEl.append(entry);
+  approvalQueue.push(queued);
+  refreshApprovalQueue();
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+function approvalPatternKeys(approval) {
+  const values = [];
+  const primary = inspectablePattern(approval.patternKey);
+  if (primary) values.push(primary);
+  if (Array.isArray(approval.patternKeys)) {
+    for (const value of approval.patternKeys) {
+      const pattern = inspectablePattern(value);
+      if (pattern) values.push(pattern);
+    }
+  }
+  return [...new Set(values)].slice(0, 32);
+}
+
+function inspectablePattern(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\|$)/g, "")
+    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+    .trim()
+    .slice(0, 256);
+}
+
+function resolveApprovalQueue(message) {
+  let remaining = Number.isInteger(message.resolved) && message.resolved >= 0 ? message.resolved : 1;
+  for (let index = 0; index < approvalQueue.length && remaining > 0;) {
+    const queued = approvalQueue[index];
+    if (queued.message.runId !== message.runId) {
+      index += 1;
+      continue;
+    }
+    queued.submitted = true;
+    queued.queueStatus.textContent = `Resolved: ${message.choice}`;
+    for (const button of queued.buttons) button.disabled = true;
+    approvalQueue.splice(index, 1);
+    remaining -= 1;
+  }
+  if (message.resolved === 0 && approvalQueue[0]?.message.runId === message.runId) {
+    approvalQueue[0].submitted = false;
+  }
+  refreshApprovalQueue();
+}
+
+function refreshApprovalQueue() {
+  approvalQueue.forEach((queued, index) => {
+    const actionable = index === 0 && !queued.submitted;
+    for (const button of queued.buttons) button.disabled = !actionable;
+    if (!queued.submitted && !queued.permanentArmed) {
+      queued.queueStatus.textContent = actionable
+        ? "Answer this approval to continue."
+        : "Queued: answer the earlier approval first (Hermes resolves approvals FIFO).";
+    }
+  });
+}
+
+function resetApprovalQueue() {
+  for (const queued of approvalQueue) {
+    queued.submitted = true;
+    queued.queueStatus.textContent = "Session ended before this approval was answered.";
+    for (const button of queued.buttons) button.disabled = true;
+  }
+  approvalQueue.length = 0;
 }
 
 function setStatus(value) {
@@ -375,6 +331,7 @@ function setInteractive(enabled) {
   textInput.disabled = !enabled;
   sendButton.disabled = !enabled;
   micButton.disabled = !enabled;
+  interruptButton.disabled = !enabled;
   stopButton.disabled = !enabled;
 }
 
@@ -382,11 +339,4 @@ function showError(error) {
   const message = error instanceof Error ? error.message : String(error);
   setStatus("Error");
   addLog("error", message);
-}
-
-function arrayBufferToBase64(buffer) {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }

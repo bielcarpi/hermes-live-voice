@@ -40,6 +40,7 @@ try {
     "assets/banner.svg",
     "dist/index.js",
     "dist/cli.js",
+    "dist/cli/terminal-session.js",
     "dist/config.js",
     "dist/live-provider-smoke.js",
     "dist/adapters/inbound/http/server.js",
@@ -52,12 +53,17 @@ try {
     "dist/adapters/outbound/realtime/mock-live.adapter.js",
     "dist/adapters/outbound/realtime/openai-realtime.adapter.js",
     "dist/application/live-gateway/live-gateway-session.js",
+    "dist/application/live-gateway/client-capabilities.js",
     "dist/application/live-gateway/ports/client-connection.port.js",
     "dist/application/live-gateway/ports/hermes-runs.port.js",
     "dist/application/live-gateway/ports/realtime-model.port.js",
     "dist/domain/audio/pcm.js",
     "dist/domain/protocol/client-protocol.js",
     "dist/domain/protocol/server-protocol.js",
+    "dist/domain/protocol/version.js",
+    "clients/browser/hermes-live-client.js",
+    "clients/browser/hermes-live-client.d.ts",
+    "clients/browser/mic-worklet.js",
     "apps/web-demo/index.html",
     "apps/web-demo/app.js",
     "docs/client-protocol.md",
@@ -67,9 +73,18 @@ try {
     "plugins/hermes-live/__init__.py",
     "plugins/hermes-live/schemas.py",
     "plugins/hermes-live/tools.py",
+    "plugins/hermes-live/after-install.md",
+    "plugins/hermes-live/dashboard/manifest.json",
+    "plugins/hermes-live/dashboard/plugin_api.py",
+    "plugins/hermes-live/dashboard/dist/index.js",
+    "plugins/hermes-live/dashboard/dist/style.css",
+    "plugins/hermes-live/dashboard/dist/hermes-live-client.js",
+    "plugins/hermes-live/dashboard/dist/mic-worklet.js",
+    "scripts/dashboard-plugin-smoke.py",
     "scripts/gateway-smoke.mjs",
     "scripts/live-provider-cli-smoke.mjs",
     "scripts/plugin-smoke.py",
+    "scripts/sync-dashboard-assets.mjs",
   ];
 
   const missing = required.filter((file) => !files.has(file));
@@ -135,6 +150,7 @@ try {
   if (
     help.status !== 0 ||
     !help.stdout.includes("hermes-live") ||
+    !help.stdout.includes("terminal") ||
     !help.stdout.includes("provider-smoke") ||
     !help.stdout.includes("HERMES_LIVE_PROVIDER")
   ) {
@@ -157,6 +173,16 @@ try {
   if (!existsSync(join(hermesPluginsDir, "hermes-live", "plugin.yaml"))) {
     throw new Error("Installed CLI plugin install did not write plugin.yaml.");
   }
+  for (const relative of [
+    "dashboard/manifest.json",
+    "dashboard/plugin_api.py",
+    "dashboard/dist/index.js",
+    "dashboard/dist/style.css",
+  ]) {
+    if (!existsSync(join(hermesPluginsDir, "hermes-live", relative))) {
+      throw new Error(`Installed CLI plugin install did not write ${relative}.`);
+    }
+  }
 
   const imported = spawnSync(
     process.execPath,
@@ -177,6 +203,27 @@ try {
   );
   if (imported.status !== 0) {
     throw new Error(`Installed package import failed with status ${imported.status ?? "null"}\n${imported.stdout}\n${imported.stderr}`);
+  }
+
+  const browserImported = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      [
+        `const m = await import(${JSON.stringify(`${packageJson.name}/browser`)});`,
+        "const required = ['HermesLiveClient','HermesLiveAudio','buildGatewayWebSocketUrl','validateServerMessage'];",
+        "const missing = required.filter((name) => typeof m[name] !== 'function');",
+        "if (missing.length) { console.error('Missing browser exports: ' + missing.join(',')); process.exit(1); }",
+        "if (Object.keys(m).some((name) => name.includes('OpenAI') || name.includes('Gemini'))) process.exit(2);",
+      ].join(" "),
+    ],
+    { cwd: installDir, encoding: "utf8" },
+  );
+  if (browserImported.status !== 0) {
+    throw new Error(
+      `Installed browser import failed with status ${browserImported.status ?? "null"}\n${browserImported.stdout}\n${browserImported.stderr}`,
+    );
   }
 
   console.log(`Package smoke ok: ${pack.entryCount} files, ${pack.filename}, install and CLI verified`);

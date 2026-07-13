@@ -8,7 +8,7 @@ The plugin manifest version is kept identical to the npm package version and ver
 
 The plugin and gateway have different jobs:
 
-- The Hermes plugin gives Hermes installations a discoverable integration surface, status tool, and slash command.
+- The Hermes plugin gives Hermes installations a discoverable integration surface, status tool, slash command, and official Dashboard tab.
 - The gateway runtime owns WebSockets, audio frames, realtime provider sessions, client auth, and the browser demo.
 - Hermes remains responsible for memory, tools, skills, MCP, approvals, terminal/file access, and long-running work.
 
@@ -20,11 +20,36 @@ The current plugin registers:
 
 - `hermes_live_status` tool.
 - `/hermes-live` slash command.
+- Official Dashboard **Live Voice** tab with connection state, transcript, task activity, interruption, run stop, and approval controls.
+- Same-origin Dashboard status and WebSocket endpoints authenticated by Hermes.
+- Server-side gateway credential injection so browser code never receives `HERMES_LIVE_AUTH_TOKEN`.
+- Packaged shared browser client, microphone worklet, and styles.
 - Gateway name and runtime mode.
 - Default local gateway URL from `HERMES_LIVE_URL` or `http://127.0.0.1:8788`.
 - WebSocket, readiness, and capabilities paths.
 
-Future plugin work can add local launch helpers or Hermes-native voice tools, but the network/audio gateway should remain a separate runtime process.
+The network/audio gateway remains a separate runtime process. This keeps provider sockets and long-lived gateway credentials outside the Dashboard browser and outside Hermes core.
+
+## Official Dashboard
+
+After installing and enabling the plugin, start the companion gateway and restart the Dashboard:
+
+```sh
+hermes dashboard
+```
+
+Choose **Live Voice** from the plugin navigation group. The page checks readiness before connecting and then exposes:
+
+- browser microphone and provider audio playback when the selected realtime provider supports them;
+- text fallback for mock mode and inaccessible microphones;
+- separate **Interrupt speech** and **Stop Hermes task** controls;
+- sanitized task events and final output;
+- approval choices, including a second confirmation for permanent inspectable patterns;
+- responsive desktop and mobile layouts.
+
+`HERMES_LIVE_URL` in the Dashboard process must be a credential-free HTTP(S) gateway origin, such as `http://127.0.0.1:8788`. It must not contain user information, query parameters, fragments, or an embedded bearer. Configure `HERMES_LIVE_AUTH_TOKEN` separately in the Dashboard process when the gateway requires it.
+
+The browser opens a host-authenticated WebSocket to `/api/plugins/hermes-live/live`. The plugin backend reuses Hermes Dashboard authentication and origin policy before proxying to the gateway. It does not expose the upstream URL or token in `/status` responses.
 
 ## Hermes Tool
 
@@ -89,9 +114,17 @@ For a terminal smoke test:
 node dist/cli.js client "What should I work on next?"
 ```
 
+For a persistent remote/headless session:
+
+```sh
+node dist/cli.js terminal
+```
+
+The terminal surface is text-control only. Use Hermes Ctrl+B Voice Mode for local terminal audio or the Dashboard/browser client for gateway audio.
+
 ## Boundary
 
-The realtime provider does not receive Hermes tools directly. It receives gateway tools that start, stop, inspect, and approve Hermes runs. That boundary is what lets Hermes stay the brain while realtime providers handle voice and turn-taking.
+The realtime provider does not receive Hermes tools directly. It receives gateway tools that start, stop, and inspect Hermes runs. Approval decisions are never provider tools: they come from the authenticated human client and are checked against the gateway's pending FIFO approval envelope. That boundary is what lets Hermes stay the brain while realtime providers handle voice and turn-taking.
 
 ## Install In Hermes
 
@@ -119,3 +152,5 @@ node dist/cli.js plugin install --dir /custom/hermes/plugins
 ```
 
 Project-local plugins can also be used under `.hermes/plugins/` when `HERMES_ENABLE_PROJECT_PLUGINS=true` is set for trusted repositories.
+
+For custom and community web UIs, see [UI Integration](ui-integration.md). Generic OpenAI-compatible chat support does not implement the Hermes Live WebSocket/audio/run/approval protocol by itself.
