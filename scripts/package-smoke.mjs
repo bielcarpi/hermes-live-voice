@@ -40,6 +40,7 @@ try {
     "assets/banner.svg",
     "dist/index.js",
     "dist/cli.js",
+    "dist/cli/terminal-session.js",
     "dist/config.js",
     "dist/live-provider-smoke.js",
     "dist/adapters/inbound/http/server.js",
@@ -149,6 +150,7 @@ try {
   if (
     help.status !== 0 ||
     !help.stdout.includes("hermes-live") ||
+    !help.stdout.includes("terminal") ||
     !help.stdout.includes("provider-smoke") ||
     !help.stdout.includes("HERMES_LIVE_PROVIDER")
   ) {

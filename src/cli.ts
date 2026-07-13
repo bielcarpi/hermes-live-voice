@@ -15,6 +15,7 @@ import { buildReadinessReport } from "./readiness.js";
 import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
+import { normalizeGatewayWebSocketUrl, runInteractiveTerminal } from "./cli/terminal-session.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
 
@@ -49,6 +50,19 @@ async function main(): Promise<void> {
       return;
     }
     await runTextClient(config, text);
+    return;
+  }
+
+  if (command === "terminal" || command === "chat") {
+    const config = loadConfig();
+    await runInteractiveTerminal({
+      url: process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config),
+      ...(config.server.authToken ? { authToken: config.server.authToken } : {}),
+      userLabel: process.env.USER ?? "terminal",
+    });
+    // A piped stdin remains referenced after readline closes; release it so
+    // non-interactive terminal sessions exit just as cleanly as TTY sessions.
+    input.destroy();
     return;
   }
 
@@ -115,6 +129,8 @@ Usage:
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one text prompt through a running gateway
+  hermes-live terminal      Open the interactive text-control gateway console
+  hermes-live chat          Alias for terminal
   hermes-live check         Check Hermes capabilities and realtime provider config
   hermes-live provider-smoke Open and close a real Gemini/OpenAI provider session
   hermes-live print-config  Print resolved config with secrets redacted
@@ -129,6 +145,7 @@ Required environment:
   OPENAI_API_KEY            OpenAI API key when HERMES_LIVE_PROVIDER=openai
 
 Optional:
+  HERMES_LIVE_URL           Remote gateway HTTP/WS URL for client and terminal
   HERMES_LIVE_PORT          Gateway port, default 8788
   HERMES_LIVE_AUTH_TOKEN    Require auth for /v1/live, /ready, and /v1/capabilities
   HERMES_LIVE_ALLOW_UNAUTHENTICATED  Unsafe opt-out for network-accessible binds
@@ -141,6 +158,11 @@ Optional:
   HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2.1
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
+
+Terminal voice:
+  The terminal console controls a remote Hermes Live session without native
+  audio dependencies. For local microphone use, run Hermes and press Ctrl+B
+  for official Hermes Voice Mode. Use the Dashboard/browser UI for gateway audio.
 
 Plugin options:
   --dir <path>              Hermes plugins directory, default ~/.hermes/plugins
@@ -286,7 +308,7 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 async function runTextClient(config: AppConfig, text: string): Promise<void> {
-  const url = process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config);
+  const url = normalizeGatewayWebSocketUrl(process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config));
   const headers = config.server.authToken ? { authorization: `Bearer ${config.server.authToken}` } : undefined;
   const ws = new WebSocket(url, { headers });
   const approvalReader = createInterface({ input, output: approvalOutput });

@@ -102,7 +102,7 @@ Production runs default the demo off when `NODE_ENV=production`. If you want to 
 HERMES_LIVE_DEMO_ENABLED=true docker compose -f examples/docker-compose.yml up
 ```
 
-## 6. Terminal Smoke Test
+## 6. Terminal Clients
 
 With the gateway running:
 
@@ -110,4 +110,12 @@ With the gateway running:
 node dist/cli.js client "What is the current status?"
 ```
 
-Use `HERMES_LIVE_URL` if the gateway is running somewhere else.
+That one-shot client is useful in smoke tests and scripts. For a persistent interactive session:
+
+```sh
+node dist/cli.js terminal
+```
+
+The terminal console supports text turns, task progress, approvals, `/interrupt`, and `/stop`. It does not capture or play gateway audio. For local microphone use, run `hermes` and press Ctrl+B for Hermes Voice Mode; for remote gateway voice, use the Dashboard or browser UI.
+
+Set `HERMES_LIVE_URL` to an HTTP(S) gateway origin or a WS(S) endpoint when the gateway is running elsewhere. Set `HERMES_LIVE_AUTH_TOKEN` when the gateway requires bearer authentication.

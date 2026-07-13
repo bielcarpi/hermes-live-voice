@@ -14,6 +14,8 @@ For a one-shot terminal smoke test, use:
 node dist/cli.js client "What is the current status?"
 ```
 
+For a persistent text-control session, use `node dist/cli.js terminal`. It exercises this same protocol while exposing task progress, approvals, provider interruption, and Hermes task stop as terminal commands. It intentionally has no native audio dependency: use official Hermes Voice Mode (Ctrl+B) for a local microphone, or the Dashboard/browser client for remote gateway audio.
+
 ## Browser Client
 
 `hermes-live-voice/browser` is the canonical framework-independent browser client. It has no Node, provider SDK, or UI-framework runtime dependencies. The bundled web demo consumes the same module that is included in the packed npm artifact.

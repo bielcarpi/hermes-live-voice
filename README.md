@@ -165,6 +165,26 @@ npm run check:live-provider
 
 Then complete the audio, interruption, approval, and negative-case checklist in [docs/live-provider-testing.md](docs/live-provider-testing.md).
 
+## Use It From A Terminal
+
+Hermes already has the right local microphone experience: run `hermes` and press **Ctrl+B** for official Hermes Voice Mode. Hermes Live Voice does not duplicate that audio stack or add native microphone dependencies.
+
+For a remote gateway, automation host, or headless machine, open the persistent text-control console:
+
+```sh
+HERMES_LIVE_URL=https://voice.example.com \
+HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
+node dist/cli.js terminal
+```
+
+The console keeps one realtime session open, shows provider transcripts and Hermes task progress, surfaces approvals, and provides separate `/interrupt` (stop the provider response) and `/stop` (stop Hermes work) controls. Use `/help` for the full command list. It intentionally does not capture or play audio; use the Hermes Dashboard or browser UI for remote gateway audio.
+
+For scripts and CI, the existing one-shot command remains available:
+
+```sh
+node dist/cli.js client "What is the current status?"
+```
+
 ## Supported Providers
 
 | Provider | Default model | Notes |
