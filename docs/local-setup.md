@@ -27,6 +27,8 @@ Hermes JSON requests time out after 30 seconds by default. Set `HERMES_LIVE_HERM
 
 Realtime provider sessions must report ready within 15 seconds by default. Set `HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS` if your provider or network needs a longer startup bound.
 
+The one-shot `hermes-live client` command must complete both its WebSocket upgrade and protocol `session.ready` handshake within 10 seconds by default. Set `HERMES_LIVE_CLIENT_READY_TIMEOUT_MS` only when a slower trusted network requires it.
+
 Text inputs and provider tool-call messages are limited to 20,000 characters by default. Set `HERMES_LIVE_MAX_TEXT_CHARS` if you need a different bound.
 
 The gateway uses server-owned Hermes identity by default: `HERMES_LIVE_PROFILE_ID=default` and `HERMES_LIVE_USER_LABEL=voice`. Client-supplied `profileId` and `userLabel` values are ignored unless `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`. Only enable that option when every client is trusted to select its own Hermes memory scope.
@@ -38,7 +40,7 @@ The gateway accepts up to eight concurrent WebSocket sessions by default. Set `H
 ## 2. Install Gateway Dependencies
 
 ```sh
-npm install
+npm ci
 ```
 
 ## 3. Choose a Provider
@@ -82,7 +84,7 @@ Both commands report gateway, Hermes, and realtime provider readiness. A `503` r
 
 If you bind the gateway to `0.0.0.0`, set a strong `HERMES_LIVE_AUTH_TOKEN`; otherwise startup will fail unless you explicitly opt out with `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` for an isolated trusted network.
 
-## 5. Open The Official Dashboard
+## 5. Open Hermes Dashboard
 
 Install and enable the plugin, start the companion gateway, then start or restart Hermes Dashboard:
 

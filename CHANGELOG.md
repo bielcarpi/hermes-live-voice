@@ -4,19 +4,24 @@
 
 ## 0.3.0 - 2026-07-13
 
-- Add a first-class **Live Voice** tab to the official Hermes Dashboard with responsive desktop/mobile layouts, browser microphone and playback, text fallback, transcript, capability status, task activity, separate response interruption and Hermes run cancellation, and approval controls.
+- Add a first-class **Live Voice** integration for Hermes Dashboard with responsive desktop/mobile layouts, browser microphone and playback, text fallback, transcript, capability status, task activity, separate response interruption and Hermes run cancellation, and approval controls.
 - Add an authenticated same-origin Dashboard HTTP/WebSocket proxy that delegates to Hermes' own Dashboard authentication and origin checks while keeping the upstream gateway URL and bearer out of browser code.
 - Publish a dependency-free `hermes-live-voice/browser` client and microphone worklet with strict protocol/lifecycle validation, bounded input and playback queues, request IDs, state subscriptions, and host-provided authenticated WebSocket URLs.
 - Normalize client close frames to browser-legal codes and bounded UTF-8 reasons, recover from missing close events, suppress late audio after interruption until the next response begins, and replace stale connected notices when a gateway connection drops.
-- Negotiate protocol v1 explicitly and expose provider-neutral response lifecycle, model/provider metadata, audio capabilities, turn-detection mode, structured approvals, and UI-safe run state.
+- Move the negotiated wire contract to protocol v2, a breaking client handshake that removes raw provider envelopes, adds `run.stopping`, and requires exact approval identity and choice correlation while retaining `/v1/live` as the endpoint path.
 - Enable Gemini Live input/output audio transcription, preserve speaker/final metadata, avoid duplicate transcript events, and emit a normalized response-start lifecycle before assistant output.
-- Preserve concurrent approvals in FIFO order across the browser client, Dashboard, demo, persistent terminal, and one-shot CLI; only the queue head is actionable and only resolved entries are removed.
-- Limit permanent approvals to choices backed by displayable permission patterns and require a second confirmation in every interactive client.
-- Remove approval submission from realtime-provider tools and enforce human approval choices against a sanitized server-side FIFO queue, with fail-closed denial and no bulk resolution.
-- Harden the default unauthenticated loopback WebSocket policy against DNS rebinding while retaining headerless terminal/native clients and exact configured browser origins.
+- Preserve concurrent approvals in a capacity-bounded FIFO across the browser client, Dashboard, demo, persistent terminal, and one-shot CLI; only the queue head is actionable and only the exact confirmed entry is removed.
+- Assign gateway-owned approval IDs, correlate them to bounded upstream identities, cache exact responses idempotently, and reject request-ID reuse, duplicate upstream identities, mismatched run/approval IDs, widened choices, and bulk resolution.
+- Project approval details without silently rewriting them: opaque or incomplete requests are deny-only, `once` requires informed display context, and session/permanent choices require exact inspectable permission patterns plus a second interactive confirmation.
+- Remove approval submission from realtime-provider tools and contain indeterminate approval or run mutations by stopping owned work and closing the session instead of risking a retry against the wrong action.
+- Emit `run.stopping` when Hermes accepts a stop request and reserve `run.stopped` for confirmed `run.cancelled`; completion and failure retain their own terminal messages.
+- Harden the default unauthenticated loopback WebSocket policy against Host-header and DNS-rebinding attacks while retaining headerless terminal/native clients and exact configured browser origins.
+- Bound client/provider queues, WebSocket backpressure, PCM16 conversion, transcripts, audio, usage, tool arguments/results, Hermes JSON/SSE bodies, and terminal output; close on violated provider contracts instead of allowing unbounded memory growth.
+- Correlate Hermes run IDs across start responses, status, SSE events, approvals, and terminal events; treat ambiguous starts, early event-stream EOF, late starts, failed stops, and unconfirmed disconnect cleanup as fatal containment conditions.
+- Bound provider input, tool-result, response-cancel, and close operations so a stalled realtime provider cannot make session shutdown wait forever.
 - Add `hermes-live terminal` and its `chat` alias for persistent remote/headless text control with transcripts, task progress, approvals, `/interrupt`, `/stop`, and safe exit behavior.
 - Package the Dashboard frontend/backend assets and browser client in plugin, npm tarball, and Docker runtime outputs, with generated-asset parity and smoke checks.
-- Promote the official Dashboard to the recommended UI, document secure community UI integration, clarify Hermes Voice Mode and OpenAI-compatible UI boundaries, and add a real Dashboard screenshot.
+- Make the Hermes Dashboard integration the recommended UI, add the persistent terminal as a first-class headless surface, document the secure browser SDK/relay path for community UIs, clarify Hermes Voice Mode and generic OpenAI-compatible UI boundaries, and add a real Dashboard screenshot.
 - Align the Docker Compose OpenAI Realtime default with `gpt-realtime-2.1`.
 - Make tagged release jobs fail when the Git tag does not match `package.json` or point at the exact protected `main` commit.
 

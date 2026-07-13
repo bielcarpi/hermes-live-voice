@@ -29,7 +29,7 @@ When `HERMES_LIVE_HOST` is network-accessible, `hermes-live` refuses to start wi
 
 Use `Authorization: Bearer <token>` for HTTP endpoints and server-side clients. Query-token auth is accepted only for direct browser WebSocket clients that cannot set upgrade headers; treat the resulting URL as secret and prevent it from entering logs, analytics, referrers, screenshots, or support output.
 
-For production browser clients, use an authenticated same-origin WebSocket proxy or a backend-issued short-lived ticket. The official Hermes Dashboard plugin implements the proxy pattern: Hermes authenticates the browser, the plugin backend revalidates the Dashboard WebSocket request, and only that backend applies `HERMES_LIVE_AUTH_TOKEN` to the upstream gateway connection. The browser never receives the shared bearer or upstream gateway URL.
+For production browser clients, use an authenticated same-origin WebSocket proxy or a backend-issued short-lived ticket. The Hermes Dashboard integration implements the proxy pattern: Hermes authenticates the browser, the plugin backend revalidates the Dashboard WebSocket request, and only that backend applies `HERMES_LIVE_AUTH_TOKEN` to the upstream gateway connection. The browser never receives the shared bearer or upstream gateway URL.
 
 The shared browser client accepts `webSocketUrlProvider` so community UIs can request a fresh host-authorized URL at connection time. The Hermes Live gateway does not currently mint per-user tickets or turn its shared bearer into multi-tenant identity.
 
@@ -59,15 +59,21 @@ Use `wss://` for non-local clients. Terminate TLS at a trusted reverse proxy and
 
 ## Approvals
 
-Approval decisions should be rendered clearly in the client. The gateway only forwards choices; it does not decide whether a dangerous action should be approved.
+Approval decisions should be rendered clearly in the client. The gateway does not decide whether a dangerous action should be approved, but it deliberately narrows what a client is allowed to approve.
 
-Run-scoped actions are limited to the active Hermes run for the current voice session. Client messages and realtime provider tool calls cannot stop or inspect arbitrary Hermes run IDs through the gateway. The realtime provider has no approval-submission tool; human approval responses must match the gateway's sanitized FIFO queue, and non-displayable permission patterns cannot enable permanent approval.
+Run-scoped actions are limited to the active Hermes run for the current voice session. Client messages and realtime provider tool calls cannot stop or inspect arbitrary Hermes run IDs through the gateway. The realtime provider has no approval-submission tool.
+
+The gateway projects only exact, bounded approval display values. It never truncates or strips unsafe characters and then asks the user to approve the altered text. Opaque or incomplete requests are deny-only. `once` is available only when the user can see an exact command or description. `session` and `always` require an exact inspectable permission pattern, and interactive clients require a second confirmation before `always`.
+
+Every approval envelope receives a gateway-owned ID correlated to a bounded upstream Hermes approval identity. Responses must match the active run, exact queue-head approval ID, exact offered choice, and a previously unused client request ID. Exact retries are acknowledged from a bounded idempotency cache; reuse with changed data, duplicate upstream identities, widened choices, out-of-order responses, and bulk resolution fail closed.
+
+Mutating Hermes calls are treated as outcome-sensitive. If the gateway cannot determine whether an approval, run start, or stop took effect, it contains the owned run and closes the session rather than retrying against uncertain state. Graceful client disconnect waits for provider cleanup and active-run stop confirmation. If complete shutdown cannot be confirmed, the gateway emits `session_shutdown_unconfirmed`, closes with WebSocket code `1011`, and tells the operator to verify task state in Hermes.
 
 ## Abuse Handling
 
 The gateway sends a hashed session key as `OpenAI-Safety-Identifier` when using OpenAI Realtime. This is privacy-preserving and stable enough for provider-side abuse monitoring.
 
-Raw client WebSocket payload size is capped from `HERMES_LIVE_MAX_AUDIO_BYTES` and `HERMES_LIVE_MAX_TEXT_CHARS`, so oversized frames are closed before JSON parsing.
+Raw client WebSocket payload size is capped from `HERMES_LIVE_MAX_AUDIO_BYTES` and `HERMES_LIVE_MAX_TEXT_CHARS`, so oversized frames are closed before JSON parsing. Provider events, provider audio/transcripts, client/provider queues, gateway output buffering, Hermes JSON/SSE bodies, public run events, usage data, and CLI output have independent hard ceilings as well.
 
 Client metadata fields are also bounded before dispatch, including profile IDs, user labels, run IDs, reasons, MIME types, and playback truncation values.
 

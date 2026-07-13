@@ -152,7 +152,7 @@ Expected evidence:
 - OpenAI interruptions include `conversation.item.truncate` when the client has audio item metadata and playback duration, including `0` ms for queued/unheard audio.
 - With OpenAI VAD enabled, provider speech-start events reach the client as `input.speech_started`, and the client cancels provider output while stopping/truncating queued assistant playback.
 - Approval requests render decision buttons.
-- Stop sends `run.stop` and the gateway forwards Hermes cancellation.
+- Stop sends `run.stop`; an accepted request emits `run.stopping`, and the client remains in that state until Hermes confirms `run.stopped`, `run.completed`, or `run.failed`.
 
 ## Step 5: Test Negative Cases
 
