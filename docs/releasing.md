@@ -33,7 +33,7 @@ The release workflow reruns verification, audits dependencies, packs the npm tar
 
 ## npm publication
 
-The workflow contains an optional npm trusted-publishing job. It runs only when the repository variable `PUBLISH_NPM` is set to `true` and the npm package has a trusted publisher configured for this GitHub repository and workflow.
+The workflow contains an optional npm trusted-publishing job. It runs only when the repository variable `PUBLISH_NPM` is set to `true` and the npm package has a trusted publisher configured for this GitHub repository and workflow. That job deliberately uses Node 24, installs the pinned npm 11 CLI, and asserts npm's current minimum OIDC runtime before publishing.
 
 Before enabling it:
 

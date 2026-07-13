@@ -8,6 +8,8 @@
 - Add an authenticated same-origin Dashboard HTTP/WebSocket proxy that delegates to Hermes' own Dashboard authentication and origin checks while keeping the upstream gateway URL and bearer out of browser code.
 - Publish a dependency-free `hermes-live-voice/browser` client and microphone worklet with strict protocol/lifecycle validation, bounded input and playback queues, request IDs, state subscriptions, and host-provided authenticated WebSocket URLs.
 - Normalize client close frames to browser-legal codes and bounded UTF-8 reasons, recover from missing close events, suppress late audio after interruption until the next response begins, and replace stale connected notices when a gateway connection drops.
+- Reserve browser playback capacity before awaiting autoplay permission, time-bound suspended-context resume, expose a user-gesture `primePlayback()` API, and make audio disposal independent of a stalled playback chain.
+- Clear stale demo approvals on fatal disconnects and run npm trusted publishing on an explicitly verified Node 24/npm 11 OIDC runtime.
 - Move the negotiated wire contract to protocol v2, a breaking client handshake that removes raw provider envelopes, adds `run.stopping`, and requires exact approval identity and choice correlation while retaining `/v1/live` as the endpoint path.
 - Enable Gemini Live input/output audio transcription, preserve speaker/final metadata, avoid duplicate transcript events, and emit a normalized response-start lifecycle before assistant output.
 - Preserve concurrent approvals in a capacity-bounded FIFO across the browser client, Dashboard, demo, persistent terminal, and one-shot CLI; only the queue head is actionable and only the exact confirmed entry is removed.
