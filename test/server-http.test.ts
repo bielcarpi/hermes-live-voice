@@ -154,6 +154,30 @@ describe("HTTP server", () => {
     });
   });
 
+  it("logs internal HTTP failures without exposing their details to clients", async () => {
+    const hermes = fakeHermes();
+    vi.mocked(hermes.assertRunsSupported).mockResolvedValueOnce({
+      model: "hermes-agent",
+      features: { nonSerializableInternalValue: 1n },
+    });
+    const logger = fakeLogger();
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger,
+    });
+    openServers.push(server);
+
+    const response = await fetch(`${server.url}/ready`);
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ status: "error", error: "Internal server error." });
+    expect(logger.error).toHaveBeenCalledWith("http handler failed", {
+      error: expect.stringContaining("BigInt"),
+    });
+  });
+
   it("honors CORS allowlist for configured origins", async () => {
     const server = await startServer({
       config: testConfig({ server: { allowOrigin: "https://app.example.com" } }),
