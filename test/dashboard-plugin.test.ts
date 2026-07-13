@@ -63,6 +63,7 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).toContain("Interrupt speech");
     expect(source).toContain("Stop Hermes task");
     expect(source).toContain('audio.interrupt("provider detected user speech")');
+    expect(source).toContain('audio.interrupt("new Dashboard text input")');
     expect(source).toContain("audio.clearPlayback()");
   });
 

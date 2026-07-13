@@ -6,18 +6,18 @@ import {
 } from "../src/cli/one-shot-approval.js";
 
 describe("one-shot CLI approvals", () => {
-  it("renders sanitized request details and offers only supplied valid choices", async () => {
+  it("renders exact safe request details and offers only supplied valid choices", async () => {
     const questions = questioner("session");
     const lines: string[] = [];
 
     const choice = await promptForOneShotApproval(
       questions,
       {
-        command: "git\u001b[2J push\norigin main",
-        description: "Push the release\u0000 to origin",
-        patternKey: "git_push\u001b[31m",
+        command: "git push origin main",
+        description: "Push the release to origin",
+        patternKey: "git_push",
         patternKeys: ["git_push", "git_tag"],
-        choices: ["once", "invalid", "session", "session", "always", "deny"],
+        choices: ["once", "session", "session", "always", "deny"],
         allowPermanent: true,
       },
       { interactive: true, writeLine: (line) => lines.push(line) },
@@ -30,8 +30,28 @@ describe("one-shot CLI approvals", () => {
     expect(lines).toContain("[approval] Command: git push origin main");
     expect(lines).toContain("[approval] Permission pattern: git_push, git_tag");
     expect(lines).toContain("[approval] Available choices: once, session, always, deny. Deny is the safe default.");
-    expect(lines.join("\n")).not.toContain("invalid");
     expect(lines.every((line) => !/[\u0000-\u001f\u007f-\u009f]/.test(line))).toBe(true);
+  });
+
+  it("reduces transformed or partially invalid request details to deny-only", async () => {
+    const questions = questioner("once");
+    const lines: string[] = [];
+
+    const choice = await promptForOneShotApproval(
+      questions,
+      {
+        command: "git\u001b[2J push",
+        description: "Push\nproduction",
+        patternKey: "git_push\u001b[31m",
+        choices: ["once", "session", "always", "deny"],
+        allowPermanent: true,
+      },
+      { interactive: true, writeLine: (line) => lines.push(line) },
+    );
+
+    expect(choice).toBe("deny");
+    expect(questions.question).not.toHaveBeenCalled();
+    expect(lines).toContain("[approval] The request details were incomplete or unsafe; denial is the only available choice.");
   });
 
   it.each([
@@ -43,7 +63,7 @@ describe("one-shot CLI approvals", () => {
 
     const choice = await promptForOneShotApproval(
       questions,
-      { ...approval, choices: ["once", "always", "deny"] },
+      { command: "git push", ...approval, choices: ["once", "always", "deny"] },
       { interactive: true },
     );
 
@@ -56,6 +76,7 @@ describe("one-shot CLI approvals", () => {
     const cancelled = questioner("always", "no");
     const confirmed = questioner("always", "ALWAYS");
     const approval = {
+      command: "git push",
       choices: ["once", "always", "deny"],
       allowPermanent: true,
       patternKey: "git_push",
@@ -82,6 +103,7 @@ describe("one-shot CLI approvals", () => {
     const choice = await promptForOneShotApproval(
       questions,
       {
+        command: "git push",
         choices: ["always"],
         allowPermanent: true,
         patternKey: "git_push",
@@ -109,13 +131,14 @@ describe("one-shot CLI approvals", () => {
 
   it("deduplicates and bounds inspectable patterns before enabling always", () => {
     const approval = sanitizeOneShotApproval({
+      command: "release package",
       choices: ["always", "deny"],
       allowPermanent: true,
       patternKey: "same",
-      patternKeys: ["same", ...Array.from({ length: 40 }, (_, index) => `pattern_${index}`)],
+      patternKeys: ["same", ...Array.from({ length: 30 }, (_, index) => `pattern_${index}`)],
     });
 
-    expect(approval.patternKeys).toHaveLength(32);
+    expect(approval.patternKeys).toHaveLength(31);
     expect(approval.patternKeys.slice(0, 3)).toEqual(["same", "pattern_0", "pattern_1"]);
     expect(approval.choices).toEqual(["always", "deny"]);
     expect(approval.allowPermanent).toBe(true);

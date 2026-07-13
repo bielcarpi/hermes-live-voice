@@ -7,6 +7,7 @@ const CLIENT_MIME_TYPE_MAX_CHARS = 128;
 const MAX_TRUNCATION_AUDIO_MS = 60 * 60 * 1_000;
 
 const RequestIdSchema = z.string().max(REQUEST_ID_MAX_CHARS).optional();
+const RequiredRequestIdSchema = z.string().min(1).max(REQUEST_ID_MAX_CHARS);
 const ClientMetadataStringSchema = z.string().max(CLIENT_METADATA_MAX_CHARS);
 const ClientRequiredMetadataStringSchema = z.string().min(1).max(CLIENT_METADATA_MAX_CHARS);
 const ClientReasonSchema = z.string().max(CLIENT_REASON_MAX_CHARS);
@@ -45,8 +46,9 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("approval.respond"),
-    id: RequestIdSchema,
+    id: RequiredRequestIdSchema,
     runId: ClientRequiredMetadataStringSchema,
+    approvalId: ClientRequiredMetadataStringSchema,
     choice: ApprovalChoiceSchema,
     resolveAll: z.boolean().optional(),
   }),

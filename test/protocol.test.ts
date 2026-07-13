@@ -3,9 +3,9 @@ import { HERMES_LIVE_TOOL_DECLARATIONS, OPENAI_HERMES_LIVE_TOOLS, parseClientMes
 
 describe("protocol", () => {
   it("validates known client messages", () => {
-    expect(parseClientMessage({ type: "session.start", protocolVersion: 1, profileId: "default" })).toMatchObject({
+    expect(parseClientMessage({ type: "session.start", protocolVersion: 2, profileId: "default" })).toMatchObject({
       type: "session.start",
-      protocolVersion: 1,
+      protocolVersion: 2,
     });
     expect(parseClientMessage({ type: "text.input", text: "hello" }).type).toBe("text.input");
     expect(parseClientMessage({ type: "response.cancel", reason: "user interrupted" }).type).toBe("response.cancel");
@@ -29,13 +29,25 @@ describe("protocol", () => {
       type: "response.cancel",
       truncate: { itemId: "item_1", contentIndex: 0, audioEndMs: 0 },
     });
-    expect(parseClientMessage({ type: "approval.respond", runId: "run_1", choice: "once" }).type).toBe("approval.respond");
+    expect(parseClientMessage({
+      type: "approval.respond",
+      id: "approval_response_1",
+      runId: "run_1",
+      approvalId: "approval_1",
+      choice: "once",
+    }).type).toBe("approval.respond");
   });
 
   it("rejects invalid client messages", () => {
     expect(() => parseClientMessage({ type: "session.start", protocolVersion: 0 })).toThrow();
     expect(() => parseClientMessage({ type: "text.input", text: "" })).toThrow();
     expect(() => parseClientMessage({ type: "approval.respond", runId: "run_1", choice: "forever" })).toThrow();
+    expect(() => parseClientMessage({
+      type: "approval.respond",
+      id: "approval_response_1",
+      runId: "run_1",
+      choice: "once",
+    })).toThrow();
   });
 
   it("bounds client-controlled metadata fields", () => {
@@ -44,7 +56,13 @@ describe("protocol", () => {
 
     expect(() => parseClientMessage({ type: "session.start", profileId: tooLongMetadata })).toThrow();
     expect(() => parseClientMessage({ type: "audio.input", data: "AA==", mimeType: "x".repeat(129) })).toThrow();
-    expect(() => parseClientMessage({ type: "approval.respond", runId: tooLongMetadata, choice: "once" })).toThrow();
+    expect(() => parseClientMessage({
+      type: "approval.respond",
+      id: "approval_response_1",
+      runId: tooLongMetadata,
+      approvalId: "approval_1",
+      choice: "once",
+    })).toThrow();
     expect(() => parseClientMessage({ type: "run.stop", reason: tooLongReason })).toThrow();
     expect(() =>
       parseClientMessage({ type: "response.cancel", truncate: { itemId: "item_1", audioEndMs: Number.POSITIVE_INFINITY } }),
@@ -55,10 +73,10 @@ describe("protocol", () => {
   });
 
   it("serializes server messages as JSON", () => {
-    expect(JSON.parse(serverMessage({ type: "run.stopped", runId: "run_1", status: "stopping" }))).toEqual({
+    expect(JSON.parse(serverMessage({ type: "run.stopped", runId: "run_1", status: "cancelled" }))).toEqual({
       type: "run.stopped",
       runId: "run_1",
-      status: "stopping",
+      status: "cancelled",
     });
   });
 

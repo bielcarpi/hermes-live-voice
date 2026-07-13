@@ -1,6 +1,10 @@
 import type WebSocket from "ws";
 import type { ClientConnectionPort, ClientInboundFrame } from "../../../application/live-gateway/ports/client-connection.port.js";
 
+// Keep enough headroom for multiple default-sized audio frames, but never let a
+// stalled client turn provider output into an unbounded process-level buffer.
+export const MAX_CLIENT_BUFFERED_BYTES = 8 * 1024 * 1024;
+
 export class WebSocketClientConnection implements ClientConnectionPort {
   constructor(private readonly socket: WebSocket) {}
 
@@ -17,8 +21,22 @@ export class WebSocketClientConnection implements ClientConnectionPort {
   }
 
   sendText(payload: string): void {
-    if (this.socket.readyState === this.socket.OPEN) {
+    if (this.socket.readyState !== this.socket.OPEN) {
+      return;
+    }
+
+    const payloadBytes = Buffer.byteLength(payload, "utf8");
+    if (this.socket.bufferedAmount + payloadBytes > MAX_CLIENT_BUFFERED_BYTES) {
+      this.socket.terminate();
+      return;
+    }
+
+    try {
       this.socket.send(payload);
+    } catch {
+      // The socket can leave OPEN between the readyState check and send(). A
+      // hard close is safe here and ensures the session observes termination.
+      this.socket.terminate();
     }
   }
 

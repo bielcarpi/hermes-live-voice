@@ -157,6 +157,13 @@ try {
     throw new Error(`Installed CLI help failed with status ${help.status ?? "null"}\n${help.stdout}\n${help.stderr}`);
   }
 
+  const version = spawnSync(bin, ["--version"], { encoding: "utf8" });
+  if (version.status !== 0 || version.stdout.trim() !== packageJson.version) {
+    throw new Error(
+      `Installed CLI version failed with status ${version.status ?? "null"}; expected ${packageJson.version}.\n${version.stdout}\n${version.stderr}`,
+    );
+  }
+
   const hermesPluginsDir = join(workDir, "hermes-plugins");
   mkdirSync(hermesPluginsDir, { recursive: true });
   const pluginInstall = spawnSync(bin, ["plugin", "install", "--dir", hermesPluginsDir], {

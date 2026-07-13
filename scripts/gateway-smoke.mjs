@@ -86,7 +86,7 @@ try {
   const inbox = createInbox(socket);
   await waitForOpen(socket, 5_000);
 
-  socket.send(JSON.stringify({ type: "session.start", profileId: "smoke", userLabel: "gateway-smoke" }));
+  socket.send(JSON.stringify({ type: "session.start", protocolVersion: 2, profileId: "smoke", userLabel: "gateway-smoke" }));
   const ready = await inbox.next("session.ready");
   if (ready.model !== "mock-live") {
     throw new Error(`Gateway session advertised unexpected model: ${JSON.stringify(ready.model)}.`);

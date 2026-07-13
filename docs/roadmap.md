@@ -8,10 +8,10 @@ The roadmap favors a small, trustworthy bridge over a broad voice platform.
 
 - Keep Gemini Live and OpenAI Realtime adapters aligned with their documented GA event shapes.
 - Make installation, provider verification, and failure messages obvious.
-- Preserve the four-tool boundary between realtime providers and Hermes.
+- Preserve the three-tool boundary between realtime providers and Hermes.
 - Keep credentials and Hermes session keys server-side.
 - Improve deterministic coverage with captured provider fixtures.
-- Keep the official Dashboard, shared browser client, bundled demo, and terminal control surface aligned on protocol v1.
+- Keep the Dashboard integration, shared browser client, bundled demo, and terminal control surface aligned on protocol v2.
 - Collect installation, latency, interruption, and long-session evidence from real users.
 
 ## Next: excellent voice-agent experience

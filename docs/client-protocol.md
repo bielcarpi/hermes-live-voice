@@ -94,11 +94,29 @@ When any section is not ready, the endpoint returns `503` with that section's `e
 
 ## Client Limits
 
-Client message metadata such as request IDs, profile IDs, user labels, run IDs, MIME types, cancellation reasons, and playback truncation fields is bounded by the protocol before dispatch. Text input and provider tool-call text use `HERMES_LIVE_MAX_TEXT_CHARS`; audio frames use `HERMES_LIVE_MAX_AUDIO_BYTES`.
+Client message metadata such as request IDs, profile IDs, user labels, run IDs, MIME types, cancellation reasons, and playback truncation fields is bounded by the protocol before dispatch. Text input and provider tool-call text use `HERMES_LIVE_MAX_TEXT_CHARS`; audio frames use `HERMES_LIVE_MAX_AUDIO_BYTES`. PCM16 input must declare one integer `rate=` between 8,000 and 192,000 Hz. Resampling validates its target and refuses any calculated output above the 16 MiB allocation ceiling before allocating memory.
+
+The reverse path is bounded too. Provider transcript deltas, provider audio frames, retained Hermes output, usage payloads, raw run events, pre-ready provider events, and per-client WebSocket buffering all have hard ceilings. A provider that violates its negotiated output contract or a client that stops draining data is disconnected rather than allowed to grow process memory without bound.
+
+| Boundary | Default or hard ceiling |
+| --- | --- |
+| Client text | `HERMES_LIVE_MAX_TEXT_CHARS` (20,000; configurable up to 1,000,000) |
+| Decoded client/provider audio frame | `HERMES_LIVE_MAX_AUDIO_BYTES` (2,000,000; configurable up to 5,900,000) |
+| Queued inbound client messages | 256 messages / 8 MiB |
+| Pre-ready provider events | 256 events / 8 MiB |
+| Provider transcript delta | 20,000 characters |
+| Retained Hermes output | 200,000 characters |
+| Public raw run-event payload | 256,000 bytes |
+| Public usage payload | 64,000 bytes |
+| Individual provider tool response | 256,000 bytes; 4 MiB aggregate replay cache |
+| Browser inbound message | 8,000,000 bytes by default |
+| Browser queued playback | five seconds by default |
+
+Limits are protocol safety boundaries, not recommended application payload sizes.
 
 ## Request IDs
 
-Every client message can include an optional `id` string. When that message causes a `session.error`, the gateway echoes it as `requestId` so browser, mobile, and terminal clients can correlate recoverable validation or session-state failures.
+Every client message can include an `id` string. It is required for the mutating `approval.respond` message and optional elsewhere. When a message causes a `session.error`, the gateway echoes it as `requestId` so browser, mobile, and terminal clients can correlate validation or session-state failures.
 
 ```json
 {
@@ -115,7 +133,7 @@ The first message must be `session.start`.
 ```json
 {
   "type": "session.start",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "profileId": "default",
   "userLabel": "alice"
 }
@@ -128,7 +146,7 @@ The server replies:
 ```json
 {
   "type": "session.ready",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
   "hermes": {
@@ -153,7 +171,7 @@ The server replies:
 }
 ```
 
-The current protocol version is `1`. The gateway still accepts legacy clients that omit `protocolVersion`, but rejects an explicit unsupported version before opening a provider session. New clients should send the version and use the negotiated audio contract in `session.ready`; they must not assume every deployment uses PCM16.
+The current protocol version is `2`. Every client must send `protocolVersion: 2`; the gateway rejects missing or unsupported versions before opening a provider session. Protocol v2 is a breaking negotiation change: it makes approval correlation explicit, removes raw provider envelopes, and adds `run.stopping`. The `/v1/live` URL is retained as the endpoint path; it is not the protocol-version negotiation field. Clients must use the negotiated audio contract in `session.ready` rather than assume every deployment uses PCM16.
 
 ## Audio Input
 
@@ -188,7 +206,7 @@ Cancel the current realtime provider response before sending an interruption or 
 }
 ```
 
-This is a best-effort provider cancellation. OpenAI Realtime maps it to `response.cancel`. Gemini Live handles barge-in through live audio activity, so the current Gemini adapter accepts this message without sending a dedicated provider cancel event.
+This is a best-effort provider cancellation. OpenAI Realtime maps it to `response.cancel`, waits for the terminal response event before creating a queued follow-up response, and closes the provider session if cancellation is not acknowledged within a bounded deadline. Gemini Live handles barge-in through live audio activity, so the current Gemini adapter accepts this message without sending a dedicated provider cancel event.
 
 For OpenAI WebSocket playback, include truncation metadata when the user interrupts audio that has already started playing:
 
@@ -257,19 +275,6 @@ Provider-managed speech start:
 
 OpenAI VAD can emit this when the provider detects user speech. Voice clients should stop local assistant playback immediately and send `response.cancel`. If queued assistant audio has provider item metadata, include `truncate` so the gateway can remove unheard audio from the provider conversation.
 
-Raw realtime provider message:
-
-```json
-{
-  "type": "realtime.message",
-  "message": {
-    "type": "response.done"
-  }
-}
-```
-
-Clients usually do not need to show raw provider messages. They are useful for debugging and provider-specific telemetry.
-
 Provider-neutral response lifecycle:
 
 ```json
@@ -279,7 +284,7 @@ Provider-neutral response lifecycle:
 { "type": "response.failed", "responseId": "resp_...", "error": "Realtime response failed." }
 ```
 
-`responseId` is optional because not every provider exposes one. Clients should use these normalized events for UI state and completion instead of parsing `realtime.message` for provider-specific OpenAI or Gemini shapes.
+`responseId` is optional because not every provider exposes one. Raw provider payloads are intentionally not forwarded: audio and lifecycle data are emitted only through these normalized messages so audio bytes are not duplicated and provider internals do not leak into clients.
 
 Hermes run started:
 
@@ -305,7 +310,7 @@ Hermes run event (safe summary by default):
 }
 ```
 
-`HERMES_LIVE_RUN_EVENT_DETAIL=summary` forwards only allowlisted scalar metadata. `none` suppresses `run.event` messages. `raw` forwards upstream Hermes event payloads and should be used only with trusted developer clients because those events can contain tool arguments, output, paths, or error detail.
+`HERMES_LIVE_RUN_EVENT_DETAIL=summary` forwards only allowlisted scalar metadata. `none` suppresses `run.event` messages. `raw` forwards upstream Hermes event payloads up to a 256,000-byte event-payload ceiling and replaces larger events with a bounded summary carrying `truncated: true`. Raw mode should still be used only with trusted developer clients because events below that ceiling can contain tool arguments, output, paths, or error detail.
 
 Hermes completion:
 
@@ -361,16 +366,18 @@ When Hermes asks for approval, the gateway emits:
 }
 ```
 
-Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then bounds and projects only the fields needed for an informed decision. The gateway always adds `deny` when Hermes omits it so a human can fail closed. When the event lacks a command and description, other `choices` are restricted to `once`; clients must not invent persistent approval options for an opaque request.
+Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then projects only exact, bounded display values. If a supplied command, description, choice list, or permission pattern would need transformation, truncation, or control-character removal, the request is narrowed rather than silently repaired. A request with incomplete display context is deny-only. An informed request without an exact inspectable permission pattern can offer only `once` or `deny`. `session` and `always` require a visible exact `patternKey` or `patternKeys`, and clients must never invent wider choices.
 
-The gateway also retains these sanitized envelopes server-side in FIFO order. It accepts a response only for the active run's queue head and only when `choice` was offered in that envelope. `always` additionally requires `allowPermanent: true` and a non-empty `patternKey` or `patternKeys`. Protocol v1 rejects `resolveAll: true`; clients must answer each request explicitly.
+The gateway assigns every envelope an opaque gateway-owned `approvalId`, correlates it to Hermes' bounded upstream approval id, and retains envelopes server-side in FIFO order. It accepts a response only when the exact `runId` and `approvalId` match the active queue head and `choice` was offered in that envelope. `always` additionally requires `allowPermanent: true`. Protocol v2 rejects `resolveAll: true`; clients must answer each request explicitly. Approval request IDs are cached in a bounded idempotency window: an exact duplicate replays its prior acknowledgement without another Hermes mutation, while request-ID reuse with different data is rejected. Duplicate or mutated upstream approval identities fail closed. If Hermes' approval POST outcome cannot be confirmed, the gateway stops the run and closes the session rather than risk applying a retry to the next action.
 
 The client responds:
 
 ```json
 {
   "type": "approval.respond",
+  "id": "approval_response_123",
   "runId": "run_...",
+  "approvalId": "approval_...",
   "choice": "once"
 }
 ```
@@ -387,7 +394,9 @@ After the gateway submits the decision to Hermes, it emits:
 ```json
 {
   "type": "approval.responded",
+  "requestId": "approval_response_123",
   "runId": "run_...",
+  "approvalId": "approval_...",
   "choice": "once",
   "resolved": 1
 }
@@ -404,15 +413,17 @@ Stop the active run:
 }
 ```
 
-The server emits:
+The server first confirms that a stop was requested without claiming the run is terminal:
 
 ```json
 {
-  "type": "run.stopped",
+  "type": "run.stopping",
   "runId": "run_...",
   "status": "stopping"
 }
 ```
+
+Only Hermes `run.cancelled` emits `run.stopped`. Normal and failed terminal states emit `run.completed` and `run.failed`. Clients must keep the run in a stopping state until one of those terminal messages arrives.
 
 ## Logs
 
@@ -438,3 +449,5 @@ The gateway can emit operational logs to help clients explain non-terminal event
 ```
 
 Closing the WebSocket also closes the provider session and asks Hermes to stop any active run.
+
+For an orderly client shutdown, send `session.close` and wait for the server's WebSocket close instead of immediately starting a client close handshake. Code `1000` confirms gateway cleanup completed. `session_shutdown_unconfirmed` followed by code `1011`, or a client-side shutdown timeout, means cleanup could not be confirmed and the user must verify any active task directly in Hermes.

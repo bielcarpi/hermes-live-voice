@@ -32,13 +32,13 @@ hermes dashboard
 
 Open the Dashboard and choose **Live Voice**. The page reports gateway readiness before you connect. Microphone access works on `localhost` or another browser secure context.
 
-The Dashboard never receives the gateway credential. It opens an authenticated, same-origin WebSocket to the plugin backend; the backend connects to the companion gateway and applies the credential server-side.
+The Dashboard browser never receives the gateway credential or upstream gateway URL. It opens an authenticated, same-origin WebSocket to the plugin backend; the backend connects to the companion gateway and applies the credential server-side.
 
 ## 3. Know the controls
 
 - **Interrupt speech** cancels the current spoken response while leaving an active Hermes task running.
-- **Stop Hermes task** stops the active tool-using run while leaving the voice session connected.
-- **Disconnect** closes the live session. Disconnecting, refreshing, or navigating away also stops an active Hermes task.
+- **Stop Hermes task** requests cancellation of the active tool-using run while leaving the voice session connected. Keep watching until Hermes reports a terminal state.
+- **Disconnect** requests cleanup of the provider session and any active Hermes task, then waits for gateway confirmation. If confirmation fails or the page is closed before it arrives, verify the task directly in Hermes.
 - Permanent approval choices require a second confirmation and are shown only when Hermes provides an inspectable permission pattern.
 
 For a terminal-only conversation on the same machine, Hermes' built-in Voice Mode remains the shortest path. Hermes Live Voice is the realtime gateway and client surface for the Dashboard, browsers, mobile or desktop apps, and other custom clients.

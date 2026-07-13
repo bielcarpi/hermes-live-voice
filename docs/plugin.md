@@ -8,7 +8,7 @@ The plugin manifest version is kept identical to the npm package version and ver
 
 The plugin and gateway have different jobs:
 
-- The Hermes plugin gives Hermes installations a discoverable integration surface, status tool, slash command, and official Dashboard tab.
+- The Hermes plugin gives Hermes installations a discoverable integration surface, status tool, slash command, and Dashboard tab.
 - The gateway runtime owns WebSockets, audio frames, realtime provider sessions, client auth, and the browser demo.
 - Hermes remains responsible for memory, tools, skills, MCP, approvals, terminal/file access, and long-running work.
 
@@ -83,7 +83,7 @@ The `ready` argument includes the authenticated `/ready` probe when `HERMES_LIVE
 Run the gateway from a GitHub clone:
 
 ```sh
-npm install
+npm ci
 npm run build
 node dist/cli.js plugin install --symlink
 hermes plugins enable hermes-live

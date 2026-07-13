@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/dashboard-live-voice.jpg" alt="Hermes Live Voice running inside the official Hermes Dashboard" width="100%">
+  <img src="assets/dashboard-live-voice.jpg" alt="Hermes Live Voice running inside Hermes Dashboard" width="100%">
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 
 Hermes Live Voice is a Hermes plugin, a self-hosted voice gateway, and a small client protocol. It turns an existing Hermes Agent into the action-taking brain behind an interruptible speech-to-speech conversation.
 
-Ask it to inspect a repository, use memory, research something current, run a command, or request an approval. The realtime model keeps the conversation fluid while Hermes performs the actual work.
+Ask it to inspect a repository, use memory, research something current, run a command, or request an approval. The realtime model handles the speech loop; Hermes performs the tool-using work, while clients keep progress, stop controls, and approvals visible.
 
 ```txt
 You speak
@@ -53,6 +53,8 @@ Hermes Agent — memory, tools, skills, MCP, approvals
    ↓
 The result returns to the live conversation
 ```
+
+In v0.3, delegation to Hermes is synchronous from the realtime provider's perspective: conversation is fluid before and after the delegated run, but the speech model waits for that run's terminal result. The Dashboard and other clients still receive live task events, approvals, and stop controls during the wait. Continuous provider-side conversation while Hermes works is a roadmap item, not a current claim.
 
 The realtime provider receives three narrow gateway tools—not unrestricted access to the Hermes toolbelt. Provider credentials, Hermes credentials, Hermes session keys, and approval decisions remain outside the provider.
 
@@ -97,7 +99,7 @@ This project does not replace Hermes Voice Mode. It serves the integration layer
 
 | Surface | Best for | Audio |
 | --- | --- | --- |
-| **Official Hermes Dashboard — recommended** | Daily use with transcript, task progress, interruption, stop, and approvals | Browser microphone and playback |
+| **Hermes Dashboard + Live Voice plugin — recommended** | Daily use with transcript, task progress, interruption, stop, and approvals | Browser microphone and playback |
 | **Bundled browser demo** | Local development and gateway troubleshooting | Browser microphone and playback |
 | **`hermes-live-voice/browser`** | Community web UIs and custom React, Vue, Svelte, vanilla, or Electron clients | Host-integrated microphone and playback |
 | **`hermes-live terminal`** | SSH, headless systems, automation, and remote text control | Text only |
@@ -118,7 +120,7 @@ Generic chat UI compatibility is not the same as Hermes Live compatibility. A co
 Until the first npm publication, install from GitHub:
 
 ```sh
-git clone https://github.com/bielcarpi/hermes-live-voice.git
+git clone --branch v0.3.0 --depth 1 https://github.com/bielcarpi/hermes-live-voice.git
 cd hermes-live-voice
 npm ci
 npm run build
@@ -152,7 +154,7 @@ HERMES_LIVE_PROVIDER=mock \
 npm run dev
 ```
 
-Start or restart the official Dashboard after enabling the plugin:
+Start or restart Hermes Dashboard after enabling the plugin:
 
 ```sh
 hermes dashboard
@@ -324,7 +326,7 @@ Start a session:
 ```json
 {
   "type": "session.start",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "profileId": "default",
   "userLabel": "alice"
 }
@@ -341,7 +343,7 @@ Send text for a smoke test:
 
 Or stream base64 PCM16 audio frames and end the turn with `audio.end`. The server emits provider audio/transcripts, Hermes run events, approvals, completion, and typed errors.
 
-The package also exposes the dependency-free browser client used by both the official Dashboard tab and the bundled demo:
+The package also exposes the dependency-free browser client used by both the Hermes Dashboard integration and the bundled demo:
 
 ```js
 import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
@@ -355,13 +357,15 @@ const audio = new HermesLiveAudio(client, {
 
 client.on("approval.request", showApproval);
 client.on("run.completed", ({ output }) => showResult(output));
+client.on("audio.output", (message) => void audio.play(message).catch(showError));
+client.on("input.speech_started", () => audio.interrupt("provider detected user speech"));
 await client.connect();
 await audio.startMicrophone();
 ```
 
 The gateway serves the canonical worklet at `/mic-worklet.js`; package consumers can also resolve the `hermes-live-voice/browser/mic-worklet.js` export into their own static assets. The client validates lifecycle messages, returns request IDs, bounds microphone and playback buffering, and exposes `subscribe()`/`getSnapshot()` for React or other state-driven UIs.
 
-`webSocketUrlProvider` lets a host return a same-origin authenticated proxy URL or a host-issued short-lived ticket. The Hermes Live gateway does not mint per-user tickets itself. Do not embed an installation-wide `HERMES_LIVE_AUTH_TOKEN` in a public web app; the official Dashboard keeps it server-side through its authenticated plugin proxy.
+`webSocketUrlProvider` lets a host return a same-origin authenticated proxy URL or a host-issued short-lived ticket. The Hermes Live gateway does not mint per-user tickets itself. Do not embed an installation-wide `HERMES_LIVE_AUTH_TOKEN` in a public web app; the Dashboard integration keeps it server-side through its authenticated plugin proxy.
 
 See [UI integration](docs/ui-integration.md) and the [client protocol](docs/client-protocol.md) before building a client.
 

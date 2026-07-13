@@ -1,6 +1,9 @@
 import type { HermesRunEvent } from "../../../domain/protocol/server-protocol.js";
 
+export const MAX_SSE_EVENT_BYTES = 1_000_000;
+
 export function parseSseEventBlock(block: string): HermesRunEvent | null {
+  assertSseEventSize(block);
   const dataLines: string[] = [];
   let eventName: string | undefined;
   for (const line of block.split(/\r?\n/)) {
@@ -36,11 +39,13 @@ export async function* parseSseStream(stream: ReadableStream<Uint8Array>): Async
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let reachedEof = false;
 
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) {
+        reachedEof = true;
         break;
       }
       buffer += decoder.decode(value, { stream: true });
@@ -54,16 +59,27 @@ export async function* parseSseStream(stream: ReadableStream<Uint8Array>): Async
         }
         boundary = findBoundary(buffer);
       }
+      assertSseEventSize(buffer);
     }
     buffer += decoder.decode();
     if (buffer.trim()) {
+      assertSseEventSize(buffer);
       const event = parseSseEventBlock(buffer);
       if (event) {
         yield event;
       }
     }
   } finally {
+    if (!reachedEof) {
+      await reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
+  }
+}
+
+function assertSseEventSize(value: string): void {
+  if (Buffer.byteLength(value, "utf8") > MAX_SSE_EVENT_BYTES) {
+    throw new Error(`Hermes SSE event exceeded the ${MAX_SSE_EVENT_BYTES}-byte safety limit.`);
   }
 }
 

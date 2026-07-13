@@ -11,6 +11,9 @@ import type {
 } from "../../../application/live-gateway/ports/hermes-runs.port.js";
 import { parseSseStream } from "./sse.js";
 
+export const MAX_HERMES_JSON_RESPONSE_BYTES = 1_000_000;
+const MAX_HERMES_ERROR_DETAIL_CHARS = 2_000;
+
 export class HermesClient implements HermesRunsPort {
   readonly baseUrl: string;
   private readonly apiKey: string | undefined;
@@ -61,11 +64,25 @@ export class HermesClient implements HermesRunsPort {
       headers: this.sessionHeaders(params.sessionKey),
       ...signalInit(signal),
     });
-    const runId = response.run_id ?? response.runId;
-    if (!runId) {
-      throw new Error("Hermes did not return a run_id.");
+    if (response?.run_id !== undefined && !isBoundedHermesIdentifier(response.run_id)) {
+      throw new Error("Hermes returned an invalid run_id.");
     }
-    return { runId, status: response.status ?? "started" };
+    if (response?.runId !== undefined && !isBoundedHermesIdentifier(response.runId)) {
+      throw new Error("Hermes returned an invalid runId alias.");
+    }
+    if (response?.run_id !== undefined && response.runId !== undefined && response.run_id !== response.runId) {
+      throw new Error("Hermes returned conflicting run identifiers.");
+    }
+    const runId = response?.run_id ?? response?.runId;
+    if (!isBoundedHermesIdentifier(runId)) {
+      throw new Error("Hermes did not return a valid bounded run_id.");
+    }
+    return {
+      runId,
+      status: typeof response.status === "string" && response.status.length <= 128
+        ? response.status
+        : "started",
+    };
   }
 
   async getRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<Record<string, unknown>> {
@@ -116,7 +133,10 @@ export class HermesClient implements HermesRunsPort {
         signal: requestSignal.signal,
       });
       if (!response.ok) {
-        throw new Error(`Hermes events request failed: ${response.status} ${await response.text()}`);
+        const detail = await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
+        throw new Error(
+          `Hermes events request failed: ${response.status} ${detail.slice(0, MAX_HERMES_ERROR_DETAIL_CHARS)}`.trim(),
+        );
       }
       if (!response.body) {
         throw new Error("Hermes events response did not include a body.");
@@ -139,9 +159,17 @@ export class HermesClient implements HermesRunsPort {
         headers: this.headers(init.headers),
       });
       if (!response.ok) {
-        throw new Error(`Hermes request failed: ${response.status} ${await response.text()}`);
+        const detail = await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
+        throw new Error(
+          `Hermes request failed: ${response.status} ${detail.slice(0, MAX_HERMES_ERROR_DETAIL_CHARS)}`.trim(),
+        );
       }
-      return (await response.json()) as T;
+      const body = await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
+      try {
+        return JSON.parse(body) as T;
+      } catch {
+        throw new Error(`Hermes returned invalid JSON for ${path}.`);
+      }
     } catch (error) {
       throw requestSignal.timedOut() ? new Error(`Hermes request timed out after ${this.timeoutMs}ms: ${path}`) : error;
     } finally {
@@ -163,11 +191,48 @@ export class HermesClient implements HermesRunsPort {
   }
 }
 
+async function readBoundedResponseText(response: Response, maximumBytes: number): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`Hermes response exceeded the ${maximumBytes}-byte safety limit.`);
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  let reachedEof = false;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        reachedEof = true;
+        break;
+      }
+      bytes += value.byteLength;
+      if (bytes > maximumBytes) {
+        throw new Error(`Hermes response exceeded the ${maximumBytes}-byte safety limit.`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    if (!reachedEof) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
 function normalizeHermesRequestOptions(options: AbortSignal | HermesRequestOptions | undefined): HermesRequestOptions {
   if (!options) {
     return {};
   }
   return "aborted" in options && "addEventListener" in options ? { signal: options } : options;
+}
+
+function isBoundedHermesIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function signalInit(signal: AbortSignal | undefined): Pick<RequestInit, "signal"> {

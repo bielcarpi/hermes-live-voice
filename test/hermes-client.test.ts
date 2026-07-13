@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HermesClient } from "../src/adapters/outbound/hermes/hermes-runs.client.js";
+import {
+  HermesClient,
+  MAX_HERMES_JSON_RESPONSE_BYTES,
+} from "../src/adapters/outbound/hermes/hermes-runs.client.js";
 
 const fetchMock = vi.fn<typeof fetch>();
 
@@ -40,6 +43,23 @@ describe("HermesClient", () => {
       session_id: "live_1",
       instructions: "be brief",
     });
+  });
+
+  it.each([
+    ["missing ids", { status: "queued" }],
+    ["an unsafe snake-case id", { run_id: "run\nother", status: "queued" }],
+    ["an unsafe camel-case alias", { run_id: "run_123", runId: "run\nother", status: "queued" }],
+    ["conflicting aliases", { run_id: "run_123", runId: "run_other", status: "queued" }],
+  ])("rejects start responses with %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.startRun({
+      input: "check the repo",
+      sessionId: "live_1",
+      sessionKey: "agent:main:hermes-live:profile:default:user:alice",
+    })).rejects.toThrow(/run|identifier/i);
   });
 
   it("omits the Hermes session key header when the Hermes client is unauthenticated", async () => {
@@ -141,6 +161,26 @@ describe("HermesClient", () => {
     await vi.advanceTimersByTimeAsync(25);
 
     await result;
+  });
+
+  it("cancels Hermes JSON bodies that exceed the response safety limit", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_HERMES_JSON_RESPONSE_BYTES + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.getRun("run_oversized")).rejects.toThrow(
+      `Hermes response exceeded the ${MAX_HERMES_JSON_RESPONSE_BYTES}-byte safety limit.`,
+    );
+    expect(cancelled).toBe(true);
   });
 
   it("streams run events through SSE with the Hermes session key header", async () => {

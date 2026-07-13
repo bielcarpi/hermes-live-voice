@@ -20,14 +20,14 @@ Custom browser/mobile/desktop client
 
 ### Client
 
-Voice clients capture microphone audio, encode frames as base64 PCM16, and send JSON messages to `/v1/live`. The gateway returns provider audio, transcript deltas, Hermes run events, approval requests, errors, and logs. The shared browser client provides the connection lifecycle, protocol validation, request IDs, bounded buffering, microphone worklet, and audio playback helpers used by the official Dashboard and bundled demo.
+Voice clients capture microphone audio, encode frames as base64 PCM16, and send JSON messages to `/v1/live`. The gateway returns provider audio, transcript deltas, Hermes run events, approval requests, errors, and logs. The shared browser client provides the connection lifecycle, protocol validation, request IDs, bounded buffering, microphone worklet, and audio playback helpers used by the Hermes Dashboard integration and the bundled demo.
 
 The terminal client is deliberately different: it keeps the same persistent session and control contract but sends and renders text only. Local terminal microphone use remains the responsibility of official Hermes Voice Mode.
 
 Clients may be:
 
 - A Hermes-focused web or mobile client.
-- The official Hermes Dashboard tab.
+- A **Live Voice** integration for Hermes Dashboard.
 - A community web UI integration or the bundled web demo.
 - A native desktop app.
 - The text-control terminal client.
@@ -39,7 +39,7 @@ The plugin owns the Hermes-facing discovery surface:
 - Gateway metadata.
 - `hermes_live_status` tool registration.
 - `/hermes-live` slash command.
-- An official Dashboard **Live Voice** tab.
+- A Hermes Dashboard **Live Voice** tab supplied by this plugin.
 - Dashboard-packaged browser client, microphone worklet, and styles.
 - An authenticated same-origin HTTP/WebSocket proxy that keeps gateway credentials out of browser code.
 - Default local gateway URL.
@@ -62,7 +62,7 @@ The gateway owns:
 
 ### Dashboard Authentication Boundary
 
-The official Dashboard browser never receives `HERMES_LIVE_AUTH_TOKEN`. It authenticates to Hermes' own Dashboard, obtains a host-authorized same-origin WebSocket URL, and connects to the plugin backend. The backend revalidates Dashboard authentication and origin policy, then opens the upstream gateway socket with the installation credential server-side.
+The Dashboard browser never receives `HERMES_LIVE_AUTH_TOKEN`. It authenticates to Hermes' own Dashboard, obtains a host-authorized same-origin WebSocket URL, and connects to the plugin backend. The backend revalidates Dashboard authentication and origin policy, then opens the upstream gateway socket with the installation credential server-side.
 
 Custom/community web UIs should use the same shape: an authenticated same-origin WebSocket proxy or a backend-issued short-lived ticket. A static frontend that embeds the shared gateway bearer is suitable only for trusted local development.
 
@@ -131,7 +131,7 @@ It receives gateway tools:
 - `get_hermes_run_status`
 - `stop_hermes_run`
 
-The realtime provider cannot submit approvals. The gateway keeps the sanitized approval envelopes it has emitted in FIFO order and accepts a human `approval.respond` only when its choice is offered by the queue head. The sanitizer always preserves a fail-closed `deny` choice even if Hermes omits it. Permanent approval additionally requires the emitted envelope to contain an inspectable permission pattern. Bulk approval resolution is rejected in protocol v1.
+The realtime provider cannot submit approvals. The gateway assigns every sanitized envelope a gateway-owned id, keeps envelopes in FIFO order, and accepts a human `approval.respond` only when its request id has not been reused and its run id, approval id, and choice match the queue head. Opaque requests are deny-only; session and permanent policy choices require an inspectable visible pattern. Mutating responses are idempotently cached, and an ambiguous Hermes approval outcome stops the run and closes the session. Bulk approval resolution is rejected in protocol v2.
 
 This preserves the intended chain:
 
@@ -140,6 +140,10 @@ Realtime model = ears, mouth, turn-taking
 Hermes = brain, memory, actions
 Gateway = translator, session manager, safety boundary
 ```
+
+### Current delegation model
+
+In v0.3, `start_hermes_run` is synchronous from the realtime provider's perspective: its tool result returns after the Hermes SSE run reaches a terminal event. The Dashboard and connected clients still receive progress, approvals, and stop controls while that work runs, but the speech model cannot naturally hold a second provider-side conversation or call `get_hermes_run_status` during the outstanding tool call. Provider-authored transcript lines are therefore labeled **Live voice**, not Hermes. A future async run bridge will return the run id immediately and deliver bounded progress/completion notifications independently.
 
 ## Session Identity
 
@@ -172,5 +176,8 @@ The gateway should fail closed:
 - Hermes missing run features: refuse session startup.
 - Invalid client frames: return `session.error`.
 - Provider tool calls without response ids: fail before Hermes side effects.
-- Stream ends without terminal run event: return `run.failed`.
-- Active run on socket close: request Hermes stop.
+- Invalid or oversized provider output: close the provider/client session before forwarding it.
+- Slow client: terminate its WebSocket when bounded outbound buffering is exhausted.
+- Stream ends without a terminal run event: request stop, mark ownership indeterminate, and close the voice session until terminal state can be re-established.
+- Stop request accepted: emit `run.stopping`; retain run ownership until terminal SSE confirmation.
+- Active or still-starting run on socket close: close the realtime provider immediately, capture any late run id, and issue a separately bounded Hermes stop.

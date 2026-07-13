@@ -204,7 +204,6 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
   } else if (serverContent?.turnComplete === true || serverContent?.turn_complete === true) {
     events.push({ type: "response", status: "completed" });
   }
-  events.push({ type: "raw", message });
   return events;
 }
 

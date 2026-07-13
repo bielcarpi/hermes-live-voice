@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { assertRuntimeConfig, loadConfig, makeSessionKey, realtimeProviderConfigured, sanitizeSessionComponent } from "../src/config.js";
+import {
+  MAX_COMPATIBLE_AUDIO_FRAME_BYTES,
+  MAX_COMPATIBLE_TEXT_CHARS,
+  assertRuntimeConfig,
+  loadConfig,
+  makeSessionKey,
+  realtimeProviderConfigured,
+  sanitizeSessionComponent,
+} from "../src/config.js";
 
 describe("config", () => {
   it("loads defaults and selects Gemini as the default provider", () => {
@@ -39,6 +47,20 @@ describe("config", () => {
     const config = loadConfig({ HERMES_LIVE_MAX_TEXT_CHARS: "1234" });
 
     expect(config.server.maxTextChars).toBe(1234);
+  });
+
+  it("keeps configured audio frames compatible with bundled clients", () => {
+    expect(loadConfig({ HERMES_LIVE_MAX_AUDIO_BYTES: String(MAX_COMPATIBLE_AUDIO_FRAME_BYTES) }).server.maxAudioBytes)
+      .toBe(MAX_COMPATIBLE_AUDIO_FRAME_BYTES);
+    expect(() => loadConfig({ HERMES_LIVE_MAX_AUDIO_BYTES: String(MAX_COMPATIBLE_AUDIO_FRAME_BYTES + 1) }))
+      .toThrow();
+  });
+
+  it("keeps configured text frames compatible with the bounded client queue", () => {
+    expect(loadConfig({ HERMES_LIVE_MAX_TEXT_CHARS: String(MAX_COMPATIBLE_TEXT_CHARS) }).server.maxTextChars)
+      .toBe(MAX_COMPATIBLE_TEXT_CHARS);
+    expect(() => loadConfig({ HERMES_LIVE_MAX_TEXT_CHARS: String(MAX_COMPATIBLE_TEXT_CHARS + 1) }))
+      .toThrow();
   });
 
   it("configures trusted identity, event detail, and session capacity explicitly", () => {

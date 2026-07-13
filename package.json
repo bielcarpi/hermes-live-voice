@@ -1,7 +1,7 @@
 {
   "name": "hermes-live-voice",
   "version": "0.3.0",
-  "description": "The realtime voice layer for Hermes Agent with an official Dashboard UI, browser client, interruptible speech, tools, memory, and approvals.",
+  "description": "Give Hermes Agent a voice with realtime conversation, a first-class Dashboard integration, browser and terminal clients, tools, memory, and approvals.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

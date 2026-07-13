@@ -58,7 +58,7 @@ describe("Gemini Live adapter helpers", () => {
 
     expect(events).toContainEqual({ type: "text", text: "hello" });
     expect(events).toContainEqual({ type: "audio", audio: { data: "abc", mimeType: "audio/pcm;rate=24000" } });
-    expect(events.at(-1)).toMatchObject({ type: "raw" });
+    expect(events).toHaveLength(2);
   });
 
   it("normalizes top-level Gemini audio data", () => {
@@ -71,7 +71,7 @@ describe("Gemini Live adapter helpers", () => {
       type: "audio",
       audio: { data: "base64-audio", mimeType: "audio/pcm;rate=24000" },
     });
-    expect(events.at(-1)).toMatchObject({ type: "raw" });
+    expect(events).toHaveLength(2);
     expect(events).toContainEqual({ type: "response", status: "completed" });
   });
 

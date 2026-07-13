@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, cp, lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { stdin as input, stderr as approvalOutput } from "node:process";
@@ -16,9 +18,15 @@ import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
 import { promptForOneShotApproval } from "./cli/one-shot-approval.js";
-import { normalizeGatewayWebSocketUrl, runInteractiveTerminal } from "./cli/terminal-session.js";
+import { normalizeGatewayWebSocketUrl, runInteractiveTerminal, sanitizeTerminalText } from "./cli/terminal-session.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
+const packageRequire = createRequire(import.meta.url);
+const PACKAGE_VERSION = (packageRequire("../package.json") as { version: string }).version;
+const DEFAULT_TEXT_CLIENT_READY_TIMEOUT_MS = 10_000;
+const MIN_TEXT_CLIENT_SERVER_MESSAGE_BYTES = 2_000_000;
+const MAX_TEXT_CLIENT_OUTPUT_CHARS = 200_000;
+const MAX_TEXT_CLIENT_ID_CHARS = 256;
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";
@@ -30,6 +38,11 @@ async function main(): Promise<void> {
 
   if (command === "help" || command === "--help" || command === "-h") {
     printHelp();
+    return;
+  }
+
+  if (command === "version" || command === "--version" || command === "-V") {
+    console.log(PACKAGE_VERSION);
     return;
   }
 
@@ -127,6 +140,7 @@ function printHelp(): void {
   console.log(`hermes-live
 
 Usage:
+  hermes-live --version     Print the installed package version
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one text prompt through a running gateway
@@ -157,6 +171,7 @@ Optional:
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
   HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
+  HERMES_LIVE_CLIENT_READY_TIMEOUT_MS  One-shot client handshake timeout, default 10000
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2.1
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
 
@@ -311,42 +326,84 @@ async function fileExists(path: string): Promise<boolean> {
 async function runTextClient(config: AppConfig, text: string): Promise<void> {
   const url = normalizeGatewayWebSocketUrl(process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config));
   const headers = config.server.authToken ? { authorization: `Bearer ${config.server.authToken}` } : undefined;
-  const ws = new WebSocket(url, { headers });
+  const readyTimeoutMs = positiveInt(
+    process.env.HERMES_LIVE_CLIENT_READY_TIMEOUT_MS,
+    DEFAULT_TEXT_CLIENT_READY_TIMEOUT_MS,
+  );
+  const ws = new WebSocket(url, {
+    ...(headers ? { headers } : {}),
+    handshakeTimeout: readyTimeoutMs,
+    followRedirects: false,
+    maxPayload: textClientServerMessageBytes(config),
+    perMessageDeflate: false,
+  });
   const approvalReader = createInterface({ input, output: approvalOutput });
-  const state: TextClientState = { directTranscript: [], hermesRunStarted: false };
+  const state: TextClientState = {
+    directTranscript: [],
+    directTranscriptChars: 0,
+    hermesRunStarted: false,
+    sessionReady: false,
+    finished: false,
+  };
 
   try {
     await new Promise<void>((resolve, reject) => {
-      let finished = false;
-      const finish = (error?: Error) => {
-        if (finished) {
+      let inboundQueue = Promise.resolve();
+      let readyTimeout: NodeJS.Timeout | undefined;
+      const clearReadyTimeout = (): void => {
+        if (!readyTimeout) return;
+        clearTimeout(readyTimeout);
+        readyTimeout = undefined;
+      };
+      const finish = (error?: Error, terminate = false) => {
+        if (state.finished) {
           return;
         }
-        finished = true;
-        if (ws.readyState === WebSocket.OPEN) {
+        state.finished = true;
+        clearReadyTimeout();
+        if (terminate && ws.readyState !== WebSocket.CLOSED) {
+          ws.terminate();
+        } else if (ws.readyState === WebSocket.OPEN) {
           ws.close(1000, "client complete");
         }
         error ? reject(error) : resolve();
       };
+      const markSessionReady = (): void => {
+        clearReadyTimeout();
+      };
+
+      readyTimeout = setTimeout(() => {
+        finish(
+          new Error(`Gateway did not complete the WebSocket/session.ready handshake within ${readyTimeoutMs}ms.`),
+          true,
+        );
+      }, readyTimeoutMs);
+      readyTimeout.unref?.();
 
       ws.once("open", () => {
-        ws.send(JSON.stringify({
-          type: "session.start",
-          protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
-          profileId: "terminal",
-          userLabel: process.env.USER ?? "terminal",
-        }));
+        if (state.finished) return;
+        try {
+          sendTextClientMessage(ws, {
+            type: "session.start",
+            protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+            profileId: "terminal",
+            userLabel: process.env.USER ?? "terminal",
+          });
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)), true);
+        }
       });
-      ws.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+      ws.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error)), true));
       ws.once("close", (code, reason) => {
-        if (!finished) {
+        if (!state.finished) {
           finish(new Error(`Gateway WebSocket closed before completing the request: ${code} ${reason.toString("utf8")}`));
         }
       });
       ws.on("message", (raw) => {
-        void handleClientServerMessage(ws, raw, text, approvalReader, state, finish).catch((error) =>
-          finish(error instanceof Error ? error : new Error(String(error))),
-        );
+        if (state.finished) return;
+        inboundQueue = inboundQueue
+          .then(() => handleClientServerMessage(ws, raw, text, approvalReader, state, markSessionReady, finish))
+          .catch((error) => finish(error instanceof Error ? error : new Error(String(error)), true));
       });
     });
   } finally {
@@ -360,49 +417,96 @@ async function handleClientServerMessage(
   text: string,
   approvalReader: ReturnType<typeof createInterface>,
   state: TextClientState,
+  markSessionReady: () => void,
   finish: (error?: Error) => void,
 ): Promise<void> {
-  const message = JSON.parse(raw.toString("utf8")) as any;
+  if (state.finished) return;
+  const message = parseTextClientServerMessage(raw);
+  if (!state.sessionReady && message.type !== "session.ready" && message.type !== "session.error") {
+    throw new Error(`Gateway sent ${message.type} before session.ready.`);
+  }
   switch (message.type) {
-    case "session.ready":
-      ws.send(JSON.stringify({ type: "text.input", text }));
+    case "session.ready": {
+      if (state.sessionReady) throw new Error("Gateway sent duplicate session.ready messages.");
+      const protocolVersion = requiredInteger(message, "protocolVersion", "session.ready");
+      if (protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
+        throw new Error(
+          `Gateway protocol mismatch: expected v${HERMES_LIVE_PROTOCOL_VERSION}, received ${String(protocolVersion)}.`,
+        );
+      }
+      requiredString(message, "sessionId", "session.ready", MAX_TEXT_CLIENT_ID_CHARS);
+      state.sessionReady = true;
+      markSessionReady();
+      sendTextClientMessage(ws, { type: "text.input", text });
       break;
-    case "run.started":
+    }
+    case "run.started": {
+      const runId = requiredString(message, "runId", "run.started", MAX_TEXT_CLIENT_ID_CHARS);
+      if (state.hermesRunStarted) throw new Error("Gateway sent duplicate run.started messages.");
       state.hermesRunStarted = true;
-      console.error(`Hermes run started: ${message.runId}`);
+      state.activeRunId = runId;
+      console.error(`Hermes run started: ${sanitizeTerminalText(runId, MAX_TEXT_CLIENT_ID_CHARS)}`);
       break;
-    case "transcript.delta":
-      if (!state.hermesRunStarted && typeof message.text === "string") {
-        state.directTranscript.push(message.text);
+    }
+    case "transcript.delta": {
+      const speaker = requiredString(message, "speaker", "transcript.delta", 16);
+      if (!(["user", "assistant", "system"] as string[]).includes(speaker)) {
+        throw new Error("Gateway transcript.delta speaker is invalid.");
+      }
+      const delta = requiredString(message, "text", "transcript.delta", MAX_TEXT_CLIENT_OUTPUT_CHARS, true);
+      if (!state.hermesRunStarted && speaker === "assistant") {
+        state.directTranscriptChars += delta.length;
+        if (state.directTranscriptChars > MAX_TEXT_CLIENT_OUTPUT_CHARS) {
+          throw new Error("Gateway direct transcript exceeded the one-shot client output limit.");
+        }
+        state.directTranscript.push(delta);
       }
       break;
-    case "realtime.message":
-      if (!state.hermesRunStarted && isRealtimeResponseComplete(message.message)) {
-        finishDirectResponse(state, finish);
-      }
-      break;
+    }
     case "response.completed":
       if (!state.hermesRunStarted) finishDirectResponse(state, finish);
       break;
     case "response.failed":
-      if (!state.hermesRunStarted) finish(new Error(message.error ?? "Realtime provider response failed."));
+      if (!state.hermesRunStarted) {
+        finish(new Error(requiredString(message, "error", "response.failed", 2_000)));
+      }
       break;
-    case "approval.request":
-      await respondToApproval(ws, approvalReader, String(message.runId), message.approval ?? message.event);
+    case "response.cancelled":
+      if (!state.hermesRunStarted) finish(new Error("Realtime provider response was cancelled."));
       break;
-    case "run.completed":
-      console.log(String(message.output ?? ""));
+    case "approval.request": {
+      const runId = requiredString(message, "runId", "approval.request", MAX_TEXT_CLIENT_ID_CHARS);
+      if (state.activeRunId && runId !== state.activeRunId) {
+        throw new Error("Gateway approval.request did not match the active Hermes run.");
+      }
+      const approval = recordValue(message.approval) ?? recordValue(message.event);
+      if (!approval) throw new Error("Gateway approval.request did not include approval details.");
+      await respondToApproval(ws, approvalReader, runId, approval);
+      break;
+    }
+    case "run.completed": {
+      assertActiveRunMessage(message, state, "run.completed");
+      const output = requiredString(message, "output", "run.completed", MAX_TEXT_CLIENT_OUTPUT_CHARS, true);
+      console.log(sanitizeTerminalText(output, MAX_TEXT_CLIENT_OUTPUT_CHARS));
       finish();
       break;
+    }
     case "run.failed":
+      assertActiveRunMessage(message, state, "run.failed");
+      finish(new Error(requiredString(message, "error", "run.failed", 2_000)));
+      break;
+    case "run.stopped":
+      assertActiveRunMessage(message, state, "run.stopped");
+      finish(new Error(`Hermes run stopped: ${requiredString(message, "status", "run.stopped", 256)}`));
+      break;
     case "session.error":
-      finish(new Error(message.message ?? message.error ?? "Gateway request failed."));
+      finish(new Error(requiredString(message, "message", "session.error", 2_000)));
       break;
   }
 }
 
 function finishDirectResponse(state: TextClientState, finish: (error?: Error) => void): void {
-  const output = state.directTranscript.join("").trim();
+  const output = sanitizeTerminalText(state.directTranscript.join(""), MAX_TEXT_CLIENT_OUTPUT_CHARS).trim();
   if (output) {
     console.log(output);
     finish();
@@ -413,25 +517,68 @@ function finishDirectResponse(state: TextClientState, finish: (error?: Error) =>
 
 interface TextClientState {
   directTranscript: string[];
+  directTranscriptChars: number;
   hermesRunStarted: boolean;
+  sessionReady: boolean;
+  finished: boolean;
+  activeRunId?: string;
 }
 
-function isRealtimeResponseComplete(message: unknown): boolean {
-  const root = unwrapRealtimeMessage(message);
-  return (
-    root?.type === "response.done" ||
-    root?.serverContent?.turnComplete === true ||
-    root?.server_content?.turn_complete === true ||
-    root?.data?.serverContent?.turnComplete === true ||
-    root?.data?.server_content?.turn_complete === true
-  );
-}
-
-function unwrapRealtimeMessage(message: unknown): any {
-  if (message && typeof message === "object" && "data" in message) {
-    return (message as { data: unknown }).data;
+function parseTextClientServerMessage(raw: WebSocket.RawData): Record<string, unknown> & { type: string } {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw.toString("utf8")) as unknown;
+  } catch {
+    throw new Error("Gateway sent invalid JSON.");
   }
-  return message;
+  const message = recordValue(value);
+  if (!message || typeof message.type !== "string" || !message.type || message.type.length > 128) {
+    throw new Error("Gateway sent an invalid protocol message.");
+  }
+  return message as Record<string, unknown> & { type: string };
+}
+
+function requiredString(
+  message: Record<string, unknown>,
+  field: string,
+  type: string,
+  maxChars: number,
+  allowEmpty = false,
+): string {
+  const value = message[field];
+  if (typeof value !== "string" || (!allowEmpty && !value) || value.length > maxChars) {
+    throw new Error(`Gateway ${type} ${field} must be ${allowEmpty ? "a" : "a non-empty"} bounded string.`);
+  }
+  return value;
+}
+
+function requiredInteger(message: Record<string, unknown>, field: string, type: string): number {
+  const value = message[field];
+  if (!Number.isSafeInteger(value)) throw new Error(`Gateway ${type} ${field} must be an integer.`);
+  return value as number;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function assertActiveRunMessage(message: Record<string, unknown>, state: TextClientState, type: string): void {
+  const runId = requiredString(message, "runId", type, MAX_TEXT_CLIENT_ID_CHARS);
+  if (!state.activeRunId || runId !== state.activeRunId) {
+    throw new Error(`Gateway ${type} did not match the active Hermes run.`);
+  }
+}
+
+function sendTextClientMessage(ws: WebSocket, message: Record<string, unknown>): void {
+  if (ws.readyState !== WebSocket.OPEN) throw new Error("Gateway WebSocket is not open.");
+  ws.send(JSON.stringify(message));
+}
+
+function textClientServerMessageBytes(config: AppConfig): number {
+  const base64AudioBytes = Math.ceil((config.server.maxAudioBytes * 4) / 3) + 4_096;
+  return Math.max(MIN_TEXT_CLIENT_SERVER_MESSAGE_BYTES, base64AudioBytes);
 }
 
 async function respondToApproval(
@@ -440,12 +587,24 @@ async function respondToApproval(
   runId: string,
   event: unknown,
 ): Promise<void> {
-  console.error(`Approval requested for ${runId}:`);
+  const approvalId = typeof (event as { approvalId?: unknown })?.approvalId === "string"
+    ? (event as { approvalId: string }).approvalId
+    : "";
+  if (!approvalId || approvalId.length > 256) {
+    throw new Error("Gateway approval request did not include a valid approval id.");
+  }
+  console.error(`Approval requested for ${sanitizeTerminalText(runId, MAX_TEXT_CLIENT_ID_CHARS)}:`);
   const choice = await promptForOneShotApproval(approvalReader, event, {
     interactive: input.isTTY === true,
     writeLine: (line) => console.error(line),
   });
-  ws.send(JSON.stringify({ type: "approval.respond", runId, choice }));
+  sendTextClientMessage(ws, {
+    type: "approval.respond",
+    id: `client_approval_${randomUUID().replaceAll("-", "")}`,
+    runId,
+    approvalId,
+    choice,
+  });
 }
 
 function defaultGatewayWebSocketUrl(config: AppConfig): string {

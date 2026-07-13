@@ -1,19 +1,19 @@
 # UI Integration
 
-Hermes Live Voice is a gateway and client protocol, not one fixed application. The official Hermes Dashboard is the recommended end-user surface; the shared browser client is the integration surface for community and custom UIs; the terminal client is the remote/headless control surface.
+Hermes Live Voice is a gateway and client protocol, not one fixed application. The Live Voice plugin makes Hermes Dashboard the recommended end-user surface; the shared browser client is the integration surface for community and custom UIs; the terminal client is the remote/headless control surface. This describes compatibility with Hermes Dashboard, not an endorsement by the Hermes maintainers.
 
 ## Surface Matrix
 
 | Surface | Current support | Intended use |
 | --- | --- | --- |
-| Official Hermes Dashboard | First-class | Browser voice, text fallback, transcript, task activity, interruption, run stop, and approvals. |
+| Hermes Dashboard + Live Voice plugin | First-class | Browser voice, text fallback, transcript, task activity, interruption, run stop, and approvals. |
 | Bundled browser demo | First-class development tool | Local gateway setup and protocol troubleshooting. |
 | `hermes-live-voice/browser` | First-class integration API | Custom/community browser, Electron, mobile-web, React, Vue, Svelte, or vanilla clients. |
 | `hermes-live terminal` | First-class text control | SSH, headless hosts, remote operations, transcripts, task events, approvals, interruption, and stop. |
 | Hermes Ctrl+B Voice Mode | Official Hermes feature | The shortest local terminal microphone path; not replaced by this project. |
 | Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement Hermes Live realtime audio, lifecycle, task, or approval events by itself. |
 
-## Official Hermes Dashboard
+## Hermes Dashboard
 
 Install and enable the plugin, run the companion gateway, and restart the Dashboard:
 
@@ -79,7 +79,8 @@ client.subscribe(renderSnapshot);
 client.on("transcript.delta", renderTranscript);
 client.on("run.event", renderTaskEvent);
 client.on("approval.request", renderApproval);
-client.on("audio.output", (message) => audio.play(message));
+client.on("audio.output", (message) => void audio.play(message).catch(renderError));
+client.on("input.speech_started", () => audio.interrupt("provider detected user speech"));
 
 await client.connect();
 ```
@@ -89,7 +90,7 @@ The host endpoint should return either:
 1. a same-origin authenticated WebSocket proxy URL; or
 2. a short-lived, single-purpose WebSocket URL issued by the host backend.
 
-The gateway accepts a static bearer for trusted direct clients, but it does not mint per-user tickets. Do not ship `HERMES_LIVE_AUTH_TOKEN` in a public JavaScript bundle, local storage, or a long-lived browser URL. Copy the official Dashboard proxy pattern when building a production community integration.
+The gateway accepts a static bearer for trusted direct clients, but it does not mint per-user tickets. Do not ship `HERMES_LIVE_AUTH_TOKEN` in a public JavaScript bundle, local storage, or a long-lived browser URL. Copy the Hermes Dashboard integration's proxy pattern when building a production community integration.
 
 ### Required UI Event Mapping
 
@@ -102,14 +103,15 @@ A complete UI should handle at least:
 | `audio.output` | Queue PCM playback through `HermesLiveAudio`. |
 | `input.speech_started` | Stop local assistant playback and cancel/truncate provider output. |
 | `response.started/completed/cancelled/failed` | Represent provider speech lifecycle separately from Hermes work. |
-| `run.started/event/completed/failed/stopped` | Show task progress, allow stop, and render sanitized final output. |
+| `run.started/event/completed/failed/stopping/stopped` | Show task progress, keep stop controls pending through `stopping`, and render sanitized final output only at a terminal event. |
 | `approval.request/responded` | Render explicit choices and lock the decision while it is submitted. |
 | `session.error`, client `error`, and `close` | Show actionable connection state without leaking internal credentials or upstream error details. |
 
 Speech interruption and Hermes task cancellation are different actions:
 
-- `client.cancelResponse(...)` stops the current provider response and local playback.
-- `client.stopRun(...)` stops the active Hermes run while leaving the voice session connected.
+- `audio.interrupt(...)` clears queued local playback and sends correlated provider cancellation/truncation.
+- `client.cancelResponse(...)` sends only the protocol cancellation request; a custom audio player must clear its own queue.
+- `client.stopRun(...)` requests a stop for the active Hermes run while leaving the voice session connected. Keep the UI in `stopping` until `run.stopped`, `run.completed`, or `run.failed` confirms a terminal state.
 
 Do not map both actions to one ambiguous stop button.
 
@@ -122,9 +124,17 @@ Treat approvals as high-consequence controls:
 - show permanent approval only when `allowPermanent` is true and `patternKey` or `patternKeys` is present;
 - require a second confirmation before submitting `always`;
 - preserve the emitted FIFO order and make only the oldest pending approval actionable;
-- remove only the number of entries reported by `approval.responded.resolved`;
+- remove only the exact `runId` + `approvalId` acknowledged by `approval.responded` (protocol v2 always confirms `resolved: 1`);
 - disable duplicate decisions while a response is in flight;
 - keep the approval attached to the active run shown in the UI.
+
+Submit the exact gateway-owned identity; do not derive it from the upstream event:
+
+```js
+client.respondToApproval(choice, request.runId, {
+  approvalId: request.approval.approvalId,
+});
+```
 
 ### Audio And Browser Requirements
 
@@ -133,6 +143,7 @@ Treat approvals as high-consequence controls:
 - Start `AudioContext` and microphone capture from a user gesture.
 - Respect `session.ready.realtime.audio`; mock mode and some future providers may disable input or output.
 - Bound queued playback and clear it immediately on interruption or disconnect.
+- Await `client.disconnect()`. A clean resolution means the gateway confirmed session cleanup; rejection or `session_shutdown_unconfirmed` means the user must verify any active task in Hermes.
 - Test keyboard focus, screen-reader labels, reduced motion, narrow layouts, and permission denial.
 
 ## Community UI Compatibility
@@ -170,7 +181,7 @@ The terminal shows transcript, provider response state, Hermes task progress, ap
 Before calling a UI integration ready:
 
 1. Verify authenticated status and WebSocket connection without exposing a bearer in browser state or logs.
-2. Confirm protocol v1 and render the provider/model/audio capabilities from `session.ready`.
+2. Confirm protocol v2 and render the provider/model/audio capabilities from `session.ready`.
 3. Send text and complete a real Hermes run.
 4. Test microphone permission granted and denied.
 5. Verify provider audio playback and barge-in.

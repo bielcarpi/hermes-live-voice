@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const MAX_COMPATIBLE_AUDIO_FRAME_BYTES = 5_900_000;
+export const MAX_COMPATIBLE_TEXT_CHARS = 1_000_000;
+
 const EnvSchema = z.object({
   NODE_ENV: z.string().optional(),
   HERMES_LIVE_HOST: z.string().default("127.0.0.1"),
@@ -14,8 +17,18 @@ const EnvSchema = z.object({
   HERMES_LIVE_TRUST_CLIENT_IDENTITY: z.string().optional(),
   HERMES_LIVE_RUN_EVENT_DETAIL: z.enum(["summary", "raw", "none"]).default("summary"),
   HERMES_LIVE_MAX_SESSIONS: z.coerce.number().int().positive().default(8),
-  HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(2_000_000),
-  HERMES_LIVE_MAX_TEXT_CHARS: z.coerce.number().int().positive().default(20_000),
+  HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(MAX_COMPATIBLE_AUDIO_FRAME_BYTES)
+    .default(2_000_000),
+  HERMES_LIVE_MAX_TEXT_CHARS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(MAX_COMPATIBLE_TEXT_CHARS)
+    .default(20_000),
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   HERMES_LIVE_DEMO_ENABLED: z.string().optional(),
 

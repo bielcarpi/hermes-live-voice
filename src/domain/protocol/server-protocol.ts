@@ -12,7 +12,7 @@ export interface RealtimeClientCapabilities {
 }
 
 export interface HermesApprovalDetails {
-  approvalId?: string;
+  approvalId: string;
   command?: string;
   description?: string;
   patternKey?: string;
@@ -38,13 +38,20 @@ export type ServerMessage =
   | { type: "response.completed"; responseId?: string }
   | { type: "response.cancelled"; responseId?: string }
   | { type: "response.failed"; responseId?: string; error: string }
-  | { type: "realtime.message"; message: unknown }
   | { type: "run.started"; runId: string; sessionId: string }
   | { type: "run.event"; runId: string; event: HermesRunEvent }
   | { type: "approval.request"; runId: string; event: HermesRunEvent; approval: HermesApprovalDetails }
-  | { type: "approval.responded"; runId: string; choice: ApprovalChoice; resolved?: number }
+  | {
+      type: "approval.responded";
+      requestId: string;
+      runId: string;
+      approvalId: string;
+      choice: ApprovalChoice;
+      resolved: 1;
+    }
   | { type: "run.completed"; runId: string; output: string; usage?: Record<string, unknown> }
   | { type: "run.failed"; runId: string; error: string }
+  | { type: "run.stopping"; runId: string; status: string }
   | { type: "run.stopped"; runId: string; status: string }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; data?: unknown };
 
