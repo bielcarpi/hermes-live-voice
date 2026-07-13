@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { assertGatewayExposureConfig, assertHermesApiConfig, assertRealtimeProviderConfig, type AppConfig } from "../../../config.js";
@@ -61,7 +62,16 @@ export async function startServer({ config, logger, hermes: providedHermes, live
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: clientWebSocketMaxPayload(config) });
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    let url: URL;
+    try {
+      url = parseRequestTarget(req.url);
+      if (!parseHttpHost(req.headers.host, "http:")) {
+        throw new TypeError("Invalid Host header");
+      }
+    } catch {
+      rejectMalformedUpgrade(socket);
+      return;
+    }
     if (url.pathname !== "/v1/live") {
       socket.destroy();
       return;
@@ -84,7 +94,9 @@ export async function startServer({ config, logger, hermes: providedHermes, live
     wss.handleUpgrade(req, socket, head, (ws) => {
       const session = new LiveGatewaySession(new WebSocketClientConnection(ws), { config, hermes, liveModel, logger });
       sessions.add(session);
-      ws.once("close", () => sessions.delete(session));
+      ws.once("close", () => {
+        void session.close().finally(() => sessions.delete(session));
+      });
       session.bind();
       wss.emit("connection", ws, req);
     });
@@ -135,7 +147,7 @@ async function handleHttp(
     res.end();
     return;
   }
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  const url = parseRequestTarget(req.url);
 
   if (url.pathname === "/health") {
     if (!isGetOrHead(req)) {
@@ -286,6 +298,14 @@ function parseHttpHost(host: string | undefined, protocol: "http:" | "https:"): 
   }
 }
 
+function parseRequestTarget(target: string | undefined): URL {
+  return new URL(target ?? "/", "http://localhost");
+}
+
+function rejectMalformedUpgrade(socket: Duplex): void {
+  socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", () => socket.destroy());
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (normalized === "localhost" || normalized === "::1") {
@@ -372,7 +392,7 @@ function secureTokenEqual(actual: string | null | undefined, expected: string): 
 
 function clientWebSocketMaxPayload(config: AppConfig): number {
   const base64AudioBytes = Math.ceil((config.server.maxAudioBytes * 4) / 3);
-  const textBytes = config.server.maxTextChars * 4;
+  const textBytes = config.server.maxTextChars * 6;
   return Math.max(base64AudioBytes, textBytes) + 4096;
 }
 

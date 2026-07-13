@@ -10,6 +10,7 @@ import type {
   LiveModelAudio,
   LiveModelCallbacks,
   LiveModelConnectParams,
+  LiveModelEvent,
   LiveModelSession,
   LiveToolCall,
 } from "../src/application/live-gateway/ports/realtime-model.port.js";
@@ -54,6 +55,61 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("fails closed when a provider emits an oversized transcript delta", async () => {
+    const liveModel = new ManualProviderEventAdapter();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const closed = waitForClose(socket);
+    liveModel.emit({ type: "text", text: "x".repeat(20_001) });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "realtime_provider_event_invalid",
+      recoverable: false,
+      message: expect.stringContaining("Realtime provider transcript delta exceeds 20000 characters"),
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+  });
+
+  it("fails closed when a provider emits an oversized audio frame", async () => {
+    const liveModel = new ManualProviderEventAdapter();
+    const server = await startServer({
+      config: testConfig({ server: { maxAudioBytes: 2 } }),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const closed = waitForClose(socket);
+    liveModel.emit({
+      type: "audio",
+      audio: { data: Buffer.from([1, 2, 3, 4]).toString("base64"), mimeType: "audio/pcm;rate=24000" },
+    });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "realtime_provider_event_invalid",
+      recoverable: false,
+      message: expect.stringContaining("HERMES_LIVE_MAX_AUDIO_BYTES"),
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+  });
+
   it("runs the text protocol through the real gateway WebSocket", async () => {
     const hermes = fakeHermes();
     const server = await startServer({
@@ -72,7 +128,7 @@ describe("live gateway WebSocket", () => {
 
     expect(ready).toMatchObject({
       type: "session.ready",
-      protocolVersion: 1,
+      protocolVersion: 2,
       model: "mock-live",
       realtime: {
         provider: "mock",
@@ -98,6 +154,99 @@ describe("live gateway WebSocket", () => {
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("returns the Hermes tool result immediately after a terminal completion event", async () => {
+    const iteratorClosed = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        try {
+          yield { event: "run.completed", output: "Terminal result." };
+          await new Promise(() => undefined);
+        } finally {
+          iteratorClosed.resolve();
+        }
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Complete, then leave SSE open" });
+
+    await expect(liveModel.nextToolResponse()).resolves.toMatchObject({
+      response: { ok: true, run_id: "run_ws", output: "Terminal result." },
+    });
+    await iteratorClosed.promise;
+  });
+
+  it("orders run.started before a provider terminal event emitted during Hermes startup", async () => {
+    const startCalled = deferred<void>();
+    const startResult = deferred<{ runId: string; status: string }>();
+    const finishRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      startRun: vi.fn(async () => {
+        startCalled.resolve();
+        return await startResult.promise;
+      }),
+      streamEvents: async function* () {
+        await finishRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    send(socket, { type: "text.input", text: "Start slowly" });
+    await startCalled.promise;
+    liveModel.emitToolCall({
+      id: "parallel_start",
+      name: "start_hermes_run",
+      args: { message: "Do not start twice" },
+    });
+    await expect(liveModel.nextToolResponse()).resolves.toMatchObject({
+      call: { id: "parallel_start" },
+      response: { ok: false, error: "A Hermes run is already active for this voice session." },
+    });
+    expect(hermes.startRun).toHaveBeenCalledTimes(1);
+    liveModel.emitEvent({ type: "response", status: "completed", responseId: "provider_tool_turn" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(observed.some((message) => message.type === "response.completed")).toBe(false);
+
+    const runStarted = waitForMessage(socket, "run.started");
+    const responseCompleted = waitForMessage(socket, "response.completed");
+    startResult.resolve({ runId: "run_ws", status: "started" });
+    await runStarted;
+    await responseCompleted;
+    const runStartedIndex = observed.findIndex((message) => message.type === "run.started");
+    const responseCompletedIndex = observed.findIndex((message) => message.type === "response.completed");
+    expect(runStartedIndex).toBeGreaterThanOrEqual(0);
+    expect(responseCompletedIndex).toBeGreaterThan(runStartedIndex);
+    finishRun.resolve();
+    await liveModel.nextToolResponse();
   });
 
   it("uses client-selected Hermes identity only when explicitly trusted", async () => {
@@ -161,6 +310,69 @@ describe("live gateway WebSocket", () => {
     await completed;
   });
 
+  it("bounds raw Hermes run events before forwarding them to clients", async () => {
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "tool.started", run_id: "run_ws", args: { output: "x".repeat(300_000) } };
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig({ server: { runEventDetail: "raw" } }),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const completed = waitForMessage(socket, "run.completed");
+    send(socket, { type: "text.input", text: "Run a tool" });
+    const runEvent = await waitForMessage(socket, "run.event");
+
+    expect(runEvent.event).toMatchObject({
+      event: "tool.started",
+      run_id: "run_ws",
+      truncated: true,
+      original_bytes: expect.any(Number),
+    });
+    expect(JSON.stringify(runEvent)).not.toContain("x".repeat(1_000));
+    await completed;
+  });
+
+  it("bounds Hermes run output retained and returned by the bridge", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "run.completed", output: "x".repeat(250_000) };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const completedPromise = waitForMessage(socket, "run.completed");
+    send(socket, { type: "text.input", text: "Generate a large result" });
+
+    const completed = await completedPromise;
+    const toolResponse = await liveModel.nextToolResponse();
+    expect(completed.output).toHaveLength(200_000);
+    expect(toolResponse.response.output).toHaveLength(200_000);
+  });
+
   it("reports Hermes startup failures as session start failures", async () => {
     const server = await startServer({
       config: testConfig(),
@@ -181,7 +393,7 @@ describe("live gateway WebSocket", () => {
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "session_start_failed",
-      message: "Hermes capabilities unavailable",
+      message: "Hermes API readiness check failed. Check the gateway logs.",
       requestId: "req_start_1",
       recoverable: true,
     });
@@ -199,13 +411,13 @@ describe("live gateway WebSocket", () => {
     openSockets.push(socket);
 
     await waitForOpen(socket);
-    send(socket, { type: "session.start", id: "req_version", protocolVersion: 2 });
+    send(socket, { type: "session.start", id: "req_version", protocolVersion: 1 });
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "unsupported_protocol_version",
       requestId: "req_version",
       recoverable: false,
-      message: expect.stringContaining("use 1"),
+      message: expect.stringContaining("use 2"),
     });
   });
 
@@ -267,14 +479,14 @@ describe("live gateway WebSocket", () => {
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "session_start_failed",
-      message: "Provider did not connect",
+      message: "Realtime provider session failed to start. Check the gateway logs.",
       recoverable: true,
     });
   });
 
   it("reports provider errors before readiness as session start failures", async () => {
     const server = await startServer({
-      config: testConfig({ server: { providerReadyTimeoutMs: 1_000 } }),
+      config: testConfig({ server: { providerReadyTimeoutMs: 20 } }),
       hermes: fakeHermes(),
       liveModel: new PreReadyErrorAdapter(),
       logger: fakeLogger(),
@@ -284,20 +496,23 @@ describe("live gateway WebSocket", () => {
     openSockets.push(socket);
 
     await waitForOpen(socket);
+    const closed = waitForClose(socket);
     send(socket, { type: "session.start" });
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "session_start_failed",
-      message: "Provider errored before ready",
-      recoverable: true,
+      message: "Realtime provider session failed to start. Check the gateway logs.",
+      recoverable: false,
     });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
   });
 
-  it("reports provider close before readiness as a session start failure", async () => {
+  it("rejects an oversized provider event before readiness without retaining it", async () => {
+    const liveModel = new OversizedPreReadyEventAdapter();
     const server = await startServer({
       config: testConfig({ server: { providerReadyTimeoutMs: 1_000 } }),
       hermes: fakeHermes(),
-      liveModel: new PreReadyCloseAdapter(),
+      liveModel,
       logger: fakeLogger(),
     });
     openServers.push(server);
@@ -309,9 +524,58 @@ describe("live gateway WebSocket", () => {
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "session_start_failed",
-      message: "Realtime provider session closed before ready.",
+      message: "Realtime provider exceeded the safe pre-ready event queue limit.",
       recoverable: true,
     });
+    await vi.waitFor(() => expect(liveModel.session.close).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not send session.ready when a provider opens after a latched startup error", async () => {
+    const liveModel = new ErrorThenOpenAdapter();
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 1_000 } }),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      message: "Realtime provider session failed to start. Check the gateway logs.",
+    });
+    await vi.waitFor(() => expect(liveModel.session.close).toHaveBeenCalledTimes(1));
+    expect(observed.some((message) => message.type === "session.ready")).toBe(false);
+  });
+
+  it("reports provider close before readiness as a session start failure", async () => {
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 20 } }),
+      hermes: fakeHermes(),
+      liveModel: new PreReadyCloseAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    const closed = waitForClose(socket);
+    send(socket, { type: "session.start" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      message: "Realtime provider session closed before ready.",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
   });
 
   it("waits to announce ready until the provider session is assigned", async () => {
@@ -376,6 +640,82 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("bounds provider cleanup when a never-ready session ignores close", async () => {
+    const liveModel = new NeverOpenHungCloseAdapter();
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 20 } }),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    const closed = waitForClose(socket);
+    send(socket, { type: "session.start", id: "hung_startup_close" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "session_start_failed",
+      requestId: "hung_startup_close",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011, reason: "session shutdown unconfirmed" });
+    expect(liveModel.session.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a pending provider connection and closes its late session before a clean client close", async () => {
+    const liveModel = new PendingConnectAdapter();
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 1_000 } }),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await liveModel.connectEntered.promise;
+    const closed = waitForClose(socket);
+    send(socket, { type: "session.close", id: "close_pending_connect" });
+    liveModel.releaseConnect.resolve();
+
+    await expect(closed).resolves.toMatchObject({ code: 1000 });
+    expect(liveModel.session.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes abnormally when a pending provider connection misses the cleanup deadline", async () => {
+    const liveModel = new PendingConnectAdapter();
+    const server = await startServer({
+      config: testConfig({ server: { providerReadyTimeoutMs: 20 } }),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await liveModel.connectEntered.promise;
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "session.close", id: "close_stuck_connect" });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "session_shutdown_unconfirmed",
+      requestId: "close_stuck_connect",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011, reason: "session shutdown unconfirmed" });
+    expect(liveModel.session.close).not.toHaveBeenCalled();
+  });
+
   it("reconstructs completed output from Hermes message deltas", async () => {
     const hermes = fakeHermes({
       streamEvents: async function* () {
@@ -418,6 +758,7 @@ describe("live gateway WebSocket", () => {
           description: "This command changes a remote repository.",
           pattern_key: "git_push",
           choices: ["once", "session", "always", "deny"],
+          allow_permanent: true,
         };
         await approvalSubmitted.promise;
         yield { event: "run.completed", output: "Approved." };
@@ -444,7 +785,6 @@ describe("live gateway WebSocket", () => {
     const approval = await waitForMessage(socket, "approval.request");
     expect(approval).toMatchObject({
       approval: {
-        approvalId: "approval_1",
         command: "git push origin feature",
         description: "This command changes a remote repository.",
         patternKey: "git_push",
@@ -452,13 +792,16 @@ describe("live gateway WebSocket", () => {
         allowPermanent: true,
       },
     });
+    expect(approval.approval.approvalId).toMatch(/^approval_[a-f0-9]{32}$/);
     const approvalResponded = waitForMessage(socket, "approval.responded");
     const completed = waitForMessage(socket, "run.completed");
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
+    sendApprovalResponse(socket, approval, "once", "approval_response_1");
 
     await expect(approvalResponded).resolves.toMatchObject({
       type: "approval.responded",
+      requestId: "approval_response_1",
       runId: "run_ws",
+      approvalId: approval.approval.approvalId,
       choice: "once",
       resolved: 1,
     });
@@ -467,6 +810,53 @@ describe("live gateway WebSocket", () => {
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
+  });
+
+  it("ignores a resolved approval when Hermes redelivers the same source id", async () => {
+    const submitted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        const approval = {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_redelivered",
+          command: "deploy staging",
+          choices: ["once", "deny"],
+        };
+        yield approval;
+        await submitted.promise;
+        yield approval;
+        yield { event: "run.completed", output: "Approved once." };
+      },
+      submitApproval: vi.fn(async () => {
+        submitted.resolve();
+        return { resolved: 1 };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observedAfterFirst: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy once" });
+    const approval = await waitForMessage(socket, "approval.request");
+    socket.on("message", (raw) => observedAfterFirst.push(JSON.parse(raw.toString("utf8"))));
+    const completed = waitForMessage(socket, "run.completed");
+    sendApprovalResponse(socket, approval, "once", "approval_redelivery_response");
+
+    await waitForMessage(socket, "approval.responded");
+    await completed;
+    expect(observedAfterFirst.filter((message) => message.type === "approval.request")).toHaveLength(0);
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
   });
 
   it("rejects approval responses for runs outside the active voice session", async () => {
@@ -494,9 +884,9 @@ describe("live gateway WebSocket", () => {
     send(socket, { type: "text.input", text: "Delete the stale build" });
     const opaqueApproval = await waitForMessage(socket, "approval.request");
     expect(opaqueApproval).toMatchObject({
-      approval: { approvalId: "approval_1", choices: ["once", "deny"], allowPermanent: false },
+      approval: { choices: ["deny"], allowPermanent: false },
     });
-    send(socket, { type: "approval.respond", runId: "other_run", choice: "once" });
+    sendApprovalResponse(socket, { ...opaqueApproval, runId: "other_run" }, "deny", "approval_wrong_run");
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
@@ -543,16 +933,97 @@ describe("live gateway WebSocket", () => {
     await waitForMessage(socket, "session.ready");
     send(socket, { type: "text.input", text: "Deploy" });
 
-    await expect(waitForMessage(socket, "approval.request")).resolves.toMatchObject({
+    const approval = await waitForMessage(socket, "approval.request");
+    expect(approval).toMatchObject({
       approval: {
         command: "deploy production",
-        choices: ["once", "session", "deny"],
+        choices: ["once", "deny"],
         allowPermanent: false,
       },
     });
 
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "deny" });
-    approvalSubmitted.resolve();
+    sendApprovalResponse(socket, approval, "deny", "approval_no_pattern");
+  });
+
+  it.each([
+    [
+      "a control-bearing command",
+      { command: "deploy\u202e production", description: "Deploy production.", pattern_key: "deploy", choices: ["once", "always", "deny"] },
+      ["deny"],
+    ],
+    [
+      "an overlong command",
+      { command: "x".repeat(4_001), description: "Run the command.", pattern_key: "command", choices: ["once", "always", "deny"] },
+      ["deny"],
+    ],
+    [
+      "a visually blank command",
+      { command: "\u0300\u0301", pattern_key: "command", choices: ["once", "always", "deny"] },
+      ["deny"],
+    ],
+    [
+      "explicitly empty choices",
+      { command: "deploy production", choices: [] },
+      ["deny"],
+    ],
+    [
+      "malformed choices",
+      { command: "deploy production", choices: ["once", "invalid"] },
+      ["deny"],
+    ],
+    [
+      "a transformed permission pattern",
+      { command: "deploy production", pattern_key: "deploy\u202ehidden", choices: ["once", "session", "always", "deny"] },
+      ["once", "deny"],
+    ],
+    [
+      "more permission patterns than the UI can show",
+      { command: "deploy production", pattern_keys: Array.from({ length: 33 }, (_, index) => `deploy_${index}`), choices: ["once", "session", "always", "deny"] },
+      ["once", "deny"],
+    ],
+  ])("never broadens approval from %s", async (_label, approvalEvent, expectedChoices) => {
+    const approvalSubmitted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_projection",
+          ...approvalEvent,
+        };
+        await approvalSubmitted.promise;
+        yield { event: "run.completed", output: "Denied safely." };
+      },
+      submitApproval: vi.fn(async () => {
+        approvalSubmitted.resolve();
+        return { resolved: 1 };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Check approval projection" });
+    const approval = await waitForMessage(socket, "approval.request");
+
+    expect(approval.approval.choices).toEqual(expectedChoices);
+    expect(approval.approval.allowPermanent).toBe(false);
+    expect(approval.approval).not.toHaveProperty("patternKey");
+    expect(approval.approval).not.toHaveProperty("patternKeys");
+
+    const completed = waitForMessage(socket, "run.completed");
+    sendApprovalResponse(socket, approval, "deny", `deny_projection_${String(_label).replaceAll(" ", "_")}`);
+    await waitForMessage(socket, "approval.responded");
+    await completed;
   });
 
   it.each([
@@ -598,23 +1069,22 @@ describe("live gateway WebSocket", () => {
 
     const approval = await waitForMessage(socket, "approval.request");
     expect(approval.approval).toMatchObject({
-      approvalId: "approval_uninspectable",
       choices: ["once", "deny"],
       allowPermanent: false,
     });
+    expect(approval.approval.approvalId).toMatch(/^approval_[a-f0-9]{32}$/);
     expect(approval.approval).not.toHaveProperty("patternKey");
 
     const responded = waitForMessage(socket, "approval.responded");
     const completed = waitForMessage(socket, "run.completed");
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "deny" });
+    sendApprovalResponse(socket, approval, "deny", `deny_${_label}`);
     await responded;
     await completed;
   });
 
-  it("validates human approval responses against the sanitized FIFO queue", async () => {
+  it("correlates and deduplicates approval responses without advancing the FIFO queue", async () => {
     const releaseSecondApproval = deferred<void>();
     const finishRun = deferred<void>();
-    let onceResponses = 0;
     const hermes = fakeHermes({
       streamEvents: async function* () {
         yield {
@@ -623,8 +1093,7 @@ describe("live gateway WebSocket", () => {
           approval_id: "approval_1",
           command: "deploy staging",
           description: "Deploy the current revision.",
-          choices: ["once", "always"],
-          allow_permanent: true,
+          choices: ["once", "deny"],
         };
         await releaseSecondApproval.promise;
         yield {
@@ -633,20 +1102,14 @@ describe("live gateway WebSocket", () => {
           approval_id: "approval_2",
           command: "remember deployment approval",
           description: "Allow this action for the current session.",
+          pattern_key: "deploy_session",
           choices: ["session", "deny"],
         };
         await finishRun.promise;
         yield { event: "run.completed", output: "Approved in order." };
       },
       submitApproval: vi.fn(async (_runId: string, choice: ApprovalChoice) => {
-        if (choice === "deny") {
-          return { resolved: 0 };
-        }
-        if (choice === "once") {
-          onceResponses += 1;
-          return { resolved: onceResponses === 1 ? 0 : 1 };
-        }
-        finishRun.resolve();
+        if (choice === "session") finishRun.resolve();
         return { resolved: 1 };
       }),
     });
@@ -665,67 +1128,260 @@ describe("live gateway WebSocket", () => {
     await waitForMessage(socket, "session.ready");
     send(socket, { type: "text.input", text: "Deploy safely" });
 
-    await expect(waitForMessage(socket, "approval.request")).resolves.toMatchObject({
+    const first = await waitForMessage(socket, "approval.request");
+    expect(first).toMatchObject({
       approval: {
-        approvalId: "approval_1",
+        command: "deploy staging",
+        description: "Deploy the current revision.",
         choices: ["once", "deny"],
         allowPermanent: false,
       },
     });
     releaseSecondApproval.resolve();
-    await expect(waitForMessage(socket, "approval.request")).resolves.toMatchObject({
-      approval: { approvalId: "approval_2", choices: ["session", "deny"] },
+    const second = await waitForMessage(socket, "approval.request");
+    expect(second).toMatchObject({
+      approval: { patternKey: "deploy_session", choices: ["session", "deny"] },
     });
 
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "always" });
+    sendApprovalResponse(socket, first, "always", "invalid_always");
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
       message: "Permanent approval requires an inspectable permission pattern.",
     });
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "session" });
+    sendApprovalResponse(socket, first, "session", "invalid_session");
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
       message: "Approval choice session was not offered for the pending request.",
     });
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once", resolveAll: true });
+    sendApprovalResponse(socket, first, "once", "invalid_bulk", { resolveAll: true });
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
       message: "Bulk approval resolution is not supported; answer each approval in FIFO order.",
     });
+    sendApprovalResponse(socket, second, "session", "stale_out_of_order");
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      message: "Approval response does not match the oldest pending request.",
+    });
     expect(hermes.submitApproval).not.toHaveBeenCalled();
 
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "deny" });
-    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "deny", resolved: 0 });
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
-    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "once", resolved: 0 });
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "session" });
-    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
-      message: "Approval choice session was not offered for the pending request.",
+    const firstResponse = waitForMessage(socket, "approval.responded");
+    sendApprovalResponse(socket, first, "once", "approve_first");
+    await expect(firstResponse).resolves.toMatchObject({
+      requestId: "approve_first",
+      approvalId: first.approval.approvalId,
+      choice: "once",
+      resolved: 1,
     });
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
 
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
-    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "once", resolved: 1 });
+    const duplicateResponse = waitForMessage(socket, "approval.responded");
+    sendApprovalResponse(socket, first, "once", "approve_first");
+    await expect(duplicateResponse).resolves.toMatchObject({ requestId: "approve_first", resolved: 1 });
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
+
+    sendApprovalResponse(socket, first, "once", "stale_first_new_request");
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      message: "Approval response does not match the oldest pending request.",
+    });
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
+
     const completed = waitForMessage(socket, "run.completed");
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "session" });
-    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({ choice: "session", resolved: 1 });
+    sendApprovalResponse(socket, second, "session", "approve_second");
+    await expect(waitForMessage(socket, "approval.responded")).resolves.toMatchObject({
+      requestId: "approve_second",
+      approvalId: second.approval.approvalId,
+      choice: "session",
+      resolved: 1,
+    });
     await expect(completed).resolves.toMatchObject({ output: "Approved in order." });
 
-    expect(hermes.submitApproval).toHaveBeenNthCalledWith(1, "run_ws", "deny", {
+    const postRunDuplicate = waitForMessage(socket, "approval.responded");
+    sendApprovalResponse(socket, second, "session", "approve_second");
+    await expect(postRunDuplicate).resolves.toMatchObject({
+      requestId: "approve_second",
+      approvalId: second.approval.approvalId,
+      resolved: 1,
+    });
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(2);
+
+    expect(hermes.submitApproval).toHaveBeenNthCalledWith(1, "run_ws", "once", {
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
-    expect(hermes.submitApproval).toHaveBeenNthCalledWith(2, "run_ws", "once", {
+    expect(hermes.submitApproval).toHaveBeenNthCalledWith(2, "run_ws", "session", {
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
-    expect(hermes.submitApproval).toHaveBeenNthCalledWith(3, "run_ws", "once", {
+  });
+
+  it("closes when Hermes mutates a reused approval id during submission", async () => {
+    const submitEntered = deferred<void>();
+    const releaseSubmit = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_reused",
+          command: "deploy staging",
+          choices: ["once", "deny"],
+        };
+        await submitEntered.promise;
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_reused",
+          command: "deploy production",
+          choices: ["once", "deny"],
+        };
+        await new Promise(() => undefined);
+      },
+      submitApproval: vi.fn(async () => {
+        submitEntered.resolve();
+        await releaseSubmit.promise;
+        return { resolved: 1 };
+      }),
+      stopRun: vi.fn(async () => ({ status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy safely" });
+    const approval = await waitForMessage(socket, "approval.request");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    sendApprovalResponse(socket, approval, "once", "approval_mutation");
+
+    await submitEntered.promise;
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_outcome_indeterminate",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    releaseSubmit.resolve();
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the run and closes when an approval submission outcome is indeterminate", async () => {
+    const streamAborted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_indeterminate",
+          command: "deploy production",
+          choices: ["once", "deny"],
+        };
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            streamAborted.resolve();
+            reject(new DOMException("aborted", "AbortError"));
+          }, { once: true });
+        });
+        yield { event: "run.completed", output: "unreachable" };
+      },
+      submitApproval: vi.fn(async () => {
+        throw new Error("connection reset after POST");
+      }),
+      stopRun: vi.fn(async () => ({ status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy safely" });
+    const approval = await waitForMessage(socket, "approval.request");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    sendApprovalResponse(socket, approval, "deny", "indeterminate_approval");
+
+    await expect(failed).resolves.toMatchObject({
+      code: "approval_outcome_indeterminate",
+      requestId: "indeterminate_approval",
+      recoverable: false,
+    });
+    await streamAborted.promise;
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
-    expect(hermes.submitApproval).toHaveBeenNthCalledWith(4, "run_ws", "session", {
-      signal: expect.any(AbortSignal),
-      sessionKey: defaultSessionKey,
+  });
+
+  it.each([
+    ["is not an object", null],
+    ["contains conflicting run aliases", { resolved: 1, run_id: "run_ws", runId: "run_other", choice: "deny" }],
+    ["names another run", { resolved: 1, run_id: "run_other", choice: "deny" }],
+    ["echoes another choice", { resolved: 1, run_id: "run_ws", choice: "once" }],
+    ["does not resolve exactly one request", { resolved: 0, run_id: "run_ws", choice: "deny" }],
+  ])("fails closed when the approval response %s", async (_label, result) => {
+    const streamAborted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_bad_result",
+          command: "deploy production",
+          choices: ["once", "deny"],
+        };
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            streamAborted.resolve();
+            reject(new DOMException("aborted", "AbortError"));
+          }, { once: true });
+        });
+      },
+      submitApproval: vi.fn(async () => result),
     });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy safely" });
+    const approval = await waitForMessage(socket, "approval.request");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    sendApprovalResponse(socket, approval, "deny", "bad_approval_result");
+
+    await expect(failed).resolves.toMatchObject({
+      code: "approval_outcome_indeterminate",
+      requestId: "bad_approval_result",
+      recoverable: false,
+    });
+    await streamAborted.promise;
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
   });
 
   it("clears pending approvals as soon as a run stop is accepted", async () => {
@@ -757,14 +1413,14 @@ describe("live gateway WebSocket", () => {
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
     send(socket, { type: "text.input", text: "Run a long command" });
-    await waitForMessage(socket, "approval.request");
+    const approval = await waitForMessage(socket, "approval.request");
 
     send(socket, { type: "run.stop", runId: "run_ws", reason: "user cancelled" });
-    await expect(waitForMessage(socket, "run.stopped")).resolves.toMatchObject({ status: "stopping" });
-    send(socket, { type: "approval.respond", runId: "run_ws", choice: "once" });
+    await expect(waitForMessage(socket, "run.stopping")).resolves.toMatchObject({ status: "stopping" });
+    sendApprovalResponse(socket, approval, "once", "approval_after_stop");
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
-      message: "No pending approval is available for the active Hermes run.",
+      message: "The Hermes run is stopping and no longer accepts approval responses.",
     });
     expect(hermes.submitApproval).not.toHaveBeenCalled();
 
@@ -845,11 +1501,304 @@ describe("live gateway WebSocket", () => {
     const started = await waitForMessage(socket, "run.started");
     send(socket, { type: "run.stop", runId: started.runId, reason: "test" });
 
-    await expect(waitForMessage(socket, "run.stopped")).resolves.toMatchObject({ runId: "run_ws", status: "stopping" });
+    await expect(waitForMessage(socket, "run.stopping")).resolves.toMatchObject({ runId: "run_ws", status: "stopping" });
     expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
+  });
+
+  it("fails closed when Hermes returns conflicting stop response run aliases", async () => {
+    const stopRun = vi.fn()
+      .mockResolvedValueOnce({ run_id: "run_ws", runId: "run_other", status: "stopping" })
+      .mockResolvedValue({ run_id: "run_ws", status: "stopping" });
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      stopRun,
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run until stopped" });
+    const started = await waitForMessage(socket, "run.started");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "run.stop", runId: started.runId });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_outcome_indeterminate",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(stopRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not emit run.stopping after a terminal event wins the stop race", async () => {
+    const stopEntered = deferred<void>();
+    const releaseStopResponse = deferred<void>();
+    const releaseTerminal = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        await releaseTerminal.promise;
+        yield { event: "run.cancelled" };
+      },
+      stopRun: vi.fn(async () => {
+        stopEntered.resolve();
+        await releaseStopResponse.promise;
+        return { status: "stopping" };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    send(socket, { type: "text.input", text: "Run something long" });
+    const started = await waitForMessage(socket, "run.started");
+    send(socket, { type: "run.stop", runId: started.runId, reason: "race test" });
+    await stopEntered.promise;
+
+    releaseTerminal.resolve();
+    await waitForMessage(socket, "run.stopped");
+    releaseStopResponse.resolve();
+    await vi.waitFor(() => expect(hermes.stopRun).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(observed.filter((message) => message.type === "run.stopping")).toHaveLength(0);
+  });
+
+  it("coalesces concurrent stop controls into one Hermes request and one notification", async () => {
+    const releaseRun = deferred<void>();
+    const stopEntered = deferred<void>();
+    const releaseStop = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        await releaseRun.promise;
+        yield { event: "run.cancelled" };
+      },
+      stopRun: vi.fn(async () => {
+        stopEntered.resolve();
+        await releaseStop.promise;
+        return { status: "stopping" };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    send(socket, { type: "text.input", text: "Run something long" });
+    const started = await waitForMessage(socket, "run.started");
+    send(socket, { type: "run.stop", id: "stop_1", runId: started.runId, reason: "first" });
+    send(socket, { type: "run.stop", id: "stop_2", runId: started.runId, reason: "second" });
+    await stopEntered.promise;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+
+    releaseStop.resolve();
+    await waitForMessage(socket, "run.stopping");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(observed.filter((message) => message.type === "run.stopping")).toHaveLength(1);
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.stopped");
+  });
+
+  it("contains one indeterminate outcome when concurrent stop controls share a rejection", async () => {
+    const stopEntered = deferred<void>();
+    const releaseInitialStop = deferred<void>();
+    let stopCalls = 0;
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      stopRun: vi.fn(async () => {
+        stopCalls += 1;
+        if (stopCalls === 1) {
+          stopEntered.resolve();
+          await releaseInitialStop.promise;
+          throw new Error("initial stop transport failed");
+        }
+        return { status: "stopping" };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    send(socket, { type: "text.input", text: "Run something long" });
+    const started = await waitForMessage(socket, "run.started");
+    const closed = waitForClose(socket);
+    send(socket, { type: "run.stop", id: "failing_stop_1", runId: started.runId });
+    send(socket, { type: "run.stop", id: "failing_stop_2", runId: started.runId });
+    await stopEntered.promise;
+    releaseInitialStop.resolve();
+
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopRun).toHaveBeenCalledTimes(2);
+    expect(observed.filter(
+      (message) => message.type === "session.error" && message.code === "hermes_run_outcome_indeterminate",
+    )).toHaveLength(1);
+  });
+
+  it("starts the authoritative Hermes stop even when provider cancellation hangs", async () => {
+    const releaseRun = deferred<void>();
+    const liveModel = new HungCancelToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        await releaseRun.promise;
+        yield { event: "run.cancelled" };
+      },
+      stopRun: vi.fn(async () => ({ status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run until stopped" });
+    const started = await waitForMessage(socket, "run.started");
+    send(socket, { type: "run.stop", runId: started.runId, reason: "stop now" });
+
+    await liveModel.cancelEntered.promise;
+    await expect(waitForMessage(socket, "run.stopping")).resolves.toMatchObject({ runId: "run_ws" });
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.stopped");
+  });
+
+  it("rejects approvals and suppresses new approval events after stop intent", async () => {
+    const releaseLateApproval = deferred<void>();
+    const stopEntered = deferred<void>();
+    const releaseStop = deferred<void>();
+    const finishRun = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_before_stop",
+          command: "deploy staging",
+          choices: ["once", "deny"],
+        };
+        await releaseLateApproval.promise;
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_after_stop",
+          command: "deploy production",
+          choices: ["once", "deny"],
+        };
+        await finishRun.promise;
+        yield { event: "run.cancelled" };
+      },
+      stopRun: vi.fn(async () => {
+        stopEntered.resolve();
+        await releaseStop.promise;
+        return { status: "stopping" };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy carefully" });
+    const approval = await waitForMessage(socket, "approval.request");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    send(socket, { type: "run.stop", runId: approval.runId, reason: "changed my mind" });
+    try {
+      await stopEntered.promise;
+      const rejected = waitForMessage(socket, "session.error");
+      sendApprovalResponse(socket, approval, "once", "approval_after_stop_intent");
+      releaseLateApproval.resolve();
+
+      await expect(rejected).resolves.toMatchObject({
+        message: "The Hermes run is stopping and no longer accepts approval responses.",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(observed.filter((message) => message.type === "approval.request")).toHaveLength(0);
+      expect(hermes.submitApproval).not.toHaveBeenCalled();
+      releaseStop.resolve();
+      await waitForMessage(socket, "run.stopping");
+      finishRun.resolve();
+      await waitForMessage(socket, "run.stopped");
+    } finally {
+      releaseLateApproval.resolve();
+      releaseStop.resolve();
+      finishRun.resolve();
+    }
   });
 
   it("rejects client stop requests for runs outside the active voice session", async () => {
@@ -938,13 +1887,15 @@ describe("live gateway WebSocket", () => {
     await waitForOpen(socket);
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
+    const closed = waitForClose(socket);
     liveModel.emitToolCall({ name: "start_hermes_run", args: { message: "side effect without call id" } });
 
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "tool_call_failed",
-      message: "Realtime tool call start_hermes_run did not include an id.",
-      recoverable: true,
+      message: "Realtime provider emitted a tool call without a bounded id.",
+      recoverable: false,
     });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
     expect(hermes.startRun).not.toHaveBeenCalled();
   });
 
@@ -952,6 +1903,13 @@ describe("live gateway WebSocket", () => {
     const releaseRun = deferred<void>();
     const liveModel = new ManualToolAdapter();
     const hermes = fakeHermes({
+      getRun: vi.fn(async () => ({
+        run_id: "run_ws",
+        status: "running",
+        input: "private user request",
+        output: "private run output",
+        tool_metadata: { transcript: "x".repeat(300_000) },
+      })),
       streamEvents: async function* () {
         await releaseRun.promise;
         yield { event: "run.completed", output: "Finished." };
@@ -975,16 +1933,114 @@ describe("live gateway WebSocket", () => {
     const response = liveModel.nextToolResponse();
     liveModel.emitToolCall({ id: "status_active", name: "get_hermes_run_status", args: { run_id: "run_ws" } });
 
-    await expect(response).resolves.toMatchObject({
+    const toolResponse = await response;
+    expect(toolResponse).toMatchObject({
       call: { id: "status_active", name: "get_hermes_run_status" },
       response: { ok: true, status: { run_id: "run_ws", status: "running" } },
     });
+    expect(JSON.stringify(toolResponse)).not.toContain("private");
     expect(hermes.getRun).toHaveBeenCalledWith("run_ws", {
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
     releaseRun.resolve();
     await waitForMessage(socket, "run.completed");
+  });
+
+  it("rejects a provider status response correlated to another Hermes run", async () => {
+    const releaseRun = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      getRun: vi.fn(async () => ({ run_id: "run_other", runId: "run_ws", status: "running" })),
+      streamEvents: async function* () {
+        await releaseRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run something long" });
+    await waitForMessage(socket, "run.started");
+    const response = liveModel.nextToolResponse();
+    liveModel.emitToolCall({ id: "status_misrouted", name: "get_hermes_run_status", args: { run_id: "run_ws" } });
+
+    await expect(response).resolves.toMatchObject({
+      call: { id: "status_misrouted" },
+      response: { ok: false, error: "Hermes run status could not be read. Check the gateway logs." },
+    });
+    releaseRun.resolve();
+    await waitForMessage(socket, "run.completed");
+  });
+
+  it("replays exact provider tool-call ids without repeating Hermes side effects", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run exactly once" });
+    await expect(liveModel.nextToolResponse()).resolves.toMatchObject({ response: { ok: true, run_id: "run_ws" } });
+    expect(hermes.startRun).toHaveBeenCalledTimes(1);
+
+    liveModel.emitToolCall({
+      id: "manual_start",
+      name: "start_hermes_run",
+      args: { message: "Run exactly once" },
+    });
+    await expect(liveModel.nextToolResponse()).resolves.toMatchObject({ response: { ok: true, run_id: "run_ws" } });
+    expect(hermes.startRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on conflicting provider tool-call id reuse", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Original task" });
+    await liveModel.nextToolResponse();
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    liveModel.emitToolCall({
+      id: "manual_start",
+      name: "start_hermes_run",
+      args: { message: "Different task" },
+    });
+
+    await expect(failed).resolves.toMatchObject({ code: "realtime_tool_call_conflict", recoverable: false });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.startRun).toHaveBeenCalledTimes(1);
   });
 
   it("routes realtime response cancellation to the provider session", async () => {
@@ -1041,6 +2097,301 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("fails closed when a Hermes event is correlated to another run", async () => {
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_other",
+          approval_id: "misrouted_approval",
+          command: "deploy production",
+          choices: ["once", "deny"],
+        };
+      },
+      stopRun: vi.fn(async () => ({ status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Run until correlation fails" });
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "hermes_run_outcome_indeterminate",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(observed.filter((message) => message.type === "approval.request")).toHaveLength(0);
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ends early", "throws"])("stops and closes when the Hermes event stream %s", async (mode) => {
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "message.delta", delta: "partial" };
+        if (mode === "throws") throw new Error("SSE connection lost");
+      },
+      stopRun: vi.fn(async () => ({ status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const started = waitForMessage(socket, "run.started");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Run until the stream breaks" });
+
+    await expect(started).resolves.toMatchObject({ runId: "run_ws" });
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_outcome_indeterminate",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+  });
+
+  it("fails closed when Hermes does not confirm whether a run-start POST mutated state", async () => {
+    const hermes = fakeHermes({
+      startRun: vi.fn(async () => {
+        throw new Error("connection reset after mutating POST");
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Start exactly one task" });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_start_outcome_indeterminate",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.startRun).toHaveBeenCalledTimes(1);
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+  });
+
+  it("stops a Hermes run whose start response arrives while the session is closing", async () => {
+    const startCalled = deferred<void>();
+    const startResult = deferred<{ runId: string; status: string }>();
+    const stopped = deferred<void>();
+    const hermes = fakeHermes({
+      startRun: vi.fn(async () => {
+        startCalled.resolve();
+        return await startResult.promise;
+      }),
+      stopRun: vi.fn(async (runId: string, options?: { signal?: AbortSignal; sessionKey?: string }) => {
+        expect(runId).toBe("run_late");
+        expect(options?.signal?.aborted).toBe(false);
+        expect(options?.sessionKey).toBe(defaultSessionKey);
+        stopped.resolve();
+        return { status: "stopping" };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Start, then disconnect" });
+    await startCalled.promise;
+    const closing = server.close();
+    startResult.resolve({ runId: "run_late", status: "started" });
+
+    await stopped.promise;
+    await closing;
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+    openServers.splice(openServers.indexOf(server), 1);
+  });
+
+  it("closes abnormally when a pending Hermes start rejects without yielding a run id", async () => {
+    const startCalled = deferred<void>();
+    const startResult = deferred<{ runId: string; status: string }>();
+    const hermes = fakeHermes({
+      startRun: vi.fn(async () => {
+        startCalled.resolve();
+        return await startResult.promise;
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Start, then close ambiguously" });
+    await startCalled.promise;
+    const observed: any[] = [];
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const closed = waitForClose(socket);
+    send(socket, { type: "session.close", id: "close_during_start" });
+    startResult.reject(new Error("connection reset after mutating POST"));
+
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(observed).toContainEqual(expect.objectContaining({
+      type: "session.error",
+      code: "session_shutdown_unconfirmed",
+      recoverable: false,
+    }));
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+  });
+
+  it("closes abnormally when session close interrupts an in-flight approval mutation", async () => {
+    const submitEntered = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_close_race",
+          command: "deploy production",
+          choices: ["once", "deny"],
+        };
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      submitApproval: vi.fn(async () => {
+        submitEntered.resolve();
+        return await new Promise<never>(() => undefined);
+      }),
+      stopRun: vi.fn(async () => ({ status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy safely" });
+    const approval = await waitForMessage(socket, "approval.request");
+    sendApprovalResponse(socket, approval, "deny", "approval_before_close");
+    await submitEntered.promise;
+    const observed: any[] = [];
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const closed = waitForClose(socket);
+    send(socket, { type: "session.close", id: "close_during_approval" });
+
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(observed).toContainEqual(expect.objectContaining({
+      type: "session.error",
+      code: "session_shutdown_unconfirmed",
+      requestId: "close_during_approval",
+      recoverable: false,
+    }));
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes concurrent close calls wait for the same in-flight Hermes stop", async () => {
+    const stopEntered = deferred<void>();
+    const releaseStop = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+        yield { event: "run.completed", output: "unreachable" };
+      },
+      stopRun: vi.fn(async () => {
+        stopEntered.resolve();
+        await releaseStop.promise;
+        return { status: "stopping" };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run while closing twice" });
+    await waitForMessage(socket, "run.started");
+    socket.close(1000, "first close");
+    await stopEntered.promise;
+
+    let serverCloseFinished = false;
+    const secondClose = server.close().then(() => { serverCloseFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(serverCloseFinished).toBe(false);
+    releaseStop.resolve();
+    await secondClose;
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+    openServers.splice(openServers.indexOf(server), 1);
+  });
+
   it("closes the client session when the realtime provider closes unexpectedly", async () => {
     const providerClosed = deferred<void>();
     const server = await startServer({
@@ -1066,7 +2417,52 @@ describe("live gateway WebSocket", () => {
     await expect(closed).resolves.toMatchObject({ code: 1011 });
   });
 
-  it("requests Hermes stop before aborting the run event stream on socket close", async () => {
+  it("reports unconfirmed Hermes cleanup when an automatic fatal close cannot stop the owned run", async () => {
+    const providerClosed = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      stopRun: vi.fn(async () => {
+        throw new Error("Hermes stop endpoint unavailable");
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new ProviderCloseAdapter(providerClosed),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Start owned work" });
+    await waitForMessage(socket, "run.started");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const closed = waitForClose(socket);
+    providerClosed.resolve();
+
+    await expect(closed).resolves.toMatchObject({ code: 1011, reason: "session shutdown unconfirmed" });
+    expect(observed).toContainEqual(expect.objectContaining({
+      type: "session.error",
+      code: "session_shutdown_unconfirmed",
+      recoverable: false,
+    }));
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts the run event stream before issuing a separately bounded Hermes stop on close", async () => {
     const eventStreamAttached = deferred<void>();
     const stopped = deferred<void>();
     let eventStreamSignal: AbortSignal | undefined;
@@ -1079,8 +2475,10 @@ describe("live gateway WebSocket", () => {
         await stopped.promise;
         yield { event: "run.cancelled" };
       },
-      stopRun: vi.fn(async () => {
-        expect(eventStreamSignal?.aborted).toBe(false);
+      stopRun: vi.fn(async (_runId: string, options?: { signal?: AbortSignal; sessionKey?: string }) => {
+        expect(eventStreamSignal?.aborted).toBe(true);
+        expect(options?.signal?.aborted).toBe(false);
+        expect(options?.signal).not.toBe(eventStreamSignal);
         stopped.resolve();
         return { status: "stopping" };
       }),
@@ -1108,6 +2506,47 @@ describe("live gateway WebSocket", () => {
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
+  });
+
+  it("hard-times out close-time Hermes stop even when the port ignores abort", async () => {
+    const hermes = fakeHermes({
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      stopRun: vi.fn(async () => await new Promise<never>(() => undefined)),
+    });
+    const server = await startServer({
+      config: testConfig({ hermes: { timeoutMs: 20 } }),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Keep running until close" });
+    await waitForMessage(socket, "run.started");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "session.close", id: "close_hung_stop" });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "session_shutdown_unconfirmed",
+      requestId: "close_hung_stop",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011, reason: "session shutdown unconfirmed" });
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
   });
 
   it("treats a client-close event-stream abort as cancellation instead of a run failure", async () => {
@@ -1370,6 +2809,140 @@ describe("live gateway WebSocket", () => {
     });
   });
 
+  it("closes an authenticated client that outruns the bounded inbound queue", async () => {
+    const audioEntered = deferred<void>();
+    const releaseAudio = deferred<void>();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new SlowAudioAdapter(audioEntered, releaseAudio.promise),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const frame = { type: "audio.input", data: Buffer.from([0, 0]).toString("base64"), mimeType: "audio/pcm;rate=24000" };
+    send(socket, frame);
+    await audioEntered.promise;
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    for (let index = 0; index < 300; index += 1) send(socket, frame);
+
+    await expect(failed).resolves.toMatchObject({
+      code: "client_input_backpressure",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1009, reason: "client input backpressure" });
+    releaseAudio.resolve();
+  });
+
+  it("closes clients that exceed the invalid-message budget", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const closed = waitForClose(socket);
+    for (let index = 0; index < 16; index += 1) socket.send("{");
+
+    await expect(closed).resolves.toMatchObject({ code: 1008, reason: "too many invalid client messages" });
+  });
+
+  it("preempts a stalled audio send with realtime response cancellation", async () => {
+    const audioEntered = deferred<void>();
+    const releaseAudio = deferred<void>();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new SlowAudioAdapter(audioEntered, releaseAudio.promise),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, {
+      type: "audio.input",
+      data: Buffer.from([0, 0]).toString("base64"),
+      mimeType: "audio/pcm;rate=24000",
+    });
+    await audioEntered.promise;
+    send(socket, { type: "response.cancel", id: "cancel_while_audio_stalled", reason: "barge-in" });
+
+    await expect(waitForMessage(socket, "log")).resolves.toMatchObject({
+      level: "debug",
+      message: "No active realtime response to cancel",
+    });
+    releaseAudio.resolve();
+  });
+
+  it("preempts stalled audio to deliver a correlated approval response", async () => {
+    const audioEntered = deferred<void>();
+    const releaseAudio = deferred<void>();
+    const approvalSubmitted = deferred<void>();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_during_audio",
+          command: "deploy staging",
+          choices: ["once", "deny"],
+        };
+        await approvalSubmitted.promise;
+        yield { event: "run.completed", output: "Approved while audio was stalled." };
+      },
+      submitApproval: vi.fn(async () => {
+        approvalSubmitted.resolve();
+        return { run_id: "run_ws", choice: "once", resolved: 1 };
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new SlowAudioAdapter(audioEntered, releaseAudio.promise),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Deploy safely" });
+    const approval = await waitForMessage(socket, "approval.request");
+    send(socket, {
+      type: "audio.input",
+      data: Buffer.from([0, 0]).toString("base64"),
+      mimeType: "audio/pcm;rate=24000",
+    });
+    await audioEntered.promise;
+    const responded = waitForMessage(socket, "approval.responded");
+    const completed = waitForMessage(socket, "run.completed");
+    sendApprovalResponse(socket, approval, "once", "approval_preempts_audio");
+
+    await responded;
+    await completed;
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
+    releaseAudio.resolve();
+  });
+
   it("rejects oversized text input before forwarding to the provider", async () => {
     const server = await startServer({
       config: testConfig({ server: { maxTextChars: 4 } }),
@@ -1467,6 +3040,8 @@ describe("live gateway WebSocket", () => {
 function fakeHermes(
   options: {
     assertRunsSupported?: ReturnType<typeof vi.fn>;
+    startRun?: ReturnType<typeof vi.fn>;
+    getRun?: ReturnType<typeof vi.fn>;
     streamEvents?: (
       runId: string,
       options?: { signal?: AbortSignal; sessionKey?: string },
@@ -1493,8 +3068,8 @@ function fakeHermes(
           run_approval_response: true,
         },
       })),
-    startRun: vi.fn(async () => ({ runId: "run_ws", status: "started" })),
-    getRun: vi.fn(async () => ({ run_id: "run_ws", status: "running" })),
+    startRun: options.startRun ?? vi.fn(async () => ({ runId: "run_ws", status: "started" })),
+    getRun: options.getRun ?? vi.fn(async () => ({ run_id: "run_ws", status: "running" })),
     streamRunEvents:
       options.streamEvents ??
       (async function* () {
@@ -1519,7 +3094,31 @@ function fakeHermes(
 }
 
 function send(socket: WebSocket, value: unknown): void {
-  socket.send(JSON.stringify(value));
+  const message = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+  socket.send(JSON.stringify(
+    message?.type === "session.start" && message.protocolVersion === undefined
+      ? { ...message, protocolVersion: 2 }
+      : value,
+  ));
+}
+
+function sendApprovalResponse(
+  socket: WebSocket,
+  request: { runId: string; approval: { approvalId: string } },
+  choice: ApprovalChoice,
+  id: string,
+  extra: Record<string, unknown> = {},
+): void {
+  send(socket, {
+    type: "approval.respond",
+    id,
+    runId: request.runId,
+    approvalId: request.approval.approvalId,
+    choice,
+    ...extra,
+  });
 }
 
 async function waitForOpen(socket: WebSocket): Promise<void> {
@@ -1594,7 +3193,10 @@ function toWebSocketUrl(url: string): string {
   return parsed.toString();
 }
 
-function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): AppConfig {
+function testConfig(overrides: {
+  server?: Partial<AppConfig["server"]>;
+  hermes?: Partial<AppConfig["hermes"]>;
+} = {}): AppConfig {
   return {
     server: {
       host: "127.0.0.1",
@@ -1612,7 +3214,12 @@ function testConfig(overrides: { server?: Partial<AppConfig["server"]> } = {}): 
       ...overrides.server,
       allowUnauthenticated: overrides.server?.allowUnauthenticated ?? false,
     },
-    hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent", timeoutMs: 30_000 },
+    hermes: {
+      baseUrl: "http://127.0.0.1:8642",
+      model: "hermes-agent",
+      timeoutMs: 30_000,
+      ...overrides.hermes,
+    },
     realtime: { provider: "mock", model: "mock-live" },
     gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1" },
     openai: {
@@ -1694,6 +3301,56 @@ class TranscriptMetadataAdapter implements LiveModelAdapter {
   }
 }
 
+class SlowAudioAdapter implements LiveModelAdapter {
+  constructor(
+    private readonly entered: ReturnType<typeof deferred<void>>,
+    private readonly release: Promise<void>,
+  ) {}
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return new SlowAudioSession(this.entered, this.release, params.callbacks);
+  }
+}
+
+class SlowAudioSession implements LiveModelSession {
+  constructor(
+    private readonly entered: ReturnType<typeof deferred<void>>,
+    private readonly release: Promise<void>,
+    private readonly callbacks: LiveModelCallbacks,
+  ) {}
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {
+    this.entered.resolve();
+    await this.release;
+  }
+
+  async sendText(text: string): Promise<void> {
+    this.callbacks.onEvent({
+      type: "tool_call",
+      call: { id: "slow_audio_start", name: "start_hermes_run", args: { message: text } },
+    });
+  }
+  async sendAudioStreamEnd(): Promise<void> {}
+  async cancelResponse(): Promise<boolean> { return false; }
+  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
+  async close(): Promise<void> {}
+}
+
+class ManualProviderEventAdapter implements LiveModelAdapter {
+  private callbacks?: LiveModelCallbacks;
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    this.callbacks = params.callbacks;
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return new CloseTrackingSession();
+  }
+
+  emit(event: Parameters<LiveModelCallbacks["onEvent"]>[0]): void {
+    this.callbacks?.onEvent(event);
+  }
+}
+
 class FailingConnectAdapter implements LiveModelAdapter {
   async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
     throw new Error("Provider did not connect");
@@ -1705,6 +3362,25 @@ class PreReadyErrorAdapter implements LiveModelAdapter {
     params.callbacks.onError?.(new Error("Provider errored before ready"));
     await new Promise(() => undefined);
     return new CloseTrackingSession();
+  }
+}
+
+class OversizedPreReadyEventAdapter implements LiveModelAdapter {
+  readonly session = new CloseTrackingSession();
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    params.callbacks.onEvent({ type: "text", text: "x".repeat(8 * 1024 * 1024) });
+    return this.session;
+  }
+}
+
+class ErrorThenOpenAdapter implements LiveModelAdapter {
+  readonly session = new CloseTrackingSession();
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    params.callbacks.onError?.(new Error("provider startup secret"));
+    params.callbacks.onOpen?.();
+    return this.session;
   }
 }
 
@@ -1720,6 +3396,26 @@ class NeverOpenAdapter implements LiveModelAdapter {
   readonly session = new CloseTrackingSession();
 
   async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
+    return this.session;
+  }
+}
+
+class NeverOpenHungCloseAdapter implements LiveModelAdapter {
+  readonly session = new HungCloseSession();
+
+  async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
+    return this.session;
+  }
+}
+
+class PendingConnectAdapter implements LiveModelAdapter {
+  readonly connectEntered = deferred<void>();
+  readonly releaseConnect = deferred<void>();
+  readonly session = new CloseTrackingSession();
+
+  async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
+    this.connectEntered.resolve();
+    await this.releaseConnect.promise;
     return this.session;
   }
 }
@@ -1765,6 +3461,10 @@ class CloseTrackingSession implements LiveModelSession {
   async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
 }
 
+class HungCloseSession extends CloseTrackingSession {
+  override readonly close = vi.fn(async () => await new Promise<never>(() => undefined));
+}
+
 class OversizedToolCallAdapter implements LiveModelAdapter {
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
     queueMicrotask(() => params.callbacks.onOpen?.());
@@ -1807,7 +3507,11 @@ class ManualToolAdapter implements LiveModelAdapter {
   }
 
   emitToolCall(call: LiveToolCall): void {
-    this.callbacks?.onEvent({ type: "tool_call", call });
+    this.emitEvent({ type: "tool_call", call });
+  }
+
+  emitEvent(event: LiveModelEvent): void {
+    this.callbacks?.onEvent(event);
   }
 
   nextToolResponse(): Promise<{ call: LiveToolCall; response: Record<string, unknown> }> {
@@ -1877,6 +3581,46 @@ class CancelTrackingSession implements LiveModelSession {
   async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
 
   async close(): Promise<void> {}
+}
+
+class HungCancelToolAdapter implements LiveModelAdapter {
+  readonly cancelEntered = deferred<void>();
+  private readonly releaseCancel = deferred<boolean>();
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return new HungCancelToolSession(params.callbacks, this.cancelEntered, this.releaseCancel);
+  }
+}
+
+class HungCancelToolSession implements LiveModelSession {
+  constructor(
+    private readonly callbacks: LiveModelCallbacks,
+    private readonly cancelEntered: ReturnType<typeof deferred<void>>,
+    private readonly releaseCancel: ReturnType<typeof deferred<boolean>>,
+  ) {}
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(text: string): Promise<void> {
+    this.callbacks.onEvent({
+      type: "tool_call",
+      call: { id: "hung_cancel_start", name: "start_hermes_run", args: { message: text } },
+    });
+  }
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async cancelResponse(): Promise<boolean> {
+    this.cancelEntered.resolve();
+    return await this.releaseCancel.promise;
+  }
+
+  async sendToolResponse(_call: LiveToolCall, _response: Record<string, unknown>): Promise<void> {}
+
+  async close(): Promise<void> {
+    this.releaseCancel.resolve(false);
+  }
 }
 
 class SpeechStartedAdapter implements LiveModelAdapter {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createConnection } from "node:net";
 import type { AppConfig } from "../src/config.js";
 import type { HermesRunsPort } from "../src/application/live-gateway/ports/hermes-runs.port.js";
 import type { Logger } from "../src/logger.js";
@@ -27,7 +28,7 @@ describe("HTTP server", () => {
     });
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       object: "hermes_live.capabilities",
-      protocolVersion: 1,
+      protocolVersion: 2,
       realtime: {
         provider: "openai",
         model: "gpt-realtime-2.1",
@@ -271,6 +272,32 @@ describe("HTTP server", () => {
     });
   });
 
+  it("rejects malformed WebSocket upgrades without taking down the HTTP server", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    const malformedTarget = await rawHttpRequest(
+      server.url,
+      "GET //[ HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+    );
+    const malformedHost = await rawHttpRequest(
+      server.url,
+      "GET /v1/live HTTP/1.1\r\nHost: [\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+    );
+
+    expect(malformedTarget).toMatch(/^HTTP\/1\.1 400 Bad Request\r\n/);
+    expect(malformedHost).toMatch(/^HTTP\/1\.1 400 Bad Request\r\n/);
+    await expect(fetch(`${server.url}/health`).then((res) => res.json())).resolves.toMatchObject({
+      status: "ok",
+      service: "hermes-live",
+    });
+  });
+
   it("rejects startup when the listen port is already in use", async () => {
     const server = await startServer({
       config: testConfig(),
@@ -345,6 +372,20 @@ function fakeHermes(): HermesRunsPort {
       },
     })),
   } as unknown as HermesRunsPort;
+}
+
+function rawHttpRequest(serverUrl: string, request: string): Promise<string> {
+  const url = new URL(serverUrl);
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const socket = createConnection({ host: url.hostname, port: Number(url.port) });
+    socket.setTimeout(2_000);
+    socket.on("connect", () => socket.write(request));
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+    socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    socket.on("error", reject);
+    socket.on("timeout", () => socket.destroy(new Error("Timed out waiting for the raw HTTP response.")));
+  });
 }
 
 function testConfig(
