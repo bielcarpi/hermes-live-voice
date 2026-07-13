@@ -258,14 +258,18 @@ export class HermesLiveClient {
   }
 
   async resolveSocketUrl() {
-    const provided = this.webSocketUrlProvider
-      ? await this.webSocketUrlProvider()
-      : this.configuredUrl;
+    const ephemeral = Boolean(this.webSocketUrlProvider);
+    const provided = ephemeral ? await this.webSocketUrlProvider() : this.configuredUrl;
     if (!provided) throw new Error("Hermes Live WebSocket URL provider returned no URL.");
     const token = typeof this.#tokenProvider === "function"
       ? await this.#tokenProvider()
       : this.#tokenProvider;
-    return buildGatewayWebSocketUrl(provided, token);
+    const url = ephemeral
+      ? new URL(normalizeWebSocketUrl(provided, { allowTokenQuery: true }))
+      : new URL(normalizeGatewayWebSocketUrl(provided));
+    const normalizedToken = String(token ?? "").trim();
+    if (normalizedToken) url.searchParams.set("token", normalizedToken);
+    return url;
   }
 
   async disconnect(reason = "user disconnected") {
@@ -817,6 +821,10 @@ export class HermesLiveAudio {
 }
 
 export function normalizeGatewayWebSocketUrl(value) {
+  return normalizeWebSocketUrl(value, { allowTokenQuery: false });
+}
+
+function normalizeWebSocketUrl(value, { allowTokenQuery }) {
   const url = new URL(String(value));
   if (url.protocol !== "ws:" && url.protocol !== "wss:") {
     throw new TypeError("Hermes Live gateway URL must use ws:// or wss://.");
@@ -824,7 +832,7 @@ export function normalizeGatewayWebSocketUrl(value) {
   if (url.username || url.password) {
     throw new TypeError("Do not place credentials in the Hermes Live gateway URL.");
   }
-  if (url.searchParams.has("token")) {
+  if (!allowTokenQuery && url.searchParams.has("token")) {
     throw new TypeError("Pass the Hermes Live token separately so it is not retained in the configured URL.");
   }
   url.hash = "";

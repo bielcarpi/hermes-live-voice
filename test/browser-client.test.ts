@@ -103,6 +103,22 @@ describe("HermesLiveClient", () => {
     await connection;
   });
 
+  it("accepts ephemeral loopback auth URLs from the dashboard host", async () => {
+    const client = createClient({
+      url: undefined,
+      webSocketUrlProvider: async () => "ws://127.0.0.1:3000/api/plugins/hermes-live/live?token=host-session",
+      token: undefined,
+    });
+    const connection = client.connect();
+    const socket = await nextSocket();
+
+    expect(socket.url.searchParams.get("token")).toBe("host-session");
+    expect(client.getSnapshot()).not.toHaveProperty("token");
+    socket.open();
+    socket.message(readyMessage("live_1"));
+    await connection;
+  });
+
   it("ignores messages from a replaced socket generation", async () => {
     const client = createClient();
     const firstConnection = client.connect();
