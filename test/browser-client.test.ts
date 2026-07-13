@@ -427,6 +427,75 @@ describe("HermesLiveAudio", () => {
     await audio.dispose();
   });
 
+  it("bounds pending playback before a suspended context resumes and disposes without waiting", async () => {
+    const context = new FakeAudioContext({});
+    context.state = "suspended";
+    context.resume = vi.fn(async () => await new Promise<void>(() => undefined));
+    const dropped = vi.fn();
+    const audio = createAudio({
+      audioContextFactory: () => context as unknown as AudioContext,
+      maxQueuedAudioMs: 3,
+      playbackResumeTimeoutMs: 10_000,
+    });
+    audio.on("audio.dropped", dropped);
+    const frame = pcmFrame(new Array(48).fill(0)); // 2ms at 24kHz.
+
+    const first = audio.play({ type: "audio.output", data: frame, mimeType: "audio/pcm;rate=24000" });
+    const second = audio.play({ type: "audio.output", data: frame, mimeType: "audio/pcm;rate=24000" });
+
+    await expect(second).resolves.toBe(false);
+    expect(context.resume).toHaveBeenCalledOnce();
+    expect(dropped).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "playback_backpressure",
+      queuedMs: 2,
+      droppedMs: 2,
+    }));
+    await expect(audio.dispose()).resolves.toBeUndefined();
+    await expect(first).resolves.toBe(false);
+    expect(context.close).toHaveBeenCalledOnce();
+  });
+
+  it("bounds queued frame count even when frames have negligible duration", async () => {
+    const context = new FakeAudioContext({});
+    context.state = "suspended";
+    context.resume = vi.fn(async () => await new Promise<void>(() => undefined));
+    const dropped = vi.fn();
+    const audio = createAudio({
+      audioContextFactory: () => context as unknown as AudioContext,
+      maxQueuedAudioFrames: 2,
+      playbackResumeTimeoutMs: 10_000,
+    });
+    audio.on("audio.dropped", dropped);
+    const message = {
+      type: "audio.output" as const,
+      data: pcmFrame([0]),
+      mimeType: "audio/pcm;rate=192000",
+    };
+
+    const first = audio.play(message);
+    const second = audio.play(message);
+    await expect(audio.play(message)).resolves.toBe(false);
+    expect(dropped).toHaveBeenCalledWith(expect.objectContaining({ reason: "playback_backpressure" }));
+
+    await audio.dispose();
+    await expect(Promise.all([first, second])).resolves.toEqual([false, false]);
+  });
+
+  it("primes browser playback synchronously from a user gesture and bounds a stalled resume", async () => {
+    const context = new FakeAudioContext({});
+    context.state = "suspended";
+    context.resume = vi.fn(async () => await new Promise<void>(() => undefined));
+    const audio = createAudio({
+      audioContextFactory: () => context as unknown as AudioContext,
+      playbackResumeTimeoutMs: 20,
+    });
+
+    const priming = audio.primePlayback();
+    expect(context.resume).toHaveBeenCalledOnce();
+    await expect(priming).rejects.toThrow(/did not start in time/);
+    await audio.dispose();
+  });
+
   it("suppresses late audio after interruption until the next response starts", async () => {
     const client = audioClient();
     const audio = createAudio({ client });
@@ -486,6 +555,29 @@ describe("HermesLiveAudio", () => {
     await expect(
       audio.play({ type: "audio.output", data: "AA==", mimeType: "audio/pcmu;rate=8000" }),
     ).rejects.toThrow(/supports PCM16 output/);
+    await audio.dispose();
+  });
+
+  it.each([
+    "audio/pcm",
+    "audio/pcm;rate=7999",
+    "audio/pcm;rate=192001",
+    "audio/pcm;rate=24000;rate=16000",
+  ])("rejects unsafe or ambiguous PCM output rate metadata: %s", async (mimeType) => {
+    const audio = createAudio();
+
+    await expect(
+      audio.play({ type: "audio.output", data: "AAA=", mimeType }),
+    ).rejects.toThrow(/requires exactly one rate between 8000 and 192000/);
+    await audio.dispose();
+  });
+
+  it("rejects empty PCM output instead of admitting zero-duration queue entries", async () => {
+    const audio = createAudio();
+
+    await expect(
+      audio.play({ type: "audio.output", data: "", mimeType: "audio/pcm;rate=24000" }),
+    ).rejects.toThrow(/empty PCM16 audio frame/);
     await audio.dispose();
   });
 

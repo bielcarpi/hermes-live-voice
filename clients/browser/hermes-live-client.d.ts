@@ -164,6 +164,8 @@ export interface HermesLiveAudioOptions {
   workletUrl?: string;
   sampleRate?: number;
   maxQueuedAudioMs?: number;
+  maxQueuedAudioFrames?: number;
+  playbackResumeTimeoutMs?: number;
   mediaDevices?: Pick<MediaDevices, "getUserMedia">;
   audioContextFactory?: (options: AudioContextOptions) => AudioContext;
   audioWorkletNodeFactory?: (
@@ -186,6 +188,7 @@ export class HermesLiveAudio {
   readonly microphoneActive: boolean;
   readonly microphoneState: "idle" | "starting" | "active" | "stopping" | "disposed";
   on<K extends keyof HermesLiveAudioEventMap>(type: K, listener: (event: HermesLiveAudioEventMap[K]) => void): () => void;
+  primePlayback(): Promise<void>;
   startMicrophone(): Promise<void>;
   stopMicrophone(options?: { endTurn?: boolean }): Promise<void>;
   play(message: Extract<HermesLiveServerMessage, { type: "audio.output" }>): Promise<boolean>;

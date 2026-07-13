@@ -3,7 +3,11 @@ const DEFAULT_DISCONNECT_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_BUFFERED_AMOUNT_BYTES = 1_000_000;
 const DEFAULT_MAX_INBOUND_MESSAGE_BYTES = 8_000_000;
 const DEFAULT_MAX_QUEUED_AUDIO_MS = 5_000;
+const DEFAULT_MAX_QUEUED_AUDIO_FRAMES = 256;
+const DEFAULT_PLAYBACK_RESUME_TIMEOUT_MS = 2_000;
 const DEFAULT_SAMPLE_RATE = 24_000;
+const MIN_PCM_SAMPLE_RATE = 8_000;
+const MAX_PCM_SAMPLE_RATE = 192_000;
 const MAX_PENDING_APPROVALS = 128;
 const OPEN = 1;
 export const HERMES_LIVE_PROTOCOL_VERSION = 2;
@@ -594,6 +598,14 @@ export class HermesLiveAudio {
     this.workletUrl = options.workletUrl ?? "/mic-worklet.js";
     this.sampleRate = positiveInteger(options.sampleRate, DEFAULT_SAMPLE_RATE);
     this.maxQueuedAudioMs = positiveInteger(options.maxQueuedAudioMs, DEFAULT_MAX_QUEUED_AUDIO_MS);
+    this.maxQueuedAudioFrames = positiveInteger(
+      options.maxQueuedAudioFrames,
+      DEFAULT_MAX_QUEUED_AUDIO_FRAMES,
+    );
+    this.playbackResumeTimeoutMs = positiveInteger(
+      options.playbackResumeTimeoutMs,
+      DEFAULT_PLAYBACK_RESUME_TIMEOUT_MS,
+    );
     this.mediaDevices = options.mediaDevices ?? globalThis.navigator?.mediaDevices;
     this.audioContextFactory = options.audioContextFactory ?? ((config) => new AudioContext(config));
     this.audioWorkletNodeFactory = options.audioWorkletNodeFactory ??
@@ -614,8 +626,14 @@ export class HermesLiveAudio {
     this.playbackSources = new Set();
     this.playbackItems = new Map();
     this.playbackChain = Promise.resolve();
+    this.pendingPlaybackMs = 0;
+    this.pendingPlaybackFrames = 0;
     this.playbackGeneration = 0;
+    this.playbackEpoch = createPlaybackEpoch();
     this.playbackSuppressed = false;
+    this.playbackResumeContext = undefined;
+    this.playbackResumePromise = undefined;
+    this.cancelPlaybackResume = undefined;
     this.unsubscribeClose = client.on?.("close", () => void this.dispose());
     this.unsubscribeResponseStarted = client.on?.("response.started", () => {
       this.playbackSuppressed = false;
@@ -630,6 +648,15 @@ export class HermesLiveAudio {
 
   get microphoneActive() {
     return this.microphoneState === "active";
+  }
+
+  async primePlayback() {
+    if (this.disposed) throw new Error("Hermes Live audio has been disposed.");
+    const context = this.ensurePlaybackContext();
+    if (context.state !== "running") await this.resumePlaybackContext(context);
+    if (context.state !== "running") {
+      throw new Error("Browser audio playback is unavailable. Allow audio, then try again from a user gesture.");
+    }
   }
 
   async startMicrophone() {
@@ -762,51 +789,92 @@ export class HermesLiveAudio {
   }
 
   play(message) {
-    if (this.playbackSuppressed) return Promise.resolve(false);
-    const generation = this.playbackGeneration;
-    const operation = this.playbackChain.then(() => this.schedulePlayback(message, generation));
-    this.playbackChain = operation.catch(() => undefined);
-    return operation;
-  }
-
-  async schedulePlayback(message, generation) {
-    if (this.disposed || this.playbackSuppressed || generation !== this.playbackGeneration) return false;
-    if (message?.type !== "audio.output") {
-      throw new TypeError("HermesLiveAudio.play expects an audio.output message.");
+    if (this.disposed || this.playbackSuppressed) return Promise.resolve(false);
+    let frame;
+    try {
+      frame = preparePlaybackFrame(message, this.decodeBase64);
+    } catch (error) {
+      return Promise.reject(error);
     }
-    const rate = parsePcmRate(message.mimeType);
-    const samples = decodePcm16(message.data, this.decodeBase64);
-    const durationMs = (samples.length / rate) * 1_000;
 
-    if (!this.playbackContext || this.playbackContext.state === "closed") {
-      this.playbackContext = this.audioContextFactory({});
-      this.playbackCursor = 0;
-    }
-    if (this.playbackContext.state === "suspended") await this.playbackContext.resume();
-    if (this.disposed || this.playbackSuppressed || generation !== this.playbackGeneration) return false;
-
-    const context = this.playbackContext;
-    const queuedMs = this.calculateQueuedPlaybackMs(context.currentTime);
-    if (queuedMs + durationMs > this.maxQueuedAudioMs) {
+    const scheduledMs = this.playbackContext && this.playbackContext.state !== "closed"
+      ? this.calculateQueuedPlaybackMs(this.playbackContext.currentTime)
+      : 0;
+    const queuedMs = scheduledMs + this.pendingPlaybackMs;
+    const queuedFrames = this.playbackSources.size + this.pendingPlaybackFrames;
+    if (
+      queuedFrames >= this.maxQueuedAudioFrames ||
+      queuedMs + frame.durationMs > this.maxQueuedAudioMs
+    ) {
       this.emitter.emit("audio.dropped", {
         direction: "output",
         reason: "playback_backpressure",
         queuedMs,
-        droppedMs: durationMs,
+        droppedMs: frame.durationMs,
+      });
+      return Promise.resolve(false);
+    }
+
+    const generation = this.playbackGeneration;
+    const epoch = this.playbackEpoch;
+    this.pendingPlaybackMs += frame.durationMs;
+    this.pendingPlaybackFrames += 1;
+    const operation = this.playbackChain.then(async () => {
+      try {
+        return await this.schedulePlayback(frame, generation, epoch);
+      } finally {
+        this.pendingPlaybackMs = Math.max(0, this.pendingPlaybackMs - frame.durationMs);
+        this.pendingPlaybackFrames = Math.max(0, this.pendingPlaybackFrames - 1);
+      }
+    });
+    this.playbackChain = operation.catch(() => undefined);
+    return operation;
+  }
+
+  async schedulePlayback(frame, generation, epoch) {
+    if (
+      this.disposed ||
+      this.playbackSuppressed ||
+      generation !== this.playbackGeneration ||
+      epoch !== this.playbackEpoch
+    ) return false;
+
+    const context = this.ensurePlaybackContext();
+    if (context.state !== "running") {
+      const resumed = await Promise.race([
+        this.resumePlaybackContext(context).then(() => true),
+        epoch.invalidated.then(() => false),
+      ]);
+      if (!resumed) return false;
+    }
+    if (
+      this.disposed ||
+      this.playbackSuppressed ||
+      generation !== this.playbackGeneration ||
+      epoch !== this.playbackEpoch
+    ) return false;
+
+    const queuedMs = this.calculateQueuedPlaybackMs(context.currentTime);
+    if (queuedMs + frame.durationMs > this.maxQueuedAudioMs) {
+      this.emitter.emit("audio.dropped", {
+        direction: "output",
+        reason: "playback_backpressure",
+        queuedMs,
+        droppedMs: frame.durationMs,
       });
       return false;
     }
 
-    const buffer = context.createBuffer(1, samples.length, rate);
-    buffer.copyToChannel(samples, 0);
+    const buffer = context.createBuffer(1, frame.samples.length, frame.rate);
+    buffer.copyToChannel(frame.samples, 0);
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
     const startAt = Math.max(context.currentTime + 0.02, this.playbackCursor || 0);
-    const contentIndex = Number.isInteger(message.contentIndex) ? message.contentIndex : 0;
-    const itemKey = message.itemId ? `${message.itemId}:${contentIndex}` : "";
+    const contentIndex = frame.contentIndex;
+    const itemKey = frame.itemId ? `${frame.itemId}:${contentIndex}` : "";
     if (itemKey && !this.playbackItems.has(itemKey)) {
-      this.playbackItems.set(itemKey, { itemId: message.itemId, contentIndex, playedMs: 0 });
+      this.playbackItems.set(itemKey, { itemId: frame.itemId, contentIndex, playedMs: 0 });
       trimOldestMapEntries(this.playbackItems, 32);
     }
     const record = {
@@ -849,6 +917,8 @@ export class HermesLiveAudio {
   }
 
   clearPlayback() {
+    this.playbackEpoch.invalidate();
+    this.playbackEpoch = createPlaybackEpoch();
     ++this.playbackGeneration;
     const records = [...this.playbackSources].sort((left, right) => left.startAt - right.startAt);
     const now = this.playbackContext?.currentTime ?? 0;
@@ -894,11 +964,70 @@ export class HermesLiveAudio {
     if (item) item.playedMs += Math.max(0, playedMs);
   }
 
+  ensurePlaybackContext() {
+    if (!this.playbackContext || this.playbackContext.state === "closed") {
+      this.playbackContext = this.audioContextFactory({});
+      this.playbackCursor = 0;
+    }
+    return this.playbackContext;
+  }
+
+  resumePlaybackContext(context) {
+    if (context.state === "running") return Promise.resolve();
+    if (context.state === "closed") {
+      return Promise.reject(new Error("Browser audio playback context is closed."));
+    }
+    if (this.playbackResumeContext === context && this.playbackResumePromise) {
+      return this.playbackResumePromise;
+    }
+
+    let cancel;
+    const operation = new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve();
+      };
+      const timeout = setTimeout(
+        () => finish(new Error(
+          "Browser audio playback did not start in time. Allow audio, then retry from a user gesture.",
+        )),
+        this.playbackResumeTimeoutMs,
+      );
+      cancel = () => finish(abortError());
+      try {
+        Promise.resolve(context.resume()).then(() => finish(), (error) => finish(toError(error)));
+      } catch (error) {
+        finish(toError(error));
+      }
+    }).finally(() => {
+      if (this.playbackResumePromise === operation) {
+        this.playbackResumeContext = undefined;
+        this.playbackResumePromise = undefined;
+        this.cancelPlaybackResume = undefined;
+      }
+    });
+    this.playbackResumeContext = context;
+    this.playbackResumePromise = operation;
+    this.cancelPlaybackResume = cancel;
+    return operation;
+  }
+
   async closePlaybackContext() {
     this.clearPlayback();
+    this.cancelPlaybackResume?.();
     const context = this.playbackContext;
     this.playbackContext = undefined;
-    if (context && context.state !== "closed") await context.close();
+    if (context && context.state !== "closed") {
+      await playbackDeadline(
+        Promise.resolve().then(() => context.close()),
+        this.playbackResumeTimeoutMs,
+        "Browser audio playback context did not close in time.",
+      ).catch(() => undefined);
+    }
   }
 
   assertCaptureGeneration(generation) {
@@ -916,7 +1045,6 @@ export class HermesLiveAudio {
     this.disposed = true;
     await this.stopMicrophone({ endTurn: false });
     this.clearPlayback();
-    await this.playbackChain.catch(() => undefined);
     await this.closePlaybackContext();
     this.unsubscribeClose?.();
     this.unsubscribeResponseStarted?.();
@@ -1222,8 +1350,14 @@ function parsePcmRate(mimeType) {
   if (normalized.split(";")[0]?.trim().toLowerCase() !== "audio/pcm") {
     throw new Error(`Hermes Live browser audio supports PCM16 output, not ${normalized || "an unknown format"}.`);
   }
-  const match = /(?:^|;)\s*rate=(\d+)(?:;|$)/i.exec(normalized);
-  return positiveInteger(match?.[1], DEFAULT_SAMPLE_RATE);
+  const matches = [...normalized.matchAll(/(?:^|;)\s*rate=(\d+)(?=;|$)/gi)];
+  const rate = matches.length === 1 ? Number(matches[0]?.[1]) : Number.NaN;
+  if (!Number.isInteger(rate) || rate < MIN_PCM_SAMPLE_RATE || rate > MAX_PCM_SAMPLE_RATE) {
+    throw new Error(
+      `Hermes Live PCM16 output requires exactly one rate between ${MIN_PCM_SAMPLE_RATE} and ${MAX_PCM_SAMPLE_RATE} Hz.`,
+    );
+  }
+  return rate;
 }
 
 function isPcmMimeType(mimeType) {
@@ -1240,6 +1374,48 @@ function decodePcm16(data, decodeBase64) {
     samples[index] = view.getInt16(index * 2, true) / 32768;
   }
   return samples;
+}
+
+function preparePlaybackFrame(message, decodeBase64) {
+  if (message?.type !== "audio.output" || typeof message.data !== "string") {
+    throw new TypeError("HermesLiveAudio.play expects an audio.output message.");
+  }
+  const rate = parsePcmRate(message.mimeType);
+  const samples = decodePcm16(message.data, decodeBase64);
+  if (samples.length === 0) throw new Error("Hermes Live returned an empty PCM16 audio frame.");
+  return {
+    rate,
+    samples,
+    durationMs: (samples.length / rate) * 1_000,
+    itemId: typeof message.itemId === "string" ? message.itemId : "",
+    contentIndex: Number.isInteger(message.contentIndex) ? message.contentIndex : 0,
+  };
+}
+
+function createPlaybackEpoch() {
+  let invalidate;
+  const invalidated = new Promise((resolve) => {
+    invalidate = resolve;
+  });
+  return { invalidated, invalidate };
+}
+
+function playbackDeadline(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timeout = setTimeout(() => finish(new Error(message)), timeoutMs);
+    Promise.resolve(promise).then(
+      (value) => finish(undefined, value),
+      (error) => finish(toError(error)),
+    );
+  });
 }
 
 async function cleanupCapture({ stream, context, source, node }) {

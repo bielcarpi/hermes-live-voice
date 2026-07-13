@@ -205,7 +205,7 @@ HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
 node dist/cli.js terminal
 ```
 
-The console keeps one realtime session open, shows provider transcripts and Hermes task progress, surfaces approvals, and provides separate `/interrupt` (stop the provider response) and `/stop` (stop Hermes work) controls. Use `/help` for the full command list. It intentionally does not capture or play audio; use the Hermes Dashboard or browser UI for remote gateway audio.
+The console keeps one realtime session open, shows provider transcripts and Hermes task progress, surfaces approvals, and provides separate `/interrupt` (request provider-response cancellation) and `/stop` (stop Hermes work) controls. Provider cancellation is best effort; Gemini accepts the request without a dedicated upstream cancellation acknowledgement. Use `/help` for the full command list. It intentionally does not capture or play audio; use the Hermes Dashboard or browser UI for remote gateway audio.
 
 For scripts and CI, the existing one-shot command remains available:
 
@@ -359,11 +359,12 @@ client.on("approval.request", showApproval);
 client.on("run.completed", ({ output }) => showResult(output));
 client.on("audio.output", (message) => void audio.play(message).catch(showError));
 client.on("input.speech_started", () => audio.interrupt("provider detected user speech"));
+await audio.primePlayback(); // Invoke synchronously from a click or tap handler.
 await client.connect();
 await audio.startMicrophone();
 ```
 
-The gateway serves the canonical worklet at `/mic-worklet.js`; package consumers can also resolve the `hermes-live-voice/browser/mic-worklet.js` export into their own static assets. The client validates lifecycle messages, returns request IDs, bounds microphone and playback buffering, and exposes `subscribe()`/`getSnapshot()` for React or other state-driven UIs.
+The gateway serves the canonical worklet at `/mic-worklet.js`; package consumers can also resolve the `hermes-live-voice/browser/mic-worklet.js` export into their own static assets. Call `primePlayback()` directly from a user gesture before other asynchronous work so browser autoplay policy can unlock the output context. The client validates lifecycle messages, returns request IDs, reserves playback capacity before awaiting that context, bounds microphone and playback buffering, and exposes `subscribe()`/`getSnapshot()` for React or other state-driven UIs.
 
 `webSocketUrlProvider` lets a host return a same-origin authenticated proxy URL or a host-issued short-lived ticket. The Hermes Live gateway does not mint per-user tickets itself. Do not embed an installation-wide `HERMES_LIVE_AUTH_TOKEN` in a public web app; the Dashboard integration keeps it server-side through its authenticated plugin proxy.
 

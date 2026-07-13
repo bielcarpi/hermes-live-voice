@@ -7,6 +7,8 @@ describe("web demo behavior", () => {
     const harness = loadWebDemo();
     await harness.api.connect();
 
+    expect(harness.audio.primePlayback).toHaveBeenCalledOnce();
+
     harness.api.handleMessage({ type: "input.speech_started", provider: "openai", audioStartMs: 320 });
 
     expect(harness.audio.interrupt).toHaveBeenCalledWith("provider detected user speech");
@@ -154,6 +156,59 @@ describe("web demo behavior", () => {
     expect(buttons.every((button) => !button.disabled)).toBe(true);
     expect(harness.elements.log.entries.at(-1)?.pre.textContent).toBe("Gateway connection closed");
   });
+
+  it("invalidates queued approvals when the socket closes", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_close",
+      approval: {
+        approvalId: "approval_close",
+        command: "npm test",
+        choices: ["once", "deny"],
+        allowPermanent: false,
+      },
+    });
+    const buttons = harness.elements.log.entries.at(-1)?.buttons ?? [];
+
+    harness.client.emit("close");
+    buttons.find((button) => button.textContent === "once")?.click();
+
+    expect(harness.elements.status.textContent).toBe("Disconnected");
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    expect(harness.client.respondToApproval).not.toHaveBeenCalled();
+  });
+
+  it("invalidates queued approvals after a fatal session error", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_fatal",
+      approval: {
+        approvalId: "approval_fatal",
+        command: "npm publish",
+        choices: ["once", "deny"],
+        allowPermanent: false,
+      },
+    });
+    const buttons = harness.elements.log.entries.at(-1)?.buttons ?? [];
+
+    harness.api.handleMessage({
+      type: "session.error",
+      code: "session_shutdown_unconfirmed",
+      error: "Session shutdown could not be confirmed.",
+      recoverable: false,
+    });
+    buttons.find((button) => button.textContent === "once")?.click();
+
+    expect(harness.elements.status.textContent).toBe("Error");
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    expect(harness.client.respondToApproval).not.toHaveBeenCalled();
+  });
 });
 
 function loadWebDemo(): {
@@ -246,6 +301,10 @@ class FakeHermesLiveClient {
     return () => listeners.delete(listener);
   }
 
+  emit(type: string, event: unknown = {}): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+
   async connect(): Promise<void> {
     this.connected = true;
     this.state = "ready";
@@ -262,6 +321,7 @@ class FakeHermesLiveAudio {
   static instances: FakeHermesLiveAudio[] = [];
   readonly listeners = new Map<string, Set<(event: any) => void>>();
   microphoneActive = false;
+  primePlayback = vi.fn(async () => undefined);
   interrupt = vi.fn();
   play = vi.fn(async () => true);
   clearPlayback = vi.fn();

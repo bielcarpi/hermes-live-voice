@@ -65,6 +65,8 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).toContain('audio.interrupt("provider detected user speech")');
     expect(source).toContain('audio.interrupt("new Dashboard text input")');
     expect(source).toContain("audio.clearPlayback()");
+    expect(source).toContain("audio.primePlayback()");
+    expect(source).toContain("primePlaybackFromGesture();");
   });
 
   it("keeps queued approvals read-only and permanent approval pattern-bound", () => {
