@@ -38,7 +38,74 @@ describe("HTTP server", () => {
           turnDetection: "disabled",
         },
       },
-      features: { hermes_runs: true, openai_realtime: true },
+      hermes: {
+        approvals: {
+          uiSupported: true,
+          interactive: false,
+          fallback: "deny_all_then_stop",
+          requiredFeature: "run_approval_response_by_id",
+          negotiated: true,
+        },
+      },
+      features: {
+        hermes_runs: true,
+        openai_realtime: true,
+        hermes_approval: false,
+        hermes_approval_ui: true,
+        hermes_approval_fallback_deny_all: true,
+        hermes_approval_fallback_stops_run: true,
+        hermes_approval_requires_targeted_response: true,
+      },
+    });
+  });
+
+  it("advertises interactive approval only after targeted Hermes negotiation", async () => {
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes({ run_approval_response_by_id: true }),
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
+      hermes: {
+        approvals: {
+          uiSupported: true,
+          interactive: true,
+          fallback: "deny_all_then_stop",
+          requiredFeature: "run_approval_response_by_id",
+          negotiated: true,
+        },
+      },
+      features: { hermes_approval: true, hermes_approval_ui: true },
+    });
+  });
+
+  it("keeps UI capability available while marking failed approval negotiation unavailable", async () => {
+    const hermes = fakeHermes();
+    vi.mocked(hermes.capabilities).mockRejectedValueOnce(new Error("Hermes unavailable"));
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    const response = await fetch(`${server.url}/v1/capabilities`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      hermes: {
+        approvals: {
+          uiSupported: true,
+          interactive: false,
+          fallback: "deny_all_then_stop",
+          requiredFeature: "run_approval_response_by_id",
+          negotiated: false,
+        },
+      },
+      features: { hermes_approval: false, hermes_approval_ui: true },
     });
   });
 
@@ -350,27 +417,21 @@ describe("HTTP server", () => {
   });
 });
 
-function fakeHermes(): HermesRunsPort {
+function fakeHermes(extraFeatures: Record<string, unknown> = {}): HermesRunsPort {
+  const capabilities = {
+    model: "hermes-agent",
+    features: {
+      run_submission: true,
+      run_events_sse: true,
+      run_stop: true,
+      run_approval_response: true,
+      ...extraFeatures,
+    },
+  };
   return {
     baseUrl: "http://127.0.0.1:8642",
-    capabilities: vi.fn(async () => ({
-      model: "hermes-agent",
-      features: {
-        run_submission: true,
-        run_events_sse: true,
-        run_stop: true,
-        run_approval_response: true,
-      },
-    })),
-    assertRunsSupported: vi.fn(async () => ({
-      model: "hermes-agent",
-      features: {
-        run_submission: true,
-        run_events_sse: true,
-        run_stop: true,
-        run_approval_response: true,
-      },
-    })),
+    capabilities: vi.fn(async () => capabilities),
+    assertRunsSupported: vi.fn(async () => capabilities),
   } as unknown as HermesRunsPort;
 }
 

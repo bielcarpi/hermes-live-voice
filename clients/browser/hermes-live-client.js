@@ -619,6 +619,7 @@ export class HermesLiveAudio {
     this.microphoneState = "idle";
     this.captureGeneration = 0;
     this.microphoneStartPromise = undefined;
+    this.microphoneStartCancellation = undefined;
     this.microphoneStopPromise = undefined;
     this.disposed = false;
     this.playbackContext = undefined;
@@ -678,31 +679,40 @@ export class HermesLiveAudio {
 
     this.interrupt("microphone started");
     const generation = ++this.captureGeneration;
+    const cancellation = createCaptureCancellation();
     this.setMicrophoneState("starting");
-    const start = this.startMicrophonePipeline(generation, negotiatedInput);
+    const start = this.startMicrophonePipeline(generation, negotiatedInput, cancellation);
+    this.microphoneStartCancellation = cancellation;
     this.microphoneStartPromise = start;
     try {
       await start;
     } finally {
       if (this.microphoneStartPromise === start) this.microphoneStartPromise = undefined;
+      if (this.microphoneStartCancellation === cancellation) this.microphoneStartCancellation = undefined;
     }
   }
 
-  async startMicrophonePipeline(generation, negotiatedInput) {
+  async startMicrophonePipeline(generation, negotiatedInput, cancellation) {
     let stream;
     let context;
     let source;
     let node;
     try {
-      stream = await this.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-      });
+      stream = await capturePrerequisite(
+        this.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        }),
+        cancellation,
+        (lateStream) => cleanupCapture({ stream: lateStream }),
+      );
       this.assertCaptureGeneration(generation);
       const negotiatedRate = negotiatedInput?.mimeType ? parsePcmRate(negotiatedInput.mimeType) : this.sampleRate;
       context = this.audioContextFactory({ sampleRate: negotiatedRate });
-      if (context.state === "suspended") await context.resume();
+      if (context.state === "suspended") {
+        await capturePrerequisite(context.resume(), cancellation);
+      }
       this.assertCaptureGeneration(generation);
-      await context.audioWorklet.addModule(this.workletUrl);
+      await capturePrerequisite(context.audioWorklet.addModule(this.workletUrl), cancellation);
       this.assertCaptureGeneration(generation);
       source = context.createMediaStreamSource(stream);
       node = this.audioWorkletNodeFactory(context, "pcm-capture", {
@@ -748,6 +758,7 @@ export class HermesLiveAudio {
     const wasActive = this.microphoneState === "active";
     ++this.captureGeneration;
     if (this.microphoneState !== "disposed") this.setMicrophoneState("stopping");
+    this.microphoneStartCancellation?.cancel();
     await this.microphoneStartPromise?.catch(() => undefined);
     if (wasActive) await this.flushMicrophone();
     if (endTurn && wasActive && this.client.connected) this.client.endAudio();
@@ -1400,6 +1411,44 @@ function createPlaybackEpoch() {
   return { invalidated, invalidate };
 }
 
+function createCaptureCancellation() {
+  let finish;
+  const signal = {
+    cancelled: false,
+    promise: new Promise((resolve) => {
+      finish = resolve;
+    }),
+    cancel() {
+      if (signal.cancelled) return;
+      signal.cancelled = true;
+      finish();
+    },
+  };
+  return signal;
+}
+
+async function capturePrerequisite(promise, cancellation, disposeLateValue) {
+  const settled = Promise.resolve(promise).then(
+    (value) => ({ status: "fulfilled", value }),
+    (error) => ({ status: "rejected", error: toError(error) }),
+  );
+  const result = await Promise.race([
+    settled,
+    cancellation.promise.then(() => ({ status: "cancelled" })),
+  ]);
+  if (result.status === "cancelled" || cancellation.cancelled) {
+    if (disposeLateValue) {
+      void settled.then((lateResult) => {
+        if (lateResult.status !== "fulfilled") return undefined;
+        return disposeLateValue(lateResult.value);
+      }).catch(() => undefined);
+    }
+    throw abortError();
+  }
+  if (result.status === "rejected") throw result.error;
+  return result.value;
+}
+
 function playbackDeadline(promise, timeoutMs, message) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -1425,8 +1474,20 @@ async function cleanupCapture({ stream, context, source, node }) {
   try {
     source?.disconnect();
   } catch {}
-  stream?.getTracks?.().forEach((track) => track.stop());
-  if (context && context.state !== "closed") await context.close().catch(() => undefined);
+  try {
+    stream?.getTracks?.().forEach((track) => {
+      try {
+        track.stop();
+      } catch {}
+    });
+  } catch {}
+  if (context && context.state !== "closed") {
+    try {
+      void Promise.resolve(context.close()).catch(() => undefined);
+    } catch {
+      // Media tracks are already stopped; browser context teardown is best effort.
+    }
+  }
 }
 
 function trimOldestMapEntries(map, maximum) {

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-07-14
+
+- Negotiate targeted Hermes approval responses explicitly. Any current uncorrelated approval triggers deny-all where possible, run stop, fatal session closure, and an operator-verification warning; interactive choices require stable upstream IDs and exact run/approval/choice/count confirmation.
+- Require exact Hermes stop confirmation instead of accepting missing, running, unknown, wrong-run, or conflicting-alias responses, and contain uncertain mutations.
+- Make browser microphone stop/dispose independent of stalled permission, audio-context resume, and cleanup promises; keep disconnect responsive, preserve fatal UI errors, clear terminal approval cards, and improve push-to-talk/accessibility copy.
+- Confirm Gemini/OpenAI provider closure, bound provider connection attempts, suppress and close late Gemini handshakes, and make provider smoke success require the upstream close event.
+- Separate read-only package verification from release write/OIDC credentials, publish the already-verified tarball artifact, harden the Docker build/context and Compose runtime, and reject unbounded Hermes request timeouts.
+
 ## 0.3.0 - 2026-07-13
 
 - Add a first-class **Live Voice** integration for Hermes Dashboard with responsive desktop/mobile layouts, browser microphone and playback, text fallback, transcript, capability status, task activity, separate response interruption and Hermes run cancellation, and approval controls.

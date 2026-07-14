@@ -1,0 +1,17 @@
+{
+  "source": "Live authenticated API capture from the official Hermes Agent Docker image",
+  "capturedAt": "2026-07-14",
+  "hermesVersion": "0.18.2",
+  "hermesBuild": "2026.7.7.2",
+  "releaseTag": "v2026.7.7.2",
+  "reportedUpstreamCommit": "226e8de8",
+  "releaseCommit": "9de9c25f620ff7f1ce0fd5457d596052d5159596",
+  "sourceRepository": "https://github.com/NousResearch/hermes-agent",
+  "containerImage": "nousresearch/hermes-agent:latest",
+  "containerDigest": "sha256:465e3be53ac04f87c983697d8446d3dbdde47b489b51bb910c319731c3c78397",
+  "sanitization": [
+    "Replaced generated run IDs with stable fixture IDs",
+    "Replaced event timestamps with zero",
+    "Used a deliberately inert fixture command and no user data"
+  ]
+}

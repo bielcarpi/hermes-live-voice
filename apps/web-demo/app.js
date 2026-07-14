@@ -15,6 +15,8 @@ const logEl = document.querySelector("#log");
 let client;
 let audio;
 let connectPending = false;
+let fatalSessionError = "";
+let approvalSequence = 0;
 const approvalQueue = [];
 
 setInteractive(false);
@@ -66,6 +68,7 @@ stopButton.addEventListener("click", () => {
 
 async function connect() {
   connectPending = true;
+  fatalSessionError = "";
   const disposing = disposeSession();
   const nextClient = new HermesLiveClient({
     url: gatewayInput.value,
@@ -108,7 +111,7 @@ function bindSession(nextClient, nextAudio) {
   nextClient.on("close", () => {
     if (nextClient !== client) return;
     resetApprovalQueue();
-    setStatus("Disconnected");
+    setStatus(fatalSessionError ? "Error" : "Disconnected");
     setInteractive(false);
     connectButton.textContent = "Connect";
     void nextAudio.dispose();
@@ -128,6 +131,7 @@ function bindSession(nextClient, nextAudio) {
 
 function handleMessage(message) {
   if (message.type === "session.ready") {
+    fatalSessionError = "";
     setStatus("Connected");
     setInteractive(true);
     addLog("session", JSON.stringify(message, null, 2));
@@ -143,6 +147,7 @@ function handleMessage(message) {
   } else if (message.type === "run.event") {
     handleRunEvent(message);
   } else if (message.type === "run.completed") {
+    clearApprovalQueueForRun(message.runId, "This Hermes run completed before the approval was answered.");
     addLog("hermes", message.output ?? "");
   } else if (message.type === "approval.request") {
     addApprovalRequest(message);
@@ -152,7 +157,11 @@ function handleMessage(message) {
   } else if (message.type === "run.failed" || message.type === "session.error") {
     setStatus(message.type === "run.failed" ? "Run failed" : "Error");
     audio.clearPlayback();
+    if (message.type === "run.failed") {
+      clearApprovalQueueForRun(message.runId, "This Hermes run failed before the approval was answered.");
+    }
     if (message.type === "session.error" && !message.recoverable) {
+      fatalSessionError = String(message.message ?? message.error ?? "The Live Voice session failed.");
       resetApprovalQueue();
       setInteractive(false);
     }
@@ -161,6 +170,7 @@ function handleMessage(message) {
     addLog("run", `stop requested for ${message.runId}: ${message.status}`);
   } else if (message.type === "run.stopped") {
     audio.clearPlayback();
+    clearApprovalQueueForRun(message.runId, "This Hermes run stopped before the approval was answered.");
     addLog("run", `stopped ${message.runId}: ${message.status}`);
   } else {
     addLog(message.type, JSON.stringify(message, null, 2));
@@ -212,8 +222,13 @@ function addLog(kind, value) {
 function addApprovalRequest(message) {
   const entry = document.createElement("div");
   entry.className = "entry";
+  entry.setAttribute("role", "region");
+  entry.setAttribute("aria-live", "assertive");
   const title = document.createElement("strong");
   title.textContent = "approval";
+  const titleId = `approval-${++approvalSequence}`;
+  title.id = titleId;
+  entry.setAttribute("aria-labelledby", titleId);
   const body = document.createElement("pre");
   const approval = message.approval ?? {};
   const patternKeys = approvalPatternKeys(approval);
@@ -234,6 +249,8 @@ function addApprovalRequest(message) {
   actions.className = "approval-actions";
   const queueStatus = document.createElement("span");
   queueStatus.className = "approval-queue-status";
+  queueStatus.setAttribute("role", "status");
+  queueStatus.setAttribute("aria-live", "polite");
 
   const allowedChoices = ["once", "session", "always", "deny"];
   const suppliedChoices = Array.isArray(approval.choices) &&
@@ -254,6 +271,7 @@ function addApprovalRequest(message) {
     queueStatus,
     permanentArmed: false,
     submitted: false,
+    wasActionable: false,
   };
   for (const choice of choices) {
     const button = document.createElement("button");
@@ -331,13 +349,28 @@ function resolveApprovalQueue(message) {
 function refreshApprovalQueue() {
   approvalQueue.forEach((queued, index) => {
     const actionable = index === 0 && !queued.submitted;
+    const becameActionable = actionable && !queued.wasActionable;
     for (const button of queued.buttons) button.disabled = !actionable;
     if (!queued.submitted && !queued.permanentArmed) {
       queued.queueStatus.textContent = actionable
         ? "Answer this approval to continue."
         : "Queued: answer the earlier approval first (Hermes resolves approvals FIFO).";
     }
+    queued.wasActionable = actionable;
+    if (becameActionable) queued.buttons[0]?.focus();
   });
+}
+
+function clearApprovalQueueForRun(runId, reason) {
+  for (let index = approvalQueue.length - 1; index >= 0; index -= 1) {
+    const queued = approvalQueue[index];
+    if (queued.message.runId !== runId) continue;
+    queued.submitted = true;
+    queued.queueStatus.textContent = reason;
+    for (const button of queued.buttons) button.disabled = true;
+    approvalQueue.splice(index, 1);
+  }
+  refreshApprovalQueue();
 }
 
 function resetApprovalQueue() {

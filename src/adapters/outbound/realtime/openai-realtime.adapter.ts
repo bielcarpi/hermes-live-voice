@@ -19,12 +19,18 @@ import type {
 const OPENAI_REALTIME_PCM_INPUT_SAMPLE_RATE = 24_000;
 const OPENAI_CANCEL_ACK_TIMEOUT_MS = 2_000;
 const OPENAI_HANDSHAKE_TIMEOUT_MS = 10_000;
+const DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS = 4_000;
 const OPENAI_MAX_EVENT_BYTES = 16 * 1024 * 1024;
 const OPENAI_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const OPENAI_MAX_HANDLED_TOOL_CALLS = 4_096;
 
 export class OpenAIRealtimeAdapter implements LiveModelAdapter {
-  constructor(private readonly config: AppConfig["openai"]) {}
+  constructor(
+    private readonly config: AppConfig["openai"],
+    private readonly connectTimeoutMs = DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS,
+    private readonly closeTimeoutMs = DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS,
+  ) {}
 
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
     if (!this.config.apiKey) {
@@ -37,15 +43,24 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
     }
     const ws = new WebSocket(url, {
       headers,
-      handshakeTimeout: OPENAI_HANDSHAKE_TIMEOUT_MS,
+      handshakeTimeout: Math.min(OPENAI_HANDSHAKE_TIMEOUT_MS, this.connectTimeoutMs),
       maxPayload: OPENAI_MAX_EVENT_BYTES,
     });
-    const session = new OpenAIRealtimeSession(ws, this.config, params.callbacks);
+    const session = new OpenAIRealtimeSession(
+      ws,
+      this.config,
+      params.callbacks,
+      this.closeTimeoutMs,
+    );
 
     return await new Promise<LiveModelSession>((resolve, reject) => {
+      let startupFailurePending = false;
       const readyTimeout = setTimeout(() => {
-        onInitialError(new Error("OpenAI Realtime session did not acknowledge session.update."));
-      }, 10_000);
+        onInitialError(
+          new Error(`OpenAI Realtime session did not acknowledge session.update within ${this.connectTimeoutMs}ms.`),
+        );
+      }, this.connectTimeoutMs);
+      readyTimeout.unref?.();
       const cleanup = () => {
         clearTimeout(readyTimeout);
         ws.off("error", onInitialError);
@@ -54,9 +69,27 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
         ws.off("message", onInitialMessage);
       };
       const onInitialError = (error: unknown) => {
+        if (startupFailurePending) return;
+        startupFailurePending = true;
+        const failure = error instanceof Error ? error : new Error(errorToMessage(error));
         cleanup();
+        if (ws.readyState === WebSocket.CLOSED) {
+          reject(failure);
+          return;
+        }
+        const forceClose = setTimeout(() => {
+          if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
+        }, this.closeTimeoutMs);
+        forceClose.unref?.();
+        ws.once("close", () => {
+          clearTimeout(forceClose);
+          reject(failure);
+        });
+        // Keep the connect promise pending until close is observed. The gateway
+        // can then distinguish confirmed startup cleanup from an upstream
+        // socket that never actually closed. Force local teardown after the
+        // provider close deadline so an uncooperative peer cannot leak a socket.
         closeWebSocket(ws, 1011, "OpenAI Realtime session start failed");
-        reject(error instanceof Error ? error : new Error(errorToMessage(error)));
       };
       const onInitialClose = (code: number, reason: Buffer) => {
         cleanup();
@@ -92,12 +125,14 @@ class OpenAIRealtimeSession implements LiveModelSession {
   private responseCreateQueued = false;
   private cancellationPending = false;
   private cancelAckTimeout?: ReturnType<typeof setTimeout>;
+  private closeOperation?: Promise<void>;
   private ready = false;
 
   constructor(
     private readonly ws: WebSocket,
     private readonly config: AppConfig["openai"],
     private readonly callbacks: LiveModelCallbacks,
+    private readonly closeTimeoutMs: number,
   ) {
     this.ws.on("message", (raw) => this.handleMessage(raw));
     this.ws.on("close", (code, reason) => {
@@ -160,10 +195,23 @@ class OpenAIRealtimeSession implements LiveModelSession {
     this.requestResponse();
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this.ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+    if (this.closeOperation) return this.closeOperation;
+
     this.clearCancelAckTimeout();
     this.responseCreateQueued = false;
-    closeWebSocket(this.ws, 1000, "session closed");
+    const operation = closeWebSocketAndWait(
+      this.ws,
+      1000,
+      "session closed",
+      this.closeTimeoutMs,
+    );
+    this.closeOperation = operation;
+    void operation.catch(() => {
+      if (this.closeOperation === operation) this.closeOperation = undefined;
+    });
+    return operation;
   }
 
   private handleMessage(raw: WebSocket.RawData): void {
@@ -327,6 +375,41 @@ function closeWebSocket(ws: WebSocket, code: number, reason: string): void {
   } else if (ws.readyState === WebSocket.CONNECTING) {
     ws.terminate();
   }
+}
+
+function closeWebSocketAndWait(
+  ws: WebSocket,
+  code: number,
+  reason: string,
+  timeoutMs: number,
+): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+
+  return new Promise<void>((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      ws.off("close", onClose);
+    };
+    const onClose = () => {
+      cleanup();
+      resolve();
+    };
+
+    ws.once("close", onClose);
+    timeout = setTimeout(() => {
+      cleanup();
+      if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
+      reject(new Error(`OpenAI Realtime session did not confirm closure within ${timeoutMs}ms.`));
+    }, timeoutMs);
+    timeout.unref?.();
+
+    if (ws.readyState === WebSocket.CLOSED) {
+      onClose();
+    } else {
+      closeWebSocket(ws, code, reason);
+    }
+  });
 }
 
 export function normalizeOpenAIRealtimeEvent(

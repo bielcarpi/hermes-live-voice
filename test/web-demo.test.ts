@@ -109,6 +109,7 @@ describe("web demo behavior", () => {
 
     const first = harness.elements.log.entries.at(-2)?.buttons ?? [];
     const second = harness.elements.log.entries.at(-1)?.buttons ?? [];
+    expect(first[0]?.focused).toBe(true);
     expect(first.every((button) => !button.disabled)).toBe(true);
     expect(second.every((button) => button.disabled)).toBe(true);
     second[0]?.click();
@@ -130,6 +131,29 @@ describe("web demo behavior", () => {
       resolved: 1,
     });
     expect(second.every((button) => !button.disabled)).toBe(true);
+    expect(second[0]?.focused).toBe(true);
+  });
+
+  it("announces approval requests and their queue status as live regions", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_accessible",
+      approval: {
+        approvalId: "approval_accessible",
+        command: "npm test",
+        choices: ["once", "deny"],
+        allowPermanent: false,
+      },
+    });
+
+    const entry = harness.elements.log.entries.at(-1);
+    expect(entry?.element.getAttribute("role")).toBe("region");
+    expect(entry?.element.getAttribute("aria-live")).toBe("assertive");
+    expect(entry?.queueStatus?.getAttribute("role")).toBe("status");
+    expect(entry?.queueStatus?.getAttribute("aria-live")).toBe("polite");
   });
 
   it("keeps an approval actionable when sending the response fails", async () => {
@@ -208,6 +232,65 @@ describe("web demo behavior", () => {
     expect(harness.elements.status.textContent).toBe("Error");
     expect(buttons.every((button) => button.disabled)).toBe(true);
     expect(harness.client.respondToApproval).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["run.completed", { output: "done" }],
+    ["run.failed", { error: "failed" }],
+    ["run.stopped", { status: "cancelled" }],
+  ])("invalidates queued approvals on terminal %s events", async (type, detail) => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "approval.request",
+      runId: "run_terminal",
+      approval: {
+        approvalId: "approval_terminal",
+        command: "npm publish",
+        choices: ["once", "deny"],
+        allowPermanent: false,
+      },
+    });
+    const buttons = harness.elements.log.entries.at(-1)?.buttons ?? [];
+
+    harness.api.handleMessage({ type, runId: "run_terminal", ...detail });
+    buttons[0]?.click();
+
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    expect(harness.client.respondToApproval).not.toHaveBeenCalled();
+  });
+
+  it("keeps fatal session status after the socket closes", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "session.error",
+      code: "session_shutdown_unconfirmed",
+      message: "Verify the active Hermes task.",
+      recoverable: false,
+    });
+    harness.client.emit("close");
+
+    expect(harness.elements.status.textContent).toBe("Error");
+    expect(harness.elements.log.entries.at(-1)?.pre.textContent).toContain("Verify the active Hermes task.");
+  });
+
+  it("treats legacy uncorrelated approval containment as fatal", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+
+    harness.api.handleMessage({
+      type: "session.error",
+      code: "hermes_approval_identity_unsupported",
+      message: "The run was stopped; verify its final state in Hermes before retrying.",
+      recoverable: false,
+    });
+
+    expect(harness.elements.status.textContent).toBe("Error");
+    expect(harness.audio.clearPlayback).toHaveBeenCalledOnce();
+    expect(harness.elements.log.entries.at(-1)?.pre.textContent).toContain("verify its final state");
   });
 });
 
@@ -351,8 +434,16 @@ class FakeHermesLiveAudio {
 class TestElement {
   className = "";
   disabled = false;
-  entries: Array<{ strong: TestElement; pre: TestElement; buttons: TestElement[] }> = [];
+  entries: Array<{
+    element: TestElement;
+    strong: TestElement;
+    pre: TestElement;
+    buttons: TestElement[];
+    queueStatus?: TestElement;
+  }> = [];
   buttonLabels: string[][] = [];
+  focused = false;
+  id = "";
   scrollHeight = 0;
   scrollTop = 0;
   textContent = "";
@@ -363,6 +454,7 @@ class TestElement {
   private inner = "";
   private listeners = new Map<string, Array<(event: any) => void>>();
   private children: TestElement[] = [];
+  private attributes = new Map<string, string>();
 
   constructor(readonly tagName: string) {}
 
@@ -384,15 +476,29 @@ class TestElement {
     for (const listener of this.listeners.get("click") ?? []) listener({ preventDefault() {} });
   }
 
+  focus(): void {
+    this.focused = true;
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  getAttribute(name: string): string | undefined {
+    return this.attributes.get(name);
+  }
+
   append(...children: TestElement[]): void {
     this.children.push(...children);
     for (const child of children) {
       if (child.className === "entry") {
         const actions = child.children.find((entry) => entry.className === "approval-actions");
         this.entries.push({
+          element: child,
           strong: child.childElement("strong"),
           pre: child.childElement("pre"),
           buttons: actions ? actions.children.filter((entry) => entry.tagName === "button") : [],
+          queueStatus: actions?.children.find((entry) => entry.className === "approval-queue-status"),
         });
         if (actions) {
           this.buttonLabels.push(

@@ -14,7 +14,7 @@ For a one-shot terminal smoke test, use:
 node dist/cli.js client "What is the current status?"
 ```
 
-For a persistent text-control session, use `node dist/cli.js terminal`. It exercises this same protocol while exposing task progress, approvals, provider interruption, and Hermes task stop as terminal commands. It intentionally has no native audio dependency: use official Hermes Voice Mode (Ctrl+B) for a local microphone, or the Dashboard/browser client for remote gateway audio.
+For a persistent text-control session, use `node dist/cli.js terminal`. It exercises this same protocol while exposing task progress, provider interruption, Hermes task stop, and targeted approvals as terminal commands. Approval commands are enabled only when Hermes advertises `run_approval_response_by_id` and supplies a stable ID for the request. With a legacy uncorrelated approval contract, the terminal shows no actionable approval prompt; the gateway attempts to deny the pending queue, stops the Hermes run, and closes the voice session for operator verification. The terminal intentionally has no native audio dependency: use official Hermes Voice Mode (Ctrl+B) for a local microphone, or the Dashboard/browser client for remote gateway audio.
 
 ## Browser Client
 
@@ -77,7 +77,17 @@ Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
   "status": "ready",
   "checks": {
     "gateway": { "ok": true, "authRequired": true },
-    "hermes": { "ok": true, "baseUrl": "http://127.0.0.1:8642" },
+    "hermes": {
+      "ok": true,
+      "baseUrl": "http://127.0.0.1:8642",
+      "approvals": {
+        "uiSupported": true,
+        "interactive": false,
+        "fallback": "deny_all_then_stop",
+        "requiredFeature": "run_approval_response_by_id",
+        "negotiated": true
+      }
+    },
     "realtime": {
       "ok": true,
       "configured": true,
@@ -91,6 +101,8 @@ Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
 
 When any section is not ready, the endpoint returns `503` with that section's `error`.
 `sessionChecked: false` means readiness verified provider configuration, not a live Gemini/OpenAI session handshake.
+
+`GET /v1/capabilities` exposes the same approval object at `hermes.approvals`; readiness exposes it at `checks.hermes.approvals`. Approval UI support and safe upstream approval submission are separate capabilities. `uiSupported: true` means this gateway and its bundled clients implement approval controls. `interactive: true` is reported only after Hermes advertises `run_approval_response_by_id`. Otherwise uncorrelated approval requests use the `deny_all_then_stop` fail-closed fallback: the gateway attempts denial, stops the run, and closes the voice session instead of exposing positive choices. `negotiated: false` means the upstream capability probe itself did not complete, not that approval was implicitly enabled.
 
 ## Client Limits
 
@@ -150,7 +162,10 @@ The server replies:
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
   "hermes": {
-    "model": "hermes-agent"
+    "model": "hermes-agent",
+    "capabilities": {
+      "run_approval_response_by_id": true
+    }
   },
   "realtime": {
     "provider": "openai",
@@ -346,7 +361,7 @@ Session-level error:
 
 ## Approvals
 
-When Hermes asks for approval, the gateway emits:
+The examples in this section are the targeted-capable case. The gateway emits `approval.request` only after Hermes advertises `run_approval_response_by_id: true` and the corresponding upstream event contains a stable, bounded `approval_id`:
 
 ```json
 {
@@ -365,6 +380,19 @@ When Hermes asks for approval, the gateway emits:
   }
 }
 ```
+
+If the capability is absent or false, or an event omits a valid stable ID, the gateway does not create an actionable approval envelope. It attempts the legacy `deny_all` operation, then stops the run and emits a fatal error before closing the voice session even when denial was confirmed:
+
+```json
+{
+  "type": "session.error",
+  "code": "hermes_approval_identity_unsupported",
+  "message": "Interactive approval is unavailable because this Hermes version cannot correlate requests safely. The pending queue was denied, the run is being stopped, and the voice session is closing. Verify the run in Hermes before retrying.",
+  "recoverable": false
+}
+```
+
+Clients must preserve this fatal status after socket close and must not synthesize an `approvalId`, render positive approval controls, or send `approval.respond`. This containment is intentionally terminal because Hermes' FIFO response contract cannot prove that a visible request was the action denied when another client may respond concurrently.
 
 Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then projects only exact, bounded display values. If a supplied command, description, choice list, or permission pattern would need transformation, truncation, or control-character removal, the request is narrowed rather than silently repaired. A request with incomplete display context is deny-only. An informed request without an exact inspectable permission pattern can offer only `once` or `deny`. `session` and `always` require a visible exact `patternKey` or `patternKeys`, and clients must never invent wider choices.
 

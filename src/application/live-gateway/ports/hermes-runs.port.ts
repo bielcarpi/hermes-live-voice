@@ -33,6 +33,8 @@ export interface ApprovalResult {
   object?: string;
   run_id?: string;
   runId?: string;
+  approval_id?: string;
+  approvalId?: string;
   choice?: ApprovalChoice;
   resolved?: number;
 }
@@ -45,11 +47,11 @@ export interface HermesRunsPort {
   assertRunsSupported(signal?: AbortSignal): Promise<HermesCapabilities>;
   startRun(params: StartRunParams, signal?: AbortSignal): Promise<StartRunResult>;
   getRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<Record<string, unknown>>;
-  stopRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<{ run_id?: string; status?: string }>;
+  stopRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<{ run_id: string; status: "stopping" }>;
   submitApproval(
     runId: string,
     choice: ApprovalChoice,
-    options?: { resolveAll?: boolean; signal?: AbortSignal; sessionKey?: string },
+    options?: { approvalId?: string; resolveAll?: boolean; signal?: AbortSignal; sessionKey?: string },
   ): Promise<ApprovalResult>;
   streamRunEvents(runId: string, options?: AbortSignal | HermesRequestOptions): AsyncGenerator<HermesRunEvent>;
 }

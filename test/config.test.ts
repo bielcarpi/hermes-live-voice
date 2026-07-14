@@ -43,6 +43,11 @@ describe("config", () => {
     expect(config.hermes.timeoutMs).toBe(1200);
   });
 
+  it("rejects disabled or negative Hermes request timeouts", () => {
+    expect(() => loadConfig({ HERMES_LIVE_HERMES_TIMEOUT_MS: "0" })).toThrow();
+    expect(() => loadConfig({ HERMES_LIVE_HERMES_TIMEOUT_MS: "-1" })).toThrow();
+  });
+
   it("configures the text size limit", () => {
     const config = loadConfig({ HERMES_LIVE_MAX_TEXT_CHARS: "1234" });
 

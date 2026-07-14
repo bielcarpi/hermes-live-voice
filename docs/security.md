@@ -59,13 +59,17 @@ Use `wss://` for non-local clients. Terminate TLS at a trusted reverse proxy and
 
 ## Approvals
 
-Approval decisions should be rendered clearly in the client. The gateway does not decide whether a dangerous action should be approved, but it deliberately narrows what a client is allowed to approve.
+Interactive approval is a negotiated capability, not an assumption. The gateway requires Hermes to advertise `run_approval_response_by_id: true`, emit a bounded stable `approval_id`, and echo the exact run, approval, choice, and single resolved count. Clients receive that negotiated state in `session.ready` and must not render positive approval controls when it is unavailable.
+
+Hermes versions without targeted response identity are handled fail closed. The gateway never guesses which FIFO entry a visible event represents. It attempts `deny` with `resolve_all: true`, then stops the run and closes the voice session even if that denial was confirmed. The fatal `hermes_approval_identity_unsupported` error tells the operator to verify the run in Hermes before retrying. This is necessary because another authenticated controller could have resolved a different FIFO entry first; a denial count or empty queue cannot prove that the event this client observed was denied.
+
+For targeted-capable Hermes versions, approval decisions should be rendered clearly in the client. The gateway does not decide whether a dangerous action should be approved, but it deliberately narrows what a client is allowed to approve.
 
 Run-scoped actions are limited to the active Hermes run for the current voice session. Client messages and realtime provider tool calls cannot stop or inspect arbitrary Hermes run IDs through the gateway. The realtime provider has no approval-submission tool.
 
 The gateway projects only exact, bounded approval display values. It never truncates or strips unsafe characters and then asks the user to approve the altered text. Opaque or incomplete requests are deny-only. `once` is available only when the user can see an exact command or description. `session` and `always` require an exact inspectable permission pattern, and interactive clients require a second confirmation before `always`.
 
-Every approval envelope receives a gateway-owned ID correlated to a bounded upstream Hermes approval identity. Responses must match the active run, exact queue-head approval ID, exact offered choice, and a previously unused client request ID. Exact retries are acknowledged from a bounded idempotency cache; reuse with changed data, duplicate upstream identities, widened choices, out-of-order responses, and bulk resolution fail closed.
+Every interactive approval envelope receives a gateway-owned ID correlated to a bounded upstream Hermes approval identity. Responses must match the active run, exact queue-head approval ID, exact offered choice, and a previously unused client request ID. Hermes must then confirm the exact upstream run ID, approval ID, choice, and `resolved: 1`. Exact retries are acknowledged from a bounded idempotency cache; reuse with changed data, duplicate upstream identities, widened choices, out-of-order responses, and bulk resolution fail closed.
 
 Mutating Hermes calls are treated as outcome-sensitive. If the gateway cannot determine whether an approval, run start, or stop took effect, it contains the owned run and closes the session rather than retrying against uncertain state. Graceful client disconnect waits for provider cleanup and active-run stop confirmation. If complete shutdown cannot be confirmed, the gateway emits `session_shutdown_unconfirmed`, closes with WebSocket code `1011`, and tells the operator to verify task state in Hermes.
 

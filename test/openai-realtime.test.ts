@@ -214,6 +214,60 @@ describe("OpenAI Realtime adapter helpers", () => {
     }
   });
 
+  it("does not confirm OpenAI closure until the provider socket closes", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const providerClosed = deferred<void>();
+    server.once("connection", (socket) => {
+      socket.once("message", () => socket.send(JSON.stringify({ type: "session.updated" })));
+      socket.once("close", () => providerClosed.resolve());
+    });
+    const onClose = vi.fn();
+    const adapter = new OpenAIRealtimeAdapter(testOpenAIConfig({
+      apiKey: "test-key",
+      baseUrl: `ws://127.0.0.1:${port}/v1/realtime`,
+    }));
+    const session = await adapter.connect({
+      ...testConnectParams(),
+      callbacks: { onEvent: () => undefined, onClose },
+    });
+
+    try {
+      await session.close();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      await expect(providerClosed.promise).resolves.toBeUndefined();
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  it("bounds OpenAI session setup and closes an unacknowledged socket", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = portOf(server);
+    const providerClosed = deferred<void>();
+    server.once("connection", (socket) => {
+      socket.once("close", () => providerClosed.resolve());
+    });
+    const adapter = new OpenAIRealtimeAdapter(
+      testOpenAIConfig({
+        apiKey: "test-key",
+        baseUrl: `ws://127.0.0.1:${port}/v1/realtime`,
+      }),
+      20,
+    );
+
+    try {
+      await expect(adapter.connect(testConnectParams())).rejects.toThrow("did not acknowledge session.update within 20ms");
+      await expect(withTimeout(providerClosed.promise, 1_000, "Timed out waiting for OpenAI startup cleanup."))
+        .resolves.toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("defers a fast tool follow-up until the response that requested the tool is terminal", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await once(server, "listening");

@@ -16,6 +16,7 @@ import {
 } from "../../domain/protocol/server-protocol.js";
 import { HERMES_LIVE_PROTOCOL_VERSION } from "../../domain/protocol/version.js";
 import { realtimeClientCapabilities } from "./client-capabilities.js";
+import { HERMES_TARGETED_APPROVAL_FEATURE } from "./hermes-approval-compatibility.js";
 import type { ClientConnectionPort, ClientInboundFrame } from "./ports/client-connection.port.js";
 import type { HermesRunsPort } from "./ports/hermes-runs.port.js";
 import {
@@ -46,6 +47,7 @@ const MAX_PROCESSED_PROVIDER_TOOL_CALLS = 256;
 const MAX_PROVIDER_TOOL_CALL_ARGS_BYTES = 100_000;
 const MAX_PROVIDER_TOOL_RESPONSE_BYTES = 256_000;
 const MAX_CACHED_PROVIDER_TOOL_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_LEGACY_APPROVALS_RESOLVED = 10_000;
 
 export interface LiveGatewaySessionDeps {
   config: AppConfig;
@@ -57,6 +59,7 @@ export interface LiveGatewaySessionDeps {
 interface PendingApprovalEnvelope {
   runId: string;
   approval: HermesApprovalDetails;
+  sourceApprovalId: string;
   sourceKey: string;
   semanticFingerprint: string;
 }
@@ -84,6 +87,7 @@ export class LiveGatewaySession {
   private starting = false;
   private closing = false;
   private sessionKey?: string;
+  private hermesApprovalResponseByIdSupported = false;
   private profileId = "default";
   private userLabel = "anonymous";
   private activeRunId: string | undefined;
@@ -214,6 +218,8 @@ export class LiveGatewaySession {
         : this.deps.config.server.defaultUserLabel;
       this.sessionKey = makeSessionKey(this.deps.config.server.sessionPrefix, this.profileId, this.userLabel);
       const capabilities = await this.deps.hermes.assertRunsSupported(this.abort.signal);
+      this.hermesApprovalResponseByIdSupported =
+        capabilities.features?.[HERMES_TARGETED_APPROVAL_FEATURE] === true;
       startupPhase = "realtime";
       const pendingEvents: LiveModelEvent[] = [];
       let pendingEventBytes = 0;
@@ -966,7 +972,10 @@ export class LiveGatewaySession {
 
       for await (const event of this.deps.hermes.streamRunEvents(runId, this.hermesRequestOptions())) {
         assertHermesRunEventCorrelation(event, runId);
-        this.forwardRunEvent(runId, event);
+        await this.forwardRunEvent(runId, event);
+        if (this.closing || this.abort.signal.aborted) {
+          return { ok: false, run_id: runId, status: "cancelled", output: transcript };
+        }
         if (event.event === "message.delta" && typeof event.delta === "string") {
           transcript = appendBoundedText(transcript, event.delta, MAX_HERMES_OUTPUT_CHARS);
         } else if (event.event === "run.completed") {
@@ -1096,7 +1105,7 @@ export class LiveGatewaySession {
     this.handleLiveModelEvent(deferred);
   }
 
-  private forwardRunEvent(runId: string, event: HermesRunEvent): void {
+  private async forwardRunEvent(runId: string, event: HermesRunEvent): Promise<void> {
     if (
       event.event === "approval.request" &&
       (
@@ -1112,6 +1121,13 @@ export class LiveGatewaySession {
       this.send({ type: "run.event", runId, event: publicEvent });
     }
     if (event.event === "approval.request") {
+      if (
+        !this.hermesApprovalResponseByIdSupported ||
+        !approvalSourceId(event.approval_id)
+      ) {
+        await this.denyUncorrelatedHermesApprovals(runId);
+        return;
+      }
       const envelope = this.trackPendingApproval(
         runId,
         event,
@@ -1125,6 +1141,76 @@ export class LiveGatewaySession {
     }
   }
 
+  private async denyUncorrelatedHermesApprovals(runId: string): Promise<void> {
+    // Crossing this boundary makes every outstanding approval for the run
+    // unsafe to answer. Quarantine synchronously, before the first await, so a
+    // client response cannot race the legacy deny-all request.
+    this.stopIntentRunIds.add(runId);
+    this.clearPendingApprovals(runId);
+    let denialConfirmed = false;
+    try {
+      const result = await withAbortAndDeadline(
+        this.deps.hermes.submitApproval(runId, "deny", {
+          resolveAll: true,
+          ...this.hermesRequestOptions(),
+        }),
+        this.abort.signal,
+        this.deps.config.hermes.timeoutMs,
+        "Hermes legacy approval denial did not settle before the safety deadline.",
+      );
+      if (!isRecordValue(result)) {
+        throw new Error("Hermes did not confirm fail-closed denial of its uncorrelated approval queue.");
+      }
+      if (
+        typeof result.resolved !== "number" ||
+        !Number.isInteger(result.resolved) ||
+        result.resolved < 1 ||
+        result.resolved > MAX_LEGACY_APPROVALS_RESOLVED ||
+        result.run_id !== runId ||
+        (result.runId !== undefined && result.runId !== runId) ||
+        result.choice !== "deny"
+      ) {
+        throw new Error("Hermes did not confirm fail-closed denial of its uncorrelated approval queue.");
+      }
+      denialConfirmed = true;
+      this.deps.logger.warn("denied uncorrelated Hermes approval request", {
+        sessionId: this.id,
+        runId,
+        resolved: result.resolved,
+      });
+    } catch (error) {
+      if (this.closing || this.abort.signal.aborted) return;
+      this.deps.logger.error("failed to confirm denial of uncorrelated Hermes approval request", {
+        sessionId: this.id,
+        runId,
+        error: errorToMessage(error),
+      });
+    }
+
+    if (this.closing || this.abort.signal.aborted) return;
+    this.fail(
+      "hermes_approval_identity_unsupported",
+      new Error(
+        denialConfirmed
+          ? "Interactive approval is unavailable because this Hermes version cannot correlate requests safely. The pending queue was denied, the run is being stopped, and the voice session is closing. Verify the run in Hermes before retrying."
+          : "Interactive approval is unavailable because this Hermes version cannot correlate requests safely, and denial could not be confirmed. The run is being stopped and the voice session is closing. Verify the run in Hermes before retrying.",
+      ),
+      false,
+    );
+    if (!denialConfirmed) this.sessionShutdownUnconfirmed = true;
+    try {
+      await this.stopOwnedRunForClose(runId);
+    } catch (error) {
+      this.sessionShutdownUnconfirmed = true;
+      this.deps.logger.error("failed to stop run after uncorrelated Hermes approval request", {
+        sessionId: this.id,
+        runId,
+        error: errorToMessage(error),
+      });
+    }
+    await this.closeClientAfterCleanup(1011, "Hermes approval identity unsupported");
+  }
+
   private async handleApprovalResponse(message: Extract<ClientMessage, { type: "approval.respond" }>): Promise<void> {
     if (message.resolveAll === true) {
       throw new Error("Bulk approval resolution is not supported; answer each approval in FIFO order.");
@@ -1136,15 +1222,14 @@ export class LiveGatewaySession {
       if (processed.fingerprint !== fingerprint) {
         throw new Error("Approval response request id was already used for different approval data.");
       }
+      if (this.approvalResponsesBlocked(processed.response.runId)) {
+        throw new Error("The Hermes run is stopping and no longer accepts approval responses.");
+      }
       this.send(processed.response);
       return;
     }
     const runId = this.resolveActiveRunId(message.runId);
-    if (
-      this.stopIntentRunIds.has(runId) ||
-      this.stopRequestedRunIds.has(runId) ||
-      this.stopRunOperations.has(runId)
-    ) {
+    if (this.approvalResponsesBlocked(runId)) {
       throw new Error("The Hermes run is stopping and no longer accepts approval responses.");
     }
     if (this.approvalSubmissionInFlight) {
@@ -1172,16 +1257,32 @@ export class LiveGatewaySession {
     let result: Awaited<ReturnType<HermesRunsPort["submitApproval"]>>;
     try {
       result = await withAbortAndDeadline(
-        this.deps.hermes.submitApproval(runId, message.choice, this.hermesRequestOptions()),
+        this.deps.hermes.submitApproval(runId, message.choice, {
+          approvalId: pending.sourceApprovalId,
+          ...this.hermesRequestOptions(),
+        }),
         this.abort.signal,
         this.deps.config.hermes.timeoutMs,
         "Hermes approval submission did not settle before the safety deadline.",
       );
     } catch (error) {
+      if (this.approvalResponsesBlocked(runId)) {
+        this.clearPendingApprovals(runId);
+        return;
+      }
       await this.failClosedApprovalSubmission(message, error);
       return;
     } finally {
       this.approvalSubmissionInFlight = false;
+    }
+
+    // A stop or uncorrelated approval may have quarantined the run while the
+    // targeted mutation was in flight. The upstream result may be real, but it
+    // must not be surfaced or cached as a positive acknowledgement after that
+    // safety boundary.
+    if (this.approvalResponsesBlocked(runId)) {
+      this.clearPendingApprovals(runId);
+      return;
     }
 
     if (!isRecordValue(result)) {
@@ -1199,9 +1300,13 @@ export class LiveGatewaySession {
       return;
     }
     if (
-      (result.run_id !== undefined && (!isBoundedRunId(result.run_id) || result.run_id !== runId)) ||
+      !isBoundedRunId(result.run_id) ||
+      result.run_id !== runId ||
       (result.runId !== undefined && (!isBoundedRunId(result.runId) || result.runId !== runId)) ||
-      (result.choice !== undefined && result.choice !== message.choice)
+      !approvalSourceKey(result.approval_id ?? result.approvalId) ||
+      (result.approval_id !== undefined && result.approvalId !== undefined && result.approval_id !== result.approvalId) ||
+      (result.approval_id ?? result.approvalId) !== pending.sourceApprovalId ||
+      result.choice !== message.choice
     ) {
       await this.failClosedApprovalSubmission(
         message,
@@ -1241,6 +1346,14 @@ export class LiveGatewaySession {
     };
     this.rememberApprovalResponse(message.id, fingerprint, response);
     this.send(response);
+  }
+
+  private approvalResponsesBlocked(runId: string): boolean {
+    return this.closing ||
+      this.abort.signal.aborted ||
+      this.stopIntentRunIds.has(runId) ||
+      this.stopRequestedRunIds.has(runId) ||
+      this.stopRunOperations.has(runId);
   }
 
   private async failClosedApprovalSubmission(
@@ -1322,21 +1435,18 @@ export class LiveGatewaySession {
     let operation!: Promise<Awaited<ReturnType<HermesRunsPort["stopRun"]>>>;
     operation = (async () => {
       try {
-        const rawResult = await this.deps.hermes.stopRun(runId, options);
+        const rawResult: unknown = await this.deps.hermes.stopRun(runId, options);
         if (!isRecordValue(rawResult)) {
           throw new Error("Hermes returned a malformed stop response.");
         }
-        assertHermesResponseRunCorrelation(rawResult, runId, "stop");
         if (
-          rawResult.status !== undefined &&
-          (typeof rawResult.status !== "string" || rawResult.status.length === 0 || rawResult.status.length > 128)
+          rawResult.run_id !== runId ||
+          rawResult.status !== "stopping" ||
+          (rawResult.runId !== undefined && rawResult.runId !== runId)
         ) {
-          throw new Error("Hermes returned an invalid stop status.");
+          throw new Error("Hermes returned an invalid stop confirmation.");
         }
-        const result = {
-          ...(typeof rawResult.run_id === "string" ? { run_id: rawResult.run_id } : {}),
-          ...(typeof rawResult.status === "string" ? { status: rawResult.status } : {}),
-        };
+        const result = { run_id: runId, status: "stopping" as const };
         this.stopRequestedRunIds.add(runId);
         return result;
       } finally {
@@ -1372,9 +1482,13 @@ export class LiveGatewaySession {
     event: HermesRunEvent,
     publicEvent: HermesRunEvent,
   ): Extract<ServerMessage, { type: "approval.request" }> | undefined {
-    const sourceKey = approvalSourceKey(event.approval_id);
-    if (!sourceKey) {
+    const sourceApprovalId = approvalSourceId(event.approval_id);
+    if (!sourceApprovalId) {
       throw new Error("Hermes approval request did not include a bounded approval_id.");
+    }
+    const sourceKey = approvalSourceKey(sourceApprovalId);
+    if (!sourceKey) {
+      throw new Error("Hermes approval request did not include a valid approval_id.");
     }
     const projectedApproval = publicApprovalDetails(event, "pending");
     const semanticFingerprint = approvalSemanticFingerprint(projectedApproval);
@@ -1411,6 +1525,7 @@ export class LiveGatewaySession {
     const pending: PendingApprovalEnvelope = {
       runId,
       approval,
+      sourceApprovalId,
       sourceKey,
       semanticFingerprint,
     };
@@ -1759,6 +1874,7 @@ function publicHermesCapabilities(
     for (const key of ["run_submission", "run_events_sse", "run_stop", "run_approval_response"]) {
       if (typeof source[key] === "boolean") projected[key] = source[key];
     }
+    projected[HERMES_TARGETED_APPROVAL_FEATURE] = source[HERMES_TARGETED_APPROVAL_FEATURE] === true;
   }
   return {
     ...(model ? { model } : {}),
@@ -1821,9 +1937,7 @@ function publicApprovalDetails(event: HermesRunEvent, approvalId: string): Herme
   const patternKey = displayComplete ? patterns.values[0] : undefined;
   const patternKeys = displayComplete && patterns.values.length > 1 ? patterns.values.slice(1) : undefined;
   const hasInspectablePermanentPattern = displayComplete && patterns.exact && patterns.values.length > 0;
-  const fallbackChoices: Array<"once" | "session" | "always" | "deny"> = !displayComplete
-    ? ["deny"]
-    : ["once", "deny"];
+  const fallbackChoices: Array<"once" | "session" | "always" | "deny"> = ["deny"];
   const allowedChoices = ["once", "session", "always", "deny"] as const;
   const suppliedChoices: Array<typeof allowedChoices[number]> = event.choices === undefined
     ? fallbackChoices
@@ -1929,8 +2043,14 @@ function canApprovePermanently(approval: HermesApprovalDetails): boolean {
 }
 
 function approvalSourceKey(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length === 0 || value.length > 4_000) return undefined;
-  return createHash("sha256").update(value).digest("hex");
+  const sourceId = approvalSourceId(value);
+  return sourceId ? createHash("sha256").update(sourceId).digest("hex") : undefined;
+}
+
+function approvalSourceId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : undefined;
 }
 
 function approvalResponseFingerprint(

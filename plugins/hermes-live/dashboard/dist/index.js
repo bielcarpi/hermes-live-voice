@@ -71,6 +71,70 @@
     return String(approval.approvalId || request.runId || "approval") + ":" + index;
   }
 
+  function approvalTitleId(request, index) {
+    const approval = request && request.approval ? request.approval : {};
+    const key = String(approval.approvalId || request.runId || "approval")
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .slice(0, 64);
+    return "hlv-approval-title-" + key + "-" + index;
+  }
+
+  function supportsTargetedApprovalResponses(session) {
+    return Boolean(
+      session &&
+      session.hermes &&
+      session.hermes.capabilities &&
+      session.hermes.capabilities.run_approval_response_by_id === true,
+    );
+  }
+
+  function approvalSupportPresentation(session) {
+    if (!session) return {
+      value: "Negotiated on connect",
+      detail: "Approval controls require Hermes to target responses by approval ID.",
+    };
+    if (supportsTargetedApprovalResponses(session)) return {
+      value: "Available",
+      detail: "Responses are correlated to a stable Hermes approval ID.",
+    };
+    return {
+      value: "Fail closed",
+      detail: "This Hermes version cannot safely target approval responses; approval-requiring runs are denied where possible, stopped, and disconnected for verification.",
+    };
+  }
+
+  function microphoneActiveGuidance(turnDetection) {
+    return turnDetection === "disabled"
+      ? "Push to talk is active. Speak, then stop the microphone to submit this turn."
+      : "Speak naturally. You can interrupt Hermes at any time.";
+  }
+
+  async function disconnectSession(audio, client, onAudioError) {
+    void Promise.resolve()
+      .then(function () {
+        return audio ? audio.stopMicrophone({ endTurn: false }) : undefined;
+      })
+      .catch(function (error) {
+        if (typeof onAudioError !== "function") return;
+        try {
+          onAudioError(error);
+        } catch {
+          // Protocol disconnect must remain independent of local UI reporting.
+        }
+      });
+    await client.disconnect("user disconnected from dashboard");
+  }
+
+  function connectionClosedNotice(event, fatalNotice) {
+    if (fatalNotice) return fatalNotice;
+    return {
+      tone: event && !event.clean ? "warning" : "neutral",
+      text: event && !event.clean
+        ? "Live Voice connection was lost. Check the gateway and reconnect."
+        : "Live Voice disconnected.",
+    };
+  }
+
   function approvalPatternKeys(approval) {
     const values = [];
     const primary = inspectablePattern(approval.patternKey);
@@ -198,6 +262,7 @@
     const transcriptSequence = useRef(0);
     const activitySequence = useRef(0);
     const transcriptEndRef = useRef(null);
+    const fatalNoticeRef = useRef(null);
 
     const addActivity = useCallback(function (label, detail, tone) {
       const entry = {
@@ -417,10 +482,14 @@
               if (active) {
                 setBusyAction("");
                 setConfirmPermanent("");
-                setNotice({
+                const nextNotice = {
                   tone: "danger",
                   text: friendlyError(event.error, "The Live Voice session reported an error."),
-                });
+                };
+                if (event.detail && event.detail.type === "session.error" && event.detail.recoverable === false) {
+                  fatalNoticeRef.current = nextNotice;
+                }
+                setNotice(nextNotice);
               }
             }),
             client.on("close", function (event) {
@@ -432,12 +501,7 @@
               setMicrophone(initialMicrophone());
               setPlayback(initialPlayback());
               setConfirmDisconnect(false);
-              setNotice({
-                tone: event && !event.clean ? "warning" : "neutral",
-                text: event && !event.clean
-                  ? "Live Voice connection was lost. Check the gateway and reconnect."
-                  : "Live Voice disconnected.",
-              });
+              setNotice(connectionClosedNotice(event, fatalNoticeRef.current));
             }),
           );
         })
@@ -512,6 +576,7 @@
     function connect() {
       const client = clientRef.current;
       if (!client) return;
+      fatalNoticeRef.current = null;
       primePlaybackFromGesture();
       runAction("connect", function () {
         return client.connect().then(function () {
@@ -533,8 +598,13 @@
       setConfirmDisconnect(false);
       runAction("disconnect", function () {
         const audio = audioRef.current;
-        return Promise.resolve(audio ? audio.stopMicrophone({ endTurn: false }) : undefined)
-          .then(function () { return client.disconnect("user disconnected from dashboard"); })
+        return disconnectSession(audio, client, function (error) {
+          addActivity(
+            "Microphone cleanup incomplete",
+            friendlyError(error, "Browser audio cleanup did not finish."),
+            "warning",
+          );
+        })
           .then(function () {
             setNotice({
               tone: "neutral",
@@ -632,8 +702,8 @@
     const gatewayState = gatewayPresentation(gateway);
     const connected = snapshot.connection === "ready";
     const activeRun = snapshot.run.state !== "idle";
-    const session = snapshot.session || {};
-    const realtime = session.realtime || {};
+    const session = snapshot.session;
+    const realtime = session && session.realtime ? session.realtime : {};
     const audioCapabilities = realtime.audio || gateway.audio || {};
     const inputAudio = audioCapabilities.input || {};
     const outputAudio = audioCapabilities.output || {};
@@ -641,8 +711,12 @@
     const browserMicSupported = inputAudio.enabled !== false && (!inputMime || /^audio\/pcm(?:;|$)/i.test(inputMime));
     const provider = realtime.provider || gateway.provider || "\u2014";
     const model = realtime.model || gateway.model || "\u2014";
-    const protocolVersion = session.protocolVersion || gateway.protocolVersion || "\u2014";
-    const pendingApprovals = Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals : [];
+    const protocolVersion = session && session.protocolVersion ? session.protocolVersion : gateway.protocolVersion || "\u2014";
+    const approvalSupport = approvalSupportPresentation(session);
+    const approvalResponsesSupported = supportsTargetedApprovalResponses(session);
+    const pendingApprovals = approvalResponsesSupported && Array.isArray(snapshot.pendingApprovals)
+      ? snapshot.pendingApprovals
+      : [];
 
     function StatusPill(props) {
       return h("span", { className: "hlv-pill hlv-pill--" + (props.tone || "neutral") },
@@ -666,6 +740,7 @@
           (props.variant ? " hlv-button--" + props.variant : "") +
           (props.wide ? " hlv-button--wide" : ""),
         disabled: Boolean(props.disabled),
+        autoFocus: Boolean(props.autoFocus),
         onClick: props.onClick,
         title: props.title,
         "aria-pressed": props.pressed === undefined ? undefined : Boolean(props.pressed),
@@ -690,14 +765,20 @@
         });
       if (!choices.includes("deny")) choices.push("deny");
       const key = approvalKey(request, index);
+      const titleId = approvalTitleId(request, index);
       const isBusy = busyAction === "approval:" + key;
       const permanentConfirmation = isActionable && confirmPermanent === key;
-      return h("article", { className: "hlv-approval", key: key },
+      return h("article", {
+        className: "hlv-approval",
+        key: key,
+        role: "region",
+        "aria-labelledby": titleId,
+      },
         h("div", { className: "hlv-approval__header" },
           h("span", { className: "hlv-approval__shield", "aria-hidden": "true" }, "!"),
           h("div", null,
             h("span", { className: "hlv-eyebrow" }, isActionable ? "Approval required" : "Approval queued"),
-            h("h3", null, approval.description || "Hermes wants permission to continue"),
+            h("h3", { id: titleId }, approval.description || "Hermes wants permission to continue"),
           ),
         ),
         approval.command ? h("pre", { className: "hlv-command" }, h("code", null, approval.command)) : null,
@@ -728,6 +809,7 @@
                 h(ControlButton, {
                   variant: "danger",
                   disabled: isBusy,
+                  autoFocus: true,
                   onClick: function () { respondToApproval(request, index, "always", true); },
                 }, isBusy ? "Sending\u2026" : "Confirm always allow"),
                 h(ControlButton, {
@@ -738,11 +820,12 @@
               ),
             )
           : h("div", { className: "hlv-button-row hlv-approval__actions" },
-              choices.map(function (choice) {
+              choices.map(function (choice, choiceIndex) {
                 return h(ControlButton, {
                   key: choice,
                   variant: choice === "deny" ? "danger" : choice === "always" ? "warning" : "secondary",
                   disabled: isBusy,
+                  autoFocus: isActionable && choiceIndex === 0,
                   onClick: function () { respondToApproval(request, index, choice, false); },
                 }, isBusy ? "Sending\u2026" : approvalChoiceLabel(choice));
               }),
@@ -759,7 +842,7 @@
           ),
           h("h1", null, "Talk to Hermes. Stay in control."),
           h("p", null,
-            "A realtime voice workspace for interruptible conversation, visible task progress, and explicit approvals.",
+            "A realtime voice workspace for interruptible conversation, visible task progress, and fail-closed task controls.",
           ),
         ),
         h("div", { className: "hlv-hero__status", "aria-live": "polite" },
@@ -794,7 +877,12 @@
         ),
       ) : null,
 
-      pendingApprovals.length ? h("section", { className: "hlv-approval-stack", "aria-label": "Pending approvals" },
+      pendingApprovals.length ? h("section", {
+        className: "hlv-approval-stack",
+        "aria-label": "Pending approvals",
+        "aria-live": "assertive",
+        "aria-relevant": "additions removals",
+      },
         pendingApprovals.map(ApprovalCard),
       ) : null,
 
@@ -824,7 +912,7 @@
               connected ? "Connected and ready" : "Voice session is offline",
             ),
             h("span", null,
-              microphone.active ? "Speak naturally. You can interrupt Hermes at any time." :
+              microphone.active ? microphoneActiveGuidance(audioCapabilities.turnDetection) :
               playback.active ? "Use Interrupt Speech to cut off this response without stopping the task." :
               connected ? "Start the microphone or type a message below." : gatewayState.detail,
             ),
@@ -852,7 +940,9 @@
                   disabled: busyAction === "microphone",
                   icon: "\u25a0",
                   onClick: stopMicrophone,
-                }, busyAction === "microphone" ? "Stopping\u2026" : "Stop microphone")
+                }, busyAction === "microphone"
+                  ? "Stopping\u2026"
+                  : audioCapabilities.turnDetection === "disabled" ? "Stop & send turn" : "Stop microphone")
               : h(ControlButton, {
                   variant: "secondary",
                   pressed: false,
@@ -880,6 +970,12 @@
             inputAudio.enabled === false
               ? "This provider session does not accept microphone audio. Text input remains available."
               : "Browser capture supports PCM16 input, but this session negotiated " + inputMime + ". Text input remains available.",
+          ) : null,
+          connected && !approvalResponsesSupported ? h("p", {
+            className: "hlv-inline-warning",
+            role: "status",
+          },
+            "Approval controls are unavailable with this Hermes version. Approval-requiring runs are denied where possible, stopped, and disconnected for verification.",
           ) : null,
           h("form", { className: "hlv-composer", onSubmit: sendText },
             h("label", { htmlFor: "hlv-text-input" }, "Type to Hermes"),
@@ -938,6 +1034,11 @@
                 label: "Audio output",
                 value: outputAudio.enabled === false ? "Disabled" : outputAudio.mimeType || "Negotiated on connect",
                 detail: audioCapabilities.turnDetection ? titleCase(audioCapabilities.turnDetection) : "",
+              }),
+              h(Metric, {
+                label: "Approvals",
+                value: approvalSupport.value,
+                detail: approvalSupport.detail,
               }),
             ),
             h("p", { className: "hlv-security-note" },

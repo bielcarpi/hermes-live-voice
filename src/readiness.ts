@@ -5,6 +5,10 @@ import {
   type AppConfig,
 } from "./config.js";
 import type { HermesRunsPort } from "./application/live-gateway/ports/hermes-runs.port.js";
+import {
+  hermesApprovalCompatibility,
+  unnegotiatedHermesApprovalCompatibility,
+} from "./application/live-gateway/hermes-approval-compatibility.js";
 import { HermesClient } from "./adapters/outbound/hermes/hermes-runs.client.js";
 import { errorToMessage } from "./domain/error-message.js";
 
@@ -57,7 +61,10 @@ function checkGatewayConfig(config: AppConfig): ReadinessSection {
 
 async function checkHermesConfig(config: AppConfig, options: BuildReadinessReportOptions): Promise<ReadinessSection> {
   const hermes = options.hermes ?? new HermesClient(config.hermes);
-  const base = { baseUrl: hermes.baseUrl ?? config.hermes.baseUrl };
+  const base = {
+    baseUrl: hermes.baseUrl ?? config.hermes.baseUrl,
+    approvals: unnegotiatedHermesApprovalCompatibility(),
+  };
   if (options.requireHermesApiKey ?? true) {
     try {
       assertHermesApiConfig(config);
@@ -73,6 +80,7 @@ async function checkHermesConfig(config: AppConfig, options: BuildReadinessRepor
       ...base,
       ...(capabilities.model ? { model: capabilities.model } : {}),
       ...(capabilities.features ? { features: capabilities.features } : {}),
+      approvals: hermesApprovalCompatibility(capabilities),
     };
   } catch (error) {
     return { ok: false, ...base, error: errorToMessage(error) };

@@ -175,13 +175,52 @@ describe("Gemini Live adapter helpers", () => {
       sendRealtimeInput: vi.fn(async () => undefined),
       sendClientContent: vi.fn(async () => undefined),
     };
-    const session = new GeminiLiveSession(sdkSession);
+    const session = new GeminiLiveSession(sdkSession, confirmedClose());
 
     await session.sendText("hello");
 
     expect(buildGeminiRealtimeTextInput("hello")).toEqual({ text: "hello" });
     expect(sdkSession.sendRealtimeInput).toHaveBeenCalledWith({ text: "hello" });
     expect(sdkSession.sendClientContent).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm Gemini closure until the SDK reports onclose", async () => {
+    const closed = deferred<void>();
+    let isClosed = false;
+    const closeConfirmation = {
+      promise: closed.promise,
+      isClosed: () => isClosed,
+      confirm: () => {
+        isClosed = true;
+        closed.resolve();
+      },
+    };
+    const sdkSession = { close: vi.fn() };
+    const session = new GeminiLiveSession(sdkSession, closeConfirmation, 1_000);
+    let settled = false;
+
+    const firstClose = session.close().then(() => {
+      settled = true;
+    });
+    const secondClose = session.close();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(sdkSession.close).toHaveBeenCalledTimes(1);
+    closeConfirmation.confirm();
+    await Promise.all([firstClose, secondClose]);
+    expect(settled).toBe(true);
+  });
+
+  it("rejects Gemini closure when the SDK never confirms onclose", async () => {
+    const neverClosed = new Promise<void>(() => undefined);
+    const session = new GeminiLiveSession(
+      { close: vi.fn() },
+      { promise: neverClosed, isClosed: () => false, confirm: () => undefined },
+      10,
+    );
+
+    await expect(session.close()).rejects.toThrow("did not confirm closure within 10ms");
   });
 
   it("builds Gemini tool responses with the function call id", () => {
@@ -219,4 +258,18 @@ function testConnectParams(): Parameters<GeminiLiveAdapter["connect"]>[0] {
     systemInstruction: "test",
     callbacks: { onEvent: () => undefined },
   };
+}
+
+function confirmedClose() {
+  return { promise: Promise.resolve(), isClosed: () => true, confirm: () => undefined };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }

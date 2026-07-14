@@ -39,7 +39,7 @@ The Dashboard browser never receives the gateway credential or upstream gateway 
 - **Interrupt speech** cancels the current spoken response while leaving an active Hermes task running.
 - **Stop Hermes task** requests cancellation of the active tool-using run while leaving the voice session connected. Keep watching until Hermes reports a terminal state.
 - **Disconnect** requests cleanup of the provider session and any active Hermes task, then waits for gateway confirmation. If confirmation fails or the page is closed before it arrives, verify the task directly in Hermes.
-- Permanent approval choices require a second confirmation and are shown only when Hermes provides an inspectable permission pattern.
+- Approval buttons appear only when Hermes advertises targeted response IDs. An older uncorrelated request triggers deny/stop/session-close containment; permanent targeted choices additionally require an inspectable permission pattern and a second confirmation.
 
 For a terminal-only conversation on the same machine, Hermes' built-in Voice Mode remains the shortest path. Hermes Live Voice is the realtime gateway and client surface for the Dashboard, browsers, mobile or desktop apps, and other custom clients.
 

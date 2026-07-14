@@ -6,10 +6,10 @@ Hermes Live Voice is a gateway and client protocol, not one fixed application. T
 
 | Surface | Current support | Intended use |
 | --- | --- | --- |
-| Hermes Dashboard + Live Voice plugin | First-class | Browser voice, text fallback, transcript, task activity, interruption, run stop, and approvals. |
+| Hermes Dashboard + Live Voice plugin | First-class | Browser voice, text fallback, transcript, task activity, interruption, run stop, and negotiated approval status/controls. |
 | Bundled browser demo | First-class development tool | Local gateway setup and protocol troubleshooting. |
 | `hermes-live-voice/browser` | First-class integration API | Custom/community browser, Electron, mobile-web, React, Vue, Svelte, or vanilla clients. |
-| `hermes-live terminal` | First-class text control | SSH, headless hosts, remote operations, transcripts, task events, approvals, interruption, and stop. |
+| `hermes-live terminal` | First-class text control | SSH, headless hosts, remote operations, transcripts, task events, negotiated approval status/controls, interruption, and stop. |
 | Hermes Ctrl+B Voice Mode | Official Hermes feature | The shortest local terminal microphone path; not replaced by this project. |
 | Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement Hermes Live realtime audio, lifecycle, task, or approval events by itself. |
 
@@ -52,7 +52,7 @@ HERMES_LIVE_AUTH_TOKEN=your-random-gateway-token
 
 `HERMES_LIVE_URL` must be a credential-free HTTP(S) origin. The Dashboard backend rejects user information, paths, query parameters, fragments, and WS(S) schemes. The token is a separate server-side value.
 
-Hermes Live Voice v0.3.0 was manually exercised in the official `nousresearch/hermes-agent:latest` Docker image running Hermes Agent v0.18.2. Compatibility is also guarded by plugin manifest, Python backend, generated-asset, browser-client, package, and protocol tests.
+Hermes Live Voice v0.3.1 was manually exercised in the official `nousresearch/hermes-agent:latest` Docker image running Hermes Agent v0.18.2. Compatibility is also guarded by captured upstream fixtures, plugin manifest, Python backend, generated-asset, browser-client, package, and protocol tests.
 
 ## Custom Or Community Browser UI
 
@@ -120,6 +120,7 @@ Do not map both actions to one ambiguous stop button.
 
 Treat approvals as high-consequence controls:
 
+- first require `session.ready.hermes.capabilities.run_approval_response_by_id === true`; otherwise explain that an approval-requiring run will be denied where possible, stopped, and the voice session closed, and render no decision buttons;
 - show the command/description and inspectable pattern supplied by Hermes;
 - offer only the `choices` in the structured approval envelope;
 - show permanent approval only when `allowPermanent` is true and `patternKey` or `patternKeys` is present;
@@ -128,6 +129,8 @@ Treat approvals as high-consequence controls:
 - remove only the exact `runId` + `approvalId` acknowledged by `approval.responded` (protocol v2 always confirms `resolved: 1`);
 - disable duplicate decisions while a response is in flight;
 - keep the approval attached to the active run shown in the UI.
+
+Hermes versions without stable targeted approval IDs are not an interactive-UI case. The gateway attempts to deny their uncorrelated queue, stops the run, and emits fatal `session.error` code `hermes_approval_identity_unsupported` before closing the voice session. Keep its operator-verification message visible after the socket closes. Do not reconstruct a local approval card from the underlying `run.event`, and do not offer any FIFO-based fallback.
 
 Submit the exact gateway-owned identity; do not derive it from the upstream event:
 
@@ -175,7 +178,7 @@ HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
 hermes-live terminal
 ```
 
-The terminal shows transcript, provider response state, Hermes task progress, approvals, and separate `/interrupt` and `/stop` commands. It intentionally has no native microphone/audio dependency stack.
+The terminal shows transcript, provider response state, Hermes task progress, negotiated approval warnings or requests, and separate `/interrupt` and `/stop` commands. It intentionally has no native microphone/audio dependency stack.
 
 ## Integration Verification
 
@@ -187,7 +190,7 @@ Before calling a UI integration ready:
 4. Test microphone permission granted and denied.
 5. Verify provider audio playback and barge-in.
 6. Start a long Hermes tool run, stop it, and confirm the voice session remains connected.
-7. Exercise allow, deny, and permanent approval confirmation with an inspectable pattern.
+7. With a targeted-capable Hermes fixture, exercise allow, deny, and permanent confirmation with an inspectable pattern; with current legacy Hermes, verify deny/stop/session-close containment, the fatal warning, and absence of buttons.
 8. Disconnect/reconnect and navigate away during an active run.
 9. Test desktop, narrow mobile, keyboard-only, reduced-motion, and screen-reader behavior.
 10. Inspect browser, Dashboard, gateway, and Hermes logs for errors and credential disclosure.

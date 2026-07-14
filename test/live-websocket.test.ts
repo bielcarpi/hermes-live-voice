@@ -763,9 +763,9 @@ describe("live gateway WebSocket", () => {
         await approvalSubmitted.promise;
         yield { event: "run.completed", output: "Approved." };
       },
-      submitApproval: vi.fn(async () => {
+      submitApproval: vi.fn(async (_runId, choice, options) => {
         approvalSubmitted.resolve();
-        return { resolved: 1 };
+        return confirmedApproval(options, choice);
       }),
     });
     const server = await startServer({
@@ -807,9 +807,343 @@ describe("live gateway WebSocket", () => {
     });
     await expect(completed).resolves.toMatchObject({ output: "Approved." });
     expect(hermes.submitApproval).toHaveBeenCalledWith("run_ws", "once", {
+      approvalId: "approval_1",
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
+  });
+
+  it.each([
+    ["a legacy capability set and no id", false, undefined],
+    ["a legacy capability set and an apparent id", false, "legacy_ignored"],
+    ["targeted capability without an event id", true, undefined],
+  ])("denies and terminates uncorrelated approval runs fail-closed for %s", async (_label, targeted, approvalId) => {
+    const submitApproval = vi.fn(async (runId: string, choice: ApprovalChoice) => ({
+      run_id: runId,
+      choice,
+      resolved: 1,
+    }));
+    const hermes = fakeHermes({
+      assertRunsSupported: vi.fn(async () => ({
+        model: "hermes-agent",
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+          run_approval_response_by_id: targeted,
+        },
+      })),
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          ...(approvalId ? { approval_id: approvalId } : {}),
+          command: "git push origin main",
+          choices: ["once", "deny"],
+        };
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      submitApproval,
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Push safely" });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_approval_identity_unsupported",
+      recoverable: false,
+      message: expect.stringContaining("the run is being stopped"),
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(observed.filter((message) => message.type === "approval.request")).toHaveLength(0);
+    expect(submitApproval).toHaveBeenCalledWith("run_ws", "deny", {
+      resolveAll: true,
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+  });
+
+  it("stops even after a confirmed bulk denial because legacy events cannot be correlated", async () => {
+    const submitApproval = vi.fn()
+      .mockResolvedValueOnce({ run_id: "run_ws", choice: "deny", resolved: 2 });
+    const hermes = fakeHermes({
+      assertRunsSupported: vi.fn(async () => ({
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+          run_approval_response_by_id: true,
+        },
+      })),
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        yield { event: "approval.request", run_id: "run_ws", command: "first" };
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      submitApproval,
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Trigger both" });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_approval_identity_unsupported",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(submitApproval).toHaveBeenCalledTimes(1);
+    expect(observed.filter((message) => message.type === "approval.request")).toHaveLength(0);
+  });
+
+  it("contains the run when a legacy denial loses a race and Hermes reports no pending approval", async () => {
+    const hermes = fakeHermes({
+      assertRunsSupported: vi.fn(async () => ({
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+          run_approval_response_by_id: false,
+        },
+      })),
+      streamEvents: async function* (_runId: string, options?: { signal?: AbortSignal }) {
+        yield { event: "approval.request", run_id: "run_ws", command: "publish release" };
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      submitApproval: vi.fn(async () => {
+        throw new Error('Hermes request failed: 409 {"error":{"code":"approval_not_pending"}}');
+      }),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Publish safely" });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_approval_identity_unsupported",
+      recoverable: false,
+      message: expect.stringContaining("denial could not be confirmed"),
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.submitApproval).toHaveBeenCalledTimes(1);
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+  });
+
+  it("does not process buffered positive or terminal events after uncorrelated approval containment", async () => {
+    const pulledAfterBoundary = vi.fn();
+    const hermes = fakeHermes({
+      assertRunsSupported: vi.fn(async () => ({
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+          run_approval_response_by_id: false,
+        },
+      })),
+      streamEvents: async function* () {
+        yield { event: "approval.request", run_id: "run_ws", command: "publish release" };
+        pulledAfterBoundary();
+        yield { event: "approval.responded", run_id: "run_ws", choice: "once", resolved: 1 };
+        yield { event: "run.completed", run_id: "run_ws", output: "must not be processed" };
+      },
+      submitApproval: vi.fn(async () => ({ run_id: "run_ws", choice: "deny", resolved: 1 })),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Publish safely" });
+
+    await expect(failed).resolves.toMatchObject({ code: "hermes_approval_identity_unsupported" });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(observed.some((message) => message.type === "run.completed")).toBe(false);
+    expect(observed.some(
+      (message) => message.type === "run.event" && message.event?.event === "approval.responded",
+    )).toBe(false);
+    expect(pulledAfterBoundary).not.toHaveBeenCalled();
+  });
+
+  it("quarantines pending and in-flight positive approvals before awaiting legacy denial", async () => {
+    const targetedSubmitEntered = deferred<void>();
+    const releaseTargetedSubmit = deferred<void>();
+    const targetedResultReturned = deferred<void>();
+    const legacyDenialEntered = deferred<void>();
+    const releaseLegacyDenial = deferred<void>();
+    const submitApproval = vi.fn(async (
+      runId: string,
+      choice: ApprovalChoice,
+      options?: { approvalId?: string },
+    ) => {
+      if (options?.approvalId) {
+        targetedSubmitEntered.resolve();
+        await releaseTargetedSubmit.promise;
+        targetedResultReturned.resolve();
+        return { run_id: runId, approval_id: options.approvalId, choice, resolved: 1 };
+      }
+      legacyDenialEntered.resolve();
+      await releaseLegacyDenial.promise;
+      return { run_id: runId, choice: "deny" as const, resolved: 1 };
+    });
+    const hermes = fakeHermes({
+      assertRunsSupported: vi.fn(async () => ({
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+          run_approval_response_by_id: true,
+        },
+      })),
+      streamEvents: async function* () {
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          approval_id: "approval_targeted_before_boundary",
+          command: "deploy staging",
+          choices: ["once", "deny"],
+        };
+        await targetedSubmitEntered.promise;
+        yield {
+          event: "approval.request",
+          run_id: "run_ws",
+          command: "uncorrelated follow-up",
+          choices: ["once", "deny"],
+        };
+      },
+      submitApproval,
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+    const observed: any[] = [];
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    socket.on("message", (raw) => observed.push(JSON.parse(raw.toString("utf8"))));
+    const approvalRequest = waitForMessage(socket, "approval.request");
+    send(socket, { type: "text.input", text: "Exercise approval quarantine" });
+    const approval = await approvalRequest;
+    sendApprovalResponse(socket, approval, "once", "approval_before_boundary");
+    await targetedSubmitEntered.promise;
+    await legacyDenialEntered.promise;
+
+    // The uncorrelated event has crossed the quarantine boundary while the
+    // first positive mutation is still in flight. A new response must be
+    // rejected locally without another targeted Hermes mutation.
+    sendApprovalResponse(socket, approval, "once", "approval_after_boundary");
+    await vi.waitFor(() => expect(observed.some(
+      (message) => message.type === "session.error" &&
+        message.code === "client_message_failed" &&
+        message.message.includes("stopping"),
+    )).toBe(true));
+
+    releaseTargetedSubmit.resolve();
+    await targetedResultReturned.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(observed.some((message) => message.type === "approval.responded")).toBe(false);
+
+    const closed = waitForClose(socket);
+    releaseLegacyDenial.resolve();
+    await vi.waitFor(() => expect(observed.some(
+      (message) => message.type === "session.error" &&
+        message.code === "hermes_approval_identity_unsupported",
+    )).toBe(true));
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(submitApproval).toHaveBeenCalledTimes(2);
+    expect(submitApproval.mock.calls.filter((call) => call[2]?.approvalId)).toHaveLength(1);
+    expect(observed.some((message) => message.type === "approval.responded")).toBe(false);
   });
 
   it("ignores a resolved approval when Hermes redelivers the same source id", async () => {
@@ -828,9 +1162,9 @@ describe("live gateway WebSocket", () => {
         yield approval;
         yield { event: "run.completed", output: "Approved once." };
       },
-      submitApproval: vi.fn(async () => {
+      submitApproval: vi.fn(async (_runId, choice, options) => {
         submitted.resolve();
-        return { resolved: 1 };
+        return confirmedApproval(options, choice);
       }),
     });
     const server = await startServer({
@@ -913,9 +1247,9 @@ describe("live gateway WebSocket", () => {
         await approvalSubmitted.promise;
         yield { event: "run.completed", output: "Approved." };
       },
-      submitApproval: vi.fn(async () => {
+      submitApproval: vi.fn(async (_runId, choice, options) => {
         approvalSubmitted.resolve();
-        return { resolved: 1 };
+        return confirmedApproval(options, choice);
       }),
     });
     const server = await startServer({
@@ -994,9 +1328,9 @@ describe("live gateway WebSocket", () => {
         await approvalSubmitted.promise;
         yield { event: "run.completed", output: "Denied safely." };
       },
-      submitApproval: vi.fn(async () => {
+      submitApproval: vi.fn(async (_runId, choice, options) => {
         approvalSubmitted.resolve();
-        return { resolved: 1 };
+        return confirmedApproval(options, choice);
       }),
     });
     const server = await startServer({
@@ -1047,9 +1381,9 @@ describe("live gateway WebSocket", () => {
         await approvalSubmitted.promise;
         yield { event: "run.completed", output: "Denied safely." };
       },
-      submitApproval: vi.fn(async () => {
+      submitApproval: vi.fn(async (_runId, choice, options) => {
         approvalSubmitted.resolve();
-        return { resolved: 1 };
+        return confirmedApproval(options, choice);
       }),
     });
     const server = await startServer({
@@ -1108,9 +1442,9 @@ describe("live gateway WebSocket", () => {
         await finishRun.promise;
         yield { event: "run.completed", output: "Approved in order." };
       },
-      submitApproval: vi.fn(async (_runId: string, choice: ApprovalChoice) => {
+      submitApproval: vi.fn(async (_runId: string, choice: ApprovalChoice, options) => {
         if (choice === "session") finishRun.resolve();
-        return { resolved: 1 };
+        return confirmedApproval(options, choice);
       }),
     });
     const server = await startServer({
@@ -1205,10 +1539,12 @@ describe("live gateway WebSocket", () => {
     expect(hermes.submitApproval).toHaveBeenCalledTimes(2);
 
     expect(hermes.submitApproval).toHaveBeenNthCalledWith(1, "run_ws", "once", {
+      approvalId: "approval_1",
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
     expect(hermes.submitApproval).toHaveBeenNthCalledWith(2, "run_ws", "session", {
+      approvalId: "approval_2",
       signal: expect.any(AbortSignal),
       sessionKey: defaultSessionKey,
     });
@@ -1236,12 +1572,12 @@ describe("live gateway WebSocket", () => {
         };
         await new Promise(() => undefined);
       },
-      submitApproval: vi.fn(async () => {
+      submitApproval: vi.fn(async (_runId, choice, options) => {
         submitEntered.resolve();
         await releaseSubmit.promise;
-        return { resolved: 1 };
+        return confirmedApproval(options, choice);
       }),
-      stopRun: vi.fn(async () => ({ status: "stopping" })),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
     });
     const server = await startServer({
       config: testConfig(),
@@ -1294,7 +1630,7 @@ describe("live gateway WebSocket", () => {
       submitApproval: vi.fn(async () => {
         throw new Error("connection reset after POST");
       }),
-      stopRun: vi.fn(async () => ({ status: "stopping" })),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
     });
     const server = await startServer({
       config: testConfig(),
@@ -1331,10 +1667,14 @@ describe("live gateway WebSocket", () => {
 
   it.each([
     ["is not an object", null],
-    ["contains conflicting run aliases", { resolved: 1, run_id: "run_ws", runId: "run_other", choice: "deny" }],
-    ["names another run", { resolved: 1, run_id: "run_other", choice: "deny" }],
-    ["echoes another choice", { resolved: 1, run_id: "run_ws", choice: "once" }],
-    ["does not resolve exactly one request", { resolved: 0, run_id: "run_ws", choice: "deny" }],
+    ["omits the targeted approval identity", { resolved: 1, run_id: "run_ws", choice: "deny" }],
+    ["omits the run identity", { resolved: 1, approval_id: "approval_bad_result", choice: "deny" }],
+    ["omits the choice", { resolved: 1, run_id: "run_ws", approval_id: "approval_bad_result" }],
+    ["contains conflicting run aliases", { resolved: 1, run_id: "run_ws", runId: "run_other", approval_id: "approval_bad_result", choice: "deny" }],
+    ["contains conflicting approval aliases", { resolved: 1, run_id: "run_ws", approval_id: "approval_bad_result", approvalId: "approval_other", choice: "deny" }],
+    ["names another run", { resolved: 1, run_id: "run_other", approval_id: "approval_bad_result", choice: "deny" }],
+    ["echoes another choice", { resolved: 1, run_id: "run_ws", approval_id: "approval_bad_result", choice: "once" }],
+    ["does not resolve exactly one request", { resolved: 0, run_id: "run_ws", approval_id: "approval_bad_result", choice: "deny" }],
   ])("fails closed when the approval response %s", async (_label, result) => {
     const streamAborted = deferred<void>();
     const hermes = fakeHermes({
@@ -1416,7 +1756,7 @@ describe("live gateway WebSocket", () => {
     const approval = await waitForMessage(socket, "approval.request");
 
     send(socket, { type: "run.stop", runId: "run_ws", reason: "user cancelled" });
-    await expect(waitForMessage(socket, "run.stopping")).resolves.toMatchObject({ status: "stopping" });
+    await expect(waitForMessage(socket, "run.stopping")).resolves.toMatchObject({ runId: "run_ws", status: "stopping" });
     sendApprovalResponse(socket, approval, "once", "approval_after_stop");
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "client_message_failed",
@@ -1481,7 +1821,7 @@ describe("live gateway WebSocket", () => {
       },
       stopRun: vi.fn(async () => {
         stopped.resolve();
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -1563,7 +1903,7 @@ describe("live gateway WebSocket", () => {
       stopRun: vi.fn(async () => {
         stopEntered.resolve();
         await releaseStopResponse.promise;
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -1607,7 +1947,7 @@ describe("live gateway WebSocket", () => {
       stopRun: vi.fn(async () => {
         stopEntered.resolve();
         await releaseStop.promise;
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -1662,7 +2002,7 @@ describe("live gateway WebSocket", () => {
           await releaseInitialStop.promise;
           throw new Error("initial stop transport failed");
         }
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -1703,7 +2043,7 @@ describe("live gateway WebSocket", () => {
         await releaseRun.promise;
         yield { event: "run.cancelled" };
       },
-      stopRun: vi.fn(async () => ({ status: "stopping" })),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
     });
     const server = await startServer({
       config: testConfig(),
@@ -1757,7 +2097,7 @@ describe("live gateway WebSocket", () => {
       stopRun: vi.fn(async () => {
         stopEntered.resolve();
         await releaseStop.promise;
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -2108,7 +2448,7 @@ describe("live gateway WebSocket", () => {
           choices: ["once", "deny"],
         };
       },
-      stopRun: vi.fn(async () => ({ status: "stopping" })),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
     });
     const server = await startServer({
       config: testConfig(),
@@ -2143,7 +2483,7 @@ describe("live gateway WebSocket", () => {
         yield { event: "message.delta", delta: "partial" };
         if (mode === "throws") throw new Error("SSE connection lost");
       },
-      stopRun: vi.fn(async () => ({ status: "stopping" })),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
     });
     const server = await startServer({
       config: testConfig(),
@@ -2221,7 +2561,7 @@ describe("live gateway WebSocket", () => {
         expect(options?.signal?.aborted).toBe(false);
         expect(options?.sessionKey).toBe(defaultSessionKey);
         stopped.resolve();
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -2310,7 +2650,7 @@ describe("live gateway WebSocket", () => {
         submitEntered.resolve();
         return await new Promise<never>(() => undefined);
       }),
-      stopRun: vi.fn(async () => ({ status: "stopping" })),
+      stopRun: vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
     });
     const server = await startServer({
       config: testConfig(),
@@ -2361,7 +2701,7 @@ describe("live gateway WebSocket", () => {
       stopRun: vi.fn(async () => {
         stopEntered.resolve();
         await releaseStop.promise;
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -2480,7 +2820,7 @@ describe("live gateway WebSocket", () => {
         expect(options?.signal?.aborted).toBe(false);
         expect(options?.signal).not.toBe(eventStreamSignal);
         stopped.resolve();
-        return { status: "stopping" };
+        return { run_id: "run_ws", status: "stopping" };
       }),
     });
     const server = await startServer({
@@ -2907,9 +3247,9 @@ describe("live gateway WebSocket", () => {
         await approvalSubmitted.promise;
         yield { event: "run.completed", output: "Approved while audio was stalled." };
       },
-      submitApproval: vi.fn(async () => {
+      submitApproval: vi.fn(async (_runId, _choice, options) => {
         approvalSubmitted.resolve();
-        return { run_id: "run_ws", choice: "once", resolved: 1 };
+        return { ...confirmedApproval(options, "once"), run_id: "run_ws" };
       }),
     });
     const server = await startServer({
@@ -3066,6 +3406,7 @@ function fakeHermes(
           run_events_sse: true,
           run_stop: true,
           run_approval_response: true,
+          run_approval_response_by_id: true,
         },
       })),
     startRun: options.startRun ?? vi.fn(async () => ({ runId: "run_ws", status: "started" })),
@@ -3077,10 +3418,16 @@ function fakeHermes(
         yield { event: "message.delta", delta: "done." };
         yield { event: "run.completed", output: "Hermes says done." };
       }),
-    stopRun: options.stopRun ?? vi.fn(async () => ({ status: "stopping" })),
+    stopRun: options.stopRun ?? vi.fn(async () => ({ run_id: "run_ws", status: "stopping" })),
     submitApproval:
       options.submitApproval ??
-      vi.fn(async (_runId: string, choice: ApprovalChoice) => ({
+      vi.fn(async (
+        runId: string,
+        choice: ApprovalChoice,
+        approvalOptions?: { approvalId?: string },
+      ) => ({
+        run_id: runId,
+        ...(approvalOptions?.approvalId ? { approval_id: approvalOptions.approvalId } : {}),
         choice,
         resolved: 1,
       })),
@@ -3119,6 +3466,16 @@ function sendApprovalResponse(
     choice,
     ...extra,
   });
+}
+
+function confirmedApproval(
+  options: { approvalId?: string } | undefined,
+  choice: ApprovalChoice,
+): { run_id: "run_ws"; approval_id: string; choice: ApprovalChoice; resolved: 1 } {
+  if (!options?.approvalId) {
+    throw new Error("Expected a targeted approval id in the test contract.");
+  }
+  return { run_id: "run_ws", approval_id: options.approvalId, choice, resolved: 1 };
 }
 
 async function waitForOpen(socket: WebSocket): Promise<void> {
