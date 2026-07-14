@@ -16,9 +16,22 @@ Before opening a large pull request, open a feature request or GitHub Discussion
 
 Small fixes and documentation corrections can go directly to a pull request.
 
-## Local setup
+## Prerequisites
+
+- Node.js 20 or newer and the bundled npm CLI.
+- Python 3 for the Hermes and Dashboard plugin smoke tests run by `npm run verify`.
+- Docker only when changing the image or Compose example.
+- A Hermes API server and provider credentials only for manual integration tests; mock mode and default CI do not need them.
+
+## Fork and local setup
+
+Fork the repository on GitHub, then clone your fork and keep the upstream repository as a separate remote:
 
 ```sh
+git clone https://github.com/YOUR-USER/hermes-live-voice.git
+cd hermes-live-voice
+git remote add upstream https://github.com/bielcarpi/hermes-live-voice.git
+git switch -c fix/short-description
 npm ci
 npm run verify
 ```
@@ -26,6 +39,19 @@ npm run verify
 `npm run verify` covers TypeScript, web-demo syntax, plugin syntax, unit tests, build output, CLI/gateway smokes, fake Hermes HTTP/SSE integration, and packed-package installation.
 
 Use `HERMES_LIVE_PROVIDER=mock` for deterministic gateway work. Real provider credentials are never required by default CI.
+
+Before opening a pull request, bring your branch up to date with `upstream/main`, push it to your fork, and use the pull-request checklist below. Maintainers may edit a branch only when you leave GitHub's **Allow edits from maintainers** option enabled.
+
+For plugin or Dashboard changes, test the plugin from your checkout instead of installing the tagged GitHub copy:
+
+```sh
+npm run build
+node dist/cli.js plugin install --symlink
+hermes plugins enable hermes-live
+node dist/cli.js plugin status
+```
+
+See [docs/plugin.md](docs/plugin.md) for the local gateway and Dashboard workflow.
 
 ## Architecture boundaries
 
