@@ -4,11 +4,36 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      npm-development-minor-and-patch:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # This project intentionally verifies its public Node >=20 floor against
+      # Node 20 types. Moving the type baseline is separate compatibility work.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # The runtime image stays on an intentional LTS line; major upgrades are
+      # reviewed as explicit release work rather than automated maintenance.
+      - dependency-name: node
+        update-types:
+          - "version-update:semver-major"

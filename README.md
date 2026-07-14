@@ -425,6 +425,8 @@ Focused contributions are welcome—especially client SDKs, safe structured prog
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Keep provider changes isolated, include tests, and avoid vendoring unrelated speech frameworks or rebranding the project inside a feature PR.
 
+[Contribution guide](CONTRIBUTING.md) · [Support](SUPPORT.md) · [Discussions](https://github.com/bielcarpi/hermes-live-voice/discussions) · [Security policy](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md)
+
 ## License
 
 [MIT](LICENSE). Hermes Live Voice is community-maintained and is not an official NousResearch distribution. Hermes Agent, Gemini, and OpenAI are separate projects and services governed by their own licenses and terms.
