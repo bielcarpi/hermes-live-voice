@@ -1,5 +1,6 @@
 services:
   hermes-live:
+    init: true
     build:
       context: ..
       dockerfile: Dockerfile
@@ -23,6 +24,15 @@ services:
       OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2.1}
       OPENAI_REALTIME_TURN_DETECTION: ${OPENAI_REALTIME_TURN_DETECTION:-disabled}
     ports:
-      - "8788:8788"
+      - "127.0.0.1:${HERMES_LIVE_HOST_PORT:-8788}:8788"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    stop_grace_period: 10s

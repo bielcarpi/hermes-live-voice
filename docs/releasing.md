@@ -29,11 +29,11 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-The release workflow reruns verification, audits dependencies, packs the npm tarball, and creates the GitHub release with generated notes.
+The release workflow reruns verification, audits dependencies, packs the npm tarball, and records its SHA-256 checksum in a read-only job. A separate job with `contents: write` downloads only those artifacts and creates the GitHub release; it never checks out or executes repository/dependency code with the write credential.
 
 ## npm publication
 
-The workflow contains an optional npm trusted-publishing job. It runs only when the repository variable `PUBLISH_NPM` is set to `true` and the npm package has a trusted publisher configured for this GitHub repository and workflow. That job deliberately uses Node 24, installs the pinned npm 11 CLI, and asserts npm's current minimum OIDC runtime before publishing.
+The workflow contains an optional npm trusted-publishing job. It runs only when the repository variable `PUBLISH_NPM` is set to `true` and the npm package has a trusted publisher configured for this GitHub repository and workflow. That job deliberately uses Node 24, installs the pinned npm 11 CLI without lifecycle scripts, verifies the staged tarball checksum/version, and publishes that already-verified artifact without checking out or installing project dependencies under the OIDC credential.
 
 Before enabling it:
 

@@ -6,14 +6,18 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  github-release:
+  verify-package:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20
@@ -33,28 +37,59 @@ jobs:
       - run: npm audit --audit-level=moderate
       - run: mkdir -p release
       - run: npm pack --pack-destination release
-      - run: gh release create "$GITHUB_REF_NAME" release/*.tgz --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+      - run: sha256sum release/*.tgz > release/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-package
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  github-release:
+    needs: verify-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_REPO: ${{ github.repository }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-package
+          path: release
+      - name: Verify packaged version and checksum
+        run: |
+          package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$package_file"
+          test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          sha256sum --check release/SHA256SUMS
+          package_version="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => process.stdout.write(JSON.parse(data).version))')"
+          test "$GITHUB_REF_NAME" = "v$package_version"
+      - run: gh release create "$GITHUB_REF_NAME" release/*.tgz release/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}
 
   npm-publish:
     if: vars.PUBLISH_NPM == 'true'
-    needs: github-release
+    needs: [verify-package, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
     permissions:
-      contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-package
+          path: release
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - name: Install trusted-publishing npm CLI
-        run: npm install --global npm@11.18.0
+        run: npm install --global --ignore-scripts npm@11.18.0
       - name: Verify trusted-publishing runtime
         run: |
           npm_version="$(npm --version)"
@@ -75,8 +110,10 @@ jobs:
           ' "$npm_version"
       - name: Verify tag matches package version
         run: |
-          package_version="$(node -p 'require("./package.json").version')"
+          package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$package_file"
+          test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          sha256sum --check release/SHA256SUMS
+          package_version="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => process.stdout.write(JSON.parse(data).version))')"
           test "$GITHUB_REF_NAME" = "v$package_version"
-      - run: npm ci
-      - run: npm run verify
-      - run: npm publish --access public --provenance
+      - run: npm publish ./release/*.tgz --access public --provenance

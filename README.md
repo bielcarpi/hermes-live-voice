@@ -40,7 +40,7 @@
 
 Hermes Live Voice is a Hermes plugin, a self-hosted voice gateway, and a small client protocol. It turns an existing Hermes Agent into the action-taking brain behind an interruptible speech-to-speech conversation.
 
-Ask it to inspect a repository, use memory, research something current, run a command, or request an approval. The realtime model handles the speech loop; Hermes performs the tool-using work, while clients keep progress, stop controls, and approvals visible.
+Ask it to inspect a repository, use memory, research something current, or run a command. The realtime model handles the speech loop; Hermes performs the tool-using work, while clients keep progress and stop controls visible. Targeted approval controls appear only when the connected Hermes version can correlate each decision safely.
 
 ```txt
 You speak
@@ -54,7 +54,7 @@ Hermes Agent — memory, tools, skills, MCP, approvals
 The result returns to the live conversation
 ```
 
-In v0.3, delegation to Hermes is synchronous from the realtime provider's perspective: conversation is fluid before and after the delegated run, but the speech model waits for that run's terminal result. The Dashboard and other clients still receive live task events, approvals, and stop controls during the wait. Continuous provider-side conversation while Hermes works is a roadmap item, not a current claim.
+In v0.3, delegation to Hermes is synchronous from the realtime provider's perspective: conversation is fluid before and after the delegated run, but the speech model waits for that run's terminal result. The Dashboard and other clients still receive live task events and stop controls during the wait, plus targeted approvals when Hermes advertises stable approval IDs. Continuous provider-side conversation while Hermes works is a roadmap item, not a current claim.
 
 The realtime provider receives three narrow gateway tools—not unrestricted access to the Hermes toolbelt. Provider credentials, Hermes credentials, Hermes session keys, and approval decisions remain outside the provider.
 
@@ -65,9 +65,11 @@ The realtime provider receives three narrow gateway tools—not unrestricted acc
 - **The Hermes you already configured** — keep its memory, terminal access, skills, MCP servers, approval policy, and model setup.
 - **Two live providers** — Gemini Live and OpenAI Realtime, plus a deterministic mock provider for local development.
 - **A client-ready gateway** — connect a browser, mobile app, desktop app, embedded device, or terminal client over WebSocket.
-- **Human approvals** — surface Hermes approval requests and send the decision back to the same run.
-- **A first-class Hermes Dashboard integration** — install a **Live Voice** tab with transcript, task progress, interruption, run stop, and approvals.
+- **Fail-closed approval compatibility** — enable human decisions only when Hermes advertises stable approval IDs; otherwise deny where possible, stop the run, and close the session instead of guessing.
+- **A first-class Hermes Dashboard integration** — install a **Live Voice** tab with transcript, task progress, interruption, run stop, and negotiated approval status.
 - **A real Hermes plugin** — install `hermes-live`, check gateway status from Hermes, and keep voice integration discoverable.
+
+> **Approval compatibility:** Hermes Agent's current Runs API, verified against the official v0.18.2 image and upstream `main` for this release, does not yet identify approval requests strongly enough to target concurrent decisions safely. Hermes Live Voice therefore attempts a deny-all, stops that run, and closes the voice session with an explicit verification warning. It never lets an uncorrelated approval run continue. Interactive controls enable automatically only when Hermes advertises `features.run_approval_response_by_id: true` and echoes the same approval identity in its response.
 
 ## See The Difference
 
@@ -75,7 +77,7 @@ The useful demo is not a chatbot greeting. It is a live request that makes Herme
 
 > “Inspect this repository, run the tests, and tell me whether it is safe to release.”
 
-A good client can acknowledge immediately, let the user interrupt, show Hermes run progress, surface an approval, cancel when asked, and speak the final result.
+A good client can acknowledge immediately, let the user interrupt, show Hermes run progress, cancel when asked, and speak the final result. With a targeted-approval-capable Hermes release, it can also surface and correlate explicit human decisions.
 
 ## Why Not Just Use Hermes Voice Mode?
 
@@ -99,13 +101,13 @@ This project does not replace Hermes Voice Mode. It serves the integration layer
 
 | Surface | Best for | Audio |
 | --- | --- | --- |
-| **Hermes Dashboard + Live Voice plugin — recommended** | Daily use with transcript, task progress, interruption, stop, and approvals | Browser microphone and playback |
+| **Hermes Dashboard + Live Voice plugin — recommended** | Daily use with transcript, task progress, interruption, stop, and negotiated approval status | Browser microphone and playback |
 | **Bundled browser demo** | Local development and gateway troubleshooting | Browser microphone and playback |
 | **`hermes-live-voice/browser`** | Community web UIs and custom React, Vue, Svelte, vanilla, or Electron clients | Host-integrated microphone and playback |
 | **`hermes-live terminal`** | SSH, headless systems, automation, and remote text control | Text only |
 | **Hermes Ctrl+B Voice Mode** | The fastest local terminal voice experience | Hermes-managed voice |
 
-Generic chat UI compatibility is not the same as Hermes Live compatibility. A community UI needs the browser client or JSON/WebSocket protocol, microphone and playback controls, and a secure server-side authentication bridge. OpenAI-compatible chat support alone does not provide persistent realtime audio, barge-in, run events, or approvals. See [UI integration](docs/ui-integration.md) for the exact contract.
+Generic chat UI compatibility is not the same as Hermes Live compatibility. A community UI needs the browser client or JSON/WebSocket protocol, microphone and playback controls, and a secure server-side authentication bridge. OpenAI-compatible chat support alone does not provide persistent realtime audio, barge-in, run events, or the negotiated approval lifecycle. See [UI integration](docs/ui-integration.md) for the exact contract.
 
 ## Quick Start
 
@@ -120,7 +122,7 @@ Generic chat UI compatibility is not the same as Hermes Live compatibility. A co
 Until the first npm publication, install from GitHub:
 
 ```sh
-git clone --branch v0.3.0 --depth 1 https://github.com/bielcarpi/hermes-live-voice.git
+git clone --branch v0.3.1 --depth 1 https://github.com/bielcarpi/hermes-live-voice.git
 cd hermes-live-voice
 npm ci
 npm run build
@@ -205,7 +207,7 @@ HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
 node dist/cli.js terminal
 ```
 
-The console keeps one realtime session open, shows provider transcripts and Hermes task progress, surfaces approvals, and provides separate `/interrupt` (request provider-response cancellation) and `/stop` (stop Hermes work) controls. Provider cancellation is best effort; Gemini accepts the request without a dedicated upstream cancellation acknowledgement. Use `/help` for the full command list. It intentionally does not capture or play audio; use the Hermes Dashboard or browser UI for remote gateway audio.
+The console keeps one realtime session open, shows provider transcripts, Hermes task progress, and negotiated approval warnings or requests, and provides separate `/interrupt` (request provider-response cancellation) and `/stop` (stop Hermes work) controls. Provider cancellation is best effort; Gemini accepts the request without a dedicated upstream cancellation acknowledgement. Use `/help` for the full command list. It intentionally does not capture or play audio; use the Hermes Dashboard or browser UI for remote gateway audio.
 
 For scripts and CI, the existing one-shot command remains available:
 
@@ -254,7 +256,7 @@ The provider can ask the gateway to:
 - `get_hermes_run_status`
 - `stop_hermes_run`
 
-It cannot call arbitrary Hermes tools or submit approvals. Approval choices come only from a connected human client and are validated by the gateway against the FIFO approval envelope it emitted.
+It cannot call arbitrary Hermes tools or submit approvals. When Hermes supports targeted approval responses, choices come only from a connected human client and are validated against the exact correlated envelope. A legacy uncorrelated request is never offered as a human choice: the gateway attempts denial, stops the run, and closes the voice session for operator verification.
 
 Read the [architecture](docs/architecture.md) and [client protocol](docs/client-protocol.md) for the full lifecycle.
 
@@ -341,7 +343,7 @@ Send text for a smoke test:
 }
 ```
 
-Or stream base64 PCM16 audio frames and end the turn with `audio.end`. The server emits provider audio/transcripts, Hermes run events, approvals, completion, and typed errors.
+Or stream base64 PCM16 audio frames and end the turn with `audio.end`. The server emits provider audio/transcripts, Hermes run events, completion, typed errors, and targeted approval envelopes only when the negotiated Hermes contract supports them.
 
 The package also exposes the dependency-free browser client used by both the Hermes Dashboard integration and the bundled demo:
 
@@ -385,7 +387,7 @@ node dist/cli.js plugin status    # inspect the plugin installation
 npm run verify                    # complete local release gate
 ```
 
-Docker users can start from [examples/docker-compose.yml](examples/docker-compose.yml).
+Docker users can start from [examples/docker-compose.yml](examples/docker-compose.yml). The example binds the published port to host loopback by default and runs with a read-only filesystem, no Linux capabilities, `no-new-privileges`, a PID limit, and a bounded writable `/tmp`. Put an authenticated TLS proxy in front instead of widening the host bind directly.
 
 ## Security And Maturity
 
