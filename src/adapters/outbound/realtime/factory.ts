@@ -9,7 +9,7 @@ export function createLiveModelAdapter(config: AppConfig): LiveModelAdapter {
     case "mock":
       return new MockLiveAdapter();
     case "openai":
-      return new OpenAIRealtimeAdapter(config.openai);
+      return new OpenAIRealtimeAdapter(config.openai, config.server.providerReadyTimeoutMs);
     case "gemini":
       return new GeminiLiveAdapter(config.gemini);
   }

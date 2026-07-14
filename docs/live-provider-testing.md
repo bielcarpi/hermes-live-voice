@@ -79,7 +79,7 @@ Expected:
 }
 ```
 
-This command opens and closes a Gemini Live or OpenAI Realtime session with the same adapter the gateway uses. It does not require Hermes to be running, does not send user audio/text, and does not start a Hermes run. Set `HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS` if your provider or network needs a longer startup bound.
+This command opens and closes a Gemini Live or OpenAI Realtime session with the same adapter the gateway uses. It does not require Hermes to be running, does not send user audio/text, and does not start a Hermes run. Success means both the connection and the provider's close event were confirmed. Set `HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS` if your provider or network needs a longer startup bound.
 
 ## Step 3: Start The Gateway
 
@@ -151,7 +151,7 @@ Expected evidence:
 - Starting a new text/mic turn cancels queued provider speech.
 - OpenAI interruptions include `conversation.item.truncate` when the client has audio item metadata and playback duration, including `0` ms for queued/unheard audio.
 - With OpenAI VAD enabled, provider speech-start events reach the client as `input.speech_started`, and the client cancels provider output while stopping/truncating queued assistant playback.
-- Approval requests render decision buttons.
+- When Hermes advertises targeted approval responses, approval requests render decision buttons. A legacy uncorrelated request produces no controls: verify attempted denial, run stop, fatal compatibility warning, voice-session closure, and retained operator guidance.
 - Stop sends `run.stop`; an accepted request emits `run.stopping`, and the client remains in that state until Hermes confirms `run.stopped`, `run.completed`, or `run.failed`.
 
 ## Step 5: Test Negative Cases

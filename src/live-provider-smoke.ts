@@ -36,6 +36,7 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
   const errors: string[] = [];
   const events: Array<Record<string, unknown>> = [];
   let session: Awaited<ReturnType<typeof adapter.connect>> | undefined;
+  let pendingConnect: ReturnType<typeof adapter.connect> | undefined;
   let openCallback = false;
   let closeEvent: Record<string, unknown> | undefined;
   let closing = false;
@@ -45,30 +46,31 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
   });
 
   try {
-    session = await withTimeout(
-      adapter.connect({
-        sessionId,
-        systemInstruction:
-          "You are being opened for a hermes-live provider connection smoke test. Do not call tools unless a user message arrives.",
-        safetyIdentifier,
-        callbacks: {
-          onOpen: () => {
-            openCallback = true;
-            resolveOpen();
-          },
-          onClose: (event) => {
-            closeEvent = summarizeCloseEvent(event);
-          },
-          onError: (error) => {
-            if (!closing) {
-              errors.push(errorToMessage(error));
-            }
-          },
-          onEvent: (event) => {
-            events.push(summarizeLiveEvent(event));
-          },
+    pendingConnect = adapter.connect({
+      sessionId,
+      systemInstruction:
+        "You are being opened for a hermes-live provider connection smoke test. Do not call tools unless a user message arrives.",
+      safetyIdentifier,
+      callbacks: {
+        onOpen: () => {
+          openCallback = true;
+          resolveOpen();
         },
-      }),
+        onClose: (event) => {
+          closeEvent = summarizeCloseEvent(event);
+        },
+        onError: (error) => {
+          if (!closing) {
+            errors.push(errorToMessage(error));
+          }
+        },
+        onEvent: (event) => {
+          events.push(summarizeLiveEvent(event));
+        },
+      },
+    });
+    session = await withTimeout(
+      pendingConnect,
       timeoutMs,
       `${config.realtime.provider} realtime session did not connect within ${timeoutMs}ms.`,
     );
@@ -96,6 +98,9 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
     };
   } catch (error) {
     closing = true;
+    if (!session && pendingConnect) {
+      void pendingConnect.then((lateSession) => lateSession.close()).catch(() => undefined);
+    }
     await session?.close().catch(() => undefined);
     throw error;
   }

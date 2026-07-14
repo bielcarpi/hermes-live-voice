@@ -37,7 +37,7 @@ const EnvSchema = z.object({
   HERMES_API_KEY: z.string().optional(),
   HERMES_MODEL: z.string().default("hermes-agent"),
   HERMES_LIVE_RUN_INSTRUCTIONS: z.string().optional(),
-  HERMES_LIVE_HERMES_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
+  HERMES_LIVE_HERMES_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
   HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "mock"]).default("gemini"),
   GEMINI_API_KEY: z.string().optional(),

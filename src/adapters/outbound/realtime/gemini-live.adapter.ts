@@ -11,24 +11,39 @@ import type {
   LiveToolCall,
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 
+const DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS = 4_000;
+
+interface ProviderCloseConfirmation {
+  readonly promise: Promise<void>;
+  isClosed(): boolean;
+  confirm(): void;
+}
+
 export class GeminiLiveAdapter implements LiveModelAdapter {
-  constructor(private readonly config: AppConfig["gemini"]) {}
+  constructor(
+    private readonly config: AppConfig["gemini"],
+    private readonly closeTimeoutMs = DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS,
+  ) {}
 
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
     this.assertConfigured();
     const ai = this.createClient();
     const forwardMessage = createGeminiLiveEventForwarder(params.callbacks.onEvent);
+    const closeConfirmation = createCloseConfirmation();
     const session: any = await (ai as any).live.connect({
       model: this.config.model,
       config: buildGeminiLiveConnectConfig(params.systemInstruction),
       callbacks: {
         onopen: () => params.callbacks.onOpen?.(),
-        onclose: (event: unknown) => params.callbacks.onClose?.(event),
+        onclose: (event: unknown) => {
+          closeConfirmation.confirm();
+          params.callbacks.onClose?.(event);
+        },
         onerror: (event: unknown) => params.callbacks.onError?.(event),
         onmessage: forwardMessage,
       },
     });
-    return new GeminiLiveSession(session);
+    return new GeminiLiveSession(session, closeConfirmation, this.closeTimeoutMs);
   }
 
   private assertConfigured(): void {
@@ -83,7 +98,13 @@ export function buildGeminiLiveConnectConfig(systemInstruction: string) {
 }
 
 export class GeminiLiveSession implements LiveModelSession {
-  constructor(private readonly session: any) {}
+  private closeOperation?: Promise<void>;
+
+  constructor(
+    private readonly session: any,
+    private readonly closeConfirmation: ProviderCloseConfirmation,
+    private readonly closeTimeoutMs = DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS,
+  ) {}
 
   async sendRealtimeAudio(audio: LiveModelAudio): Promise<void> {
     await this.session.sendRealtimeInput(buildGeminiRealtimeAudioInput(audio));
@@ -115,10 +136,60 @@ export class GeminiLiveSession implements LiveModelSession {
     await this.session.sendToolResponse(buildGeminiToolResponse(call, response));
   }
 
-  async close(): Promise<void> {
-    if (typeof this.session.close === "function") {
-      this.session.close();
+  close(): Promise<void> {
+    if (this.closeConfirmation.isClosed()) return Promise.resolve();
+    if (this.closeOperation) return this.closeOperation;
+
+    const operation = this.closeAndConfirm();
+    this.closeOperation = operation;
+    void operation.catch(() => {
+      if (this.closeOperation === operation) this.closeOperation = undefined;
+    });
+    return operation;
+  }
+
+  private async closeAndConfirm(): Promise<void> {
+    if (typeof this.session.close !== "function") {
+      throw new Error("Gemini Live session does not expose a close operation.");
     }
+    this.session.close();
+    await withTimeout(
+      this.closeConfirmation.promise,
+      this.closeTimeoutMs,
+      `Gemini Live session did not confirm closure within ${this.closeTimeoutMs}ms.`,
+    );
+  }
+}
+
+function createCloseConfirmation(): ProviderCloseConfirmation {
+  let closed = false;
+  let resolveClosed!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  return {
+    promise,
+    isClosed: () => closed,
+    confirm: () => {
+      if (closed) return;
+      closed = true;
+      resolveClosed();
+    },
+  };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
