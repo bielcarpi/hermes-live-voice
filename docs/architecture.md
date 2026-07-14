@@ -2,7 +2,7 @@
 
 `hermes-live-voice` is a Hermes Agent plugin package with a realtime voice gateway runtime. It installs the `hermes-live` CLI and Hermes plugin.
 
-It is not a replacement for Hermes. It deliberately gives the realtime model one narrow way to use Hermes: call gateway tools that start, stop, and inspect Hermes runs. Approval decisions stay on the authenticated human-client path.
+It is not a replacement for Hermes. It deliberately gives the realtime model one narrow way to use Hermes: call gateway tools that start, stop, and inspect Hermes runs. Targeted approval decisions stay on the authenticated human-client path; legacy uncorrelated requests trigger fail-closed denial, run stop, and voice-session closure.
 
 ## Components
 
@@ -20,7 +20,7 @@ Custom browser/mobile/desktop client
 
 ### Client
 
-Voice clients capture microphone audio, encode frames as base64 PCM16, and send JSON messages to `/v1/live`. The gateway returns provider audio, transcript deltas, Hermes run events, approval requests, errors, and logs. The shared browser client provides the connection lifecycle, protocol validation, request IDs, bounded buffering, microphone worklet, and audio playback helpers used by the Hermes Dashboard integration and the bundled demo.
+Voice clients capture microphone audio, encode frames as base64 PCM16, and send JSON messages to `/v1/live`. The gateway returns provider audio, transcript deltas, Hermes run events, negotiated targeted approval requests, errors, and logs. The shared browser client provides the connection lifecycle, protocol validation, request IDs, bounded buffering, microphone worklet, and audio playback helpers used by the Hermes Dashboard integration and the bundled demo.
 
 The terminal client is deliberately different: it keeps the same persistent session and control contract but sends and renders text only. Local terminal microphone use remains the responsibility of official Hermes Voice Mode.
 
@@ -131,7 +131,9 @@ It receives gateway tools:
 - `get_hermes_run_status`
 - `stop_hermes_run`
 
-The realtime provider cannot submit approvals. The gateway assigns every sanitized envelope a gateway-owned id, keeps envelopes in FIFO order, and accepts a human `approval.respond` only when its request id has not been reused and its run id, approval id, and choice match the queue head. Opaque requests are deny-only; session and permanent policy choices require an inspectable visible pattern. Mutating responses are idempotently cached, and an ambiguous Hermes approval outcome stops the run and closes the session. Bulk approval resolution is rejected in protocol v2.
+The realtime provider cannot submit approvals. Interactive approval is enabled only when Hermes advertises targeted response support and supplies a stable approval id. The gateway then assigns every sanitized envelope a gateway-owned id, keeps envelopes in FIFO display order, and accepts a human `approval.respond` only when its request id has not been reused and its run id, approval id, and choice match the queue head. Opaque requests are deny-only; session and permanent policy choices require an inspectable visible pattern. Mutating responses are idempotently cached, and an ambiguous Hermes approval outcome stops the run and closes the session. Bulk approval resolution is rejected in protocol v2.
+
+When Hermes cannot target a response by approval id, a displayed FIFO event is not sufficient evidence that any response resolved the same underlying queue entry. The gateway therefore exposes no interactive envelope, attempts a legacy `deny` with `resolve_all`, stops the run, and closes the voice session for operator verification. It never treats a denial count, empty queue, or FIFO timing as permission to continue.
 
 This preserves the intended chain:
 
@@ -143,7 +145,7 @@ Gateway = translator, session manager, safety boundary
 
 ### Current delegation model
 
-In v0.3, `start_hermes_run` is synchronous from the realtime provider's perspective: its tool result returns after the Hermes SSE run reaches a terminal event. The Dashboard and connected clients still receive progress, approvals, and stop controls while that work runs, but the speech model cannot naturally hold a second provider-side conversation or call `get_hermes_run_status` during the outstanding tool call. Provider-authored transcript lines are therefore labeled **Live voice**, not Hermes. A future async run bridge will return the run id immediately and deliver bounded progress/completion notifications independently.
+In v0.3, `start_hermes_run` is synchronous from the realtime provider's perspective: its tool result returns after the Hermes SSE run reaches a terminal event. The Dashboard and connected clients still receive progress and stop controls while that work runs, plus approval controls when the negotiated Hermes contract supports them, but the speech model cannot naturally hold a second provider-side conversation or call `get_hermes_run_status` during the outstanding tool call. Provider-authored transcript lines are therefore labeled **Live voice**, not Hermes. A future async run bridge will return the run id immediately and deliver bounded progress/completion notifications independently.
 
 ## Session Identity
 

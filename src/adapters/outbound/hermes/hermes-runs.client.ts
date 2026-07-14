@@ -94,24 +94,36 @@ export class HermesClient implements HermesRunsPort {
     });
   }
 
-  async stopRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<{ run_id?: string; status?: string }> {
+  async stopRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<{ run_id: string; status: "stopping" }> {
     const requestOptions = normalizeHermesRequestOptions(options);
-    return this.requestJson<{ run_id?: string; status?: string }>(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
+    const response = await this.requestJson<Record<string, unknown>>(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
       method: "POST",
       body: "{}",
       headers: this.sessionHeaders(requestOptions.sessionKey),
       ...signalInit(requestOptions.signal),
     });
+    if (
+      response.run_id !== runId ||
+      response.status !== "stopping" ||
+      (response.runId !== undefined && response.runId !== runId)
+    ) {
+      throw new Error("Hermes returned an invalid stop confirmation.");
+    }
+    return { run_id: runId, status: "stopping" };
   }
 
   async submitApproval(
     runId: string,
     choice: ApprovalChoice,
-    options: { resolveAll?: boolean; signal?: AbortSignal; sessionKey?: string } = {},
+    options: { approvalId?: string; resolveAll?: boolean; signal?: AbortSignal; sessionKey?: string } = {},
   ): Promise<ApprovalResult> {
-    return this.requestJson<ApprovalResult>(`/v1/runs/${encodeURIComponent(runId)}/approval`, {
+    return await this.requestJson<ApprovalResult>(`/v1/runs/${encodeURIComponent(runId)}/approval`, {
       method: "POST",
-      body: JSON.stringify({ choice, resolve_all: options.resolveAll ?? false }),
+      body: JSON.stringify({
+        choice,
+        resolve_all: options.resolveAll ?? false,
+        ...(options.approvalId ? { approval_id: options.approvalId } : {}),
+      }),
       headers: this.sessionHeaders(options.sessionKey),
       ...signalInit(options.signal),
     });

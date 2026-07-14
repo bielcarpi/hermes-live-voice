@@ -91,14 +91,19 @@ describe("HermesClient", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "running" }))
       .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "stopping" }))
-      .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", choice: "once", resolved: 1 }));
+      .mockResolvedValueOnce(jsonResponse({
+        run_id: "run_123",
+        approval_id: "approval_1",
+        choice: "once",
+        resolved: 1,
+      }));
     vi.stubGlobal("fetch", fetchMock);
     const client = hermesClient();
     const sessionKey = "agent:main:hermes-live:profile:default:user:alice";
 
     await client.getRun("run_123", { sessionKey });
     await client.stopRun("run_123", { sessionKey });
-    await client.submitApproval("run_123", "once", { sessionKey });
+    await client.submitApproval("run_123", "once", { sessionKey, approvalId: "approval_1" });
 
     for (const call of fetchMock.mock.calls) {
       expect(call[1]).toEqual(
@@ -110,6 +115,70 @@ describe("HermesClient", () => {
         }),
       );
     }
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      choice: "once",
+      resolve_all: false,
+      approval_id: "approval_1",
+    });
+  });
+
+  it.each([
+    ["an empty object", {}],
+    ["a missing run id", { status: "stopping" }],
+    ["a missing status", { run_id: "run_123" }],
+    ["another run id", { run_id: "run_other", status: "stopping" }],
+    ["a running status", { run_id: "run_123", status: "running" }],
+    ["an unknown status", { run_id: "run_123", status: "stopped" }],
+    ["a conflicting camel-case alias", { run_id: "run_123", runId: "run_other", status: "stopping" }],
+  ])("rejects stop responses with %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.stopRun("run_123")).rejects.toThrow("invalid stop confirmation");
+  });
+
+  it("treats even an exact approval-not-pending 409 as indeterminate", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { code: "approval_not_pending", message: "No approval is pending." },
+    }), { status: 409, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.submitApproval("run_123", "deny", { resolveAll: true })).rejects.toThrow(
+      "Hermes request failed: 409",
+    );
+  });
+
+  it.each([
+    ["a different structured code", JSON.stringify({ error: { code: "approval_not_active" } })],
+    ["a top-level code", JSON.stringify({ code: "approval_not_pending" })],
+    ["plain text containing the code", "approval_not_pending"],
+  ])("rejects legacy approval 409 with %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(new Response(body, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.submitApproval("run_123", "deny", { resolveAll: true })).rejects.toThrow(
+      "Hermes request failed: 409",
+    );
+  });
+
+  it("also rejects approval-not-pending conflicts for targeted and positive requests", async () => {
+    const errorBody = JSON.stringify({ error: { code: "approval_not_pending" } });
+    fetchMock
+      .mockResolvedValueOnce(new Response(errorBody, { status: 409 }))
+      .mockResolvedValueOnce(new Response(errorBody, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.submitApproval("run_123", "deny", {
+      resolveAll: true,
+      approvalId: "approval_1",
+    })).rejects.toThrow("Hermes request failed: 409");
+    await expect(client.submitApproval("run_123", "once", { resolveAll: true })).rejects.toThrow(
+      "Hermes request failed: 409",
+    );
   });
 
   it("keeps AbortSignal shorthand support for run-scoped follow-up requests", async () => {

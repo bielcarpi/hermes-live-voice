@@ -17,6 +17,13 @@ describe("readiness", () => {
     expect(report.hermes).toMatchObject({
       ok: false,
       baseUrl: "http://127.0.0.1:9",
+      approvals: {
+        uiSupported: true,
+        interactive: false,
+        fallback: "deny_all_then_stop",
+        requiredFeature: "run_approval_response_by_id",
+        negotiated: false,
+      },
       error: "Set HERMES_AGENT_API_SERVER_KEY to Hermes Agent's API_SERVER_KEY.",
     });
     expect(report.realtime).toMatchObject({
@@ -53,8 +60,52 @@ describe("readiness", () => {
     );
 
     expect(report.ok).toBe(true);
-    expect(report.hermes).toMatchObject({ ok: true, baseUrl: "http://injected-hermes.local", model: "hermes-agent" });
+    expect(report.hermes).toMatchObject({
+      ok: true,
+      baseUrl: "http://injected-hermes.local",
+      model: "hermes-agent",
+      approvals: {
+        uiSupported: true,
+        interactive: false,
+        fallback: "deny_all_then_stop",
+        requiredFeature: "run_approval_response_by_id",
+        negotiated: true,
+      },
+    });
     expect(report.realtime).toMatchObject({ ok: true, configured: true, injected: true, provider: "openai", sessionChecked: false });
     expect(hermes.assertRunsSupported).toHaveBeenCalledOnce();
+  });
+
+  it("reports interactive approvals only when Hermes advertises targeted responses", async () => {
+    const hermes = {
+      baseUrl: "http://targeted-hermes.local",
+      assertRunsSupported: vi.fn(async () => ({
+        model: "hermes-agent",
+        features: {
+          run_submission: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+          run_approval_response_by_id: true,
+        },
+      })),
+    } as unknown as HermesRunsPort;
+
+    const report = await buildReadinessReport(loadConfig({ HERMES_LIVE_PROVIDER: "mock" }), {
+      hermes,
+      requireHermesApiKey: false,
+      requireRealtimeProviderConfig: false,
+    });
+
+    expect(report.hermes).toMatchObject({
+      ok: true,
+      approvals: {
+        uiSupported: true,
+        interactive: true,
+        fallback: "deny_all_then_stop",
+        requiredFeature: "run_approval_response_by_id",
+        negotiated: true,
+      },
+    });
   });
 });

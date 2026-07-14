@@ -1,0 +1,7 @@
+{
+  "event": "approval.responded",
+  "run_id": "run_fixture_v0182_approval",
+  "timestamp": 0,
+  "choice": "deny",
+  "resolved": 1
+}

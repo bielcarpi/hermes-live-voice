@@ -1,0 +1,18 @@
+{
+  "command": "git push --force fixture-origin fixture-branch",
+  "pattern_key": "git force push (rewrites remote history)",
+  "pattern_keys": [
+    "git force push (rewrites remote history)"
+  ],
+  "description": "git force push (rewrites remote history)",
+  "allow_permanent": true,
+  "event": "approval.request",
+  "run_id": "run_fixture_v0182_approval",
+  "timestamp": 0,
+  "choices": [
+    "once",
+    "session",
+    "always",
+    "deny"
+  ]
+}
