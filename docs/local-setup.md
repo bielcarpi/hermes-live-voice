@@ -23,9 +23,11 @@ The gateway expects these feature flags to be true:
 - `run_stop`
 - `run_approval_response`
 
-Hermes JSON requests time out after 30 seconds by default. Set `HERMES_LIVE_HERMES_TIMEOUT_MS` if your local or remote Hermes API Server needs a different bound.
+Hermes JSON requests time out after 30 seconds by default. Set `HERMES_LIVE_HERMES_TIMEOUT_MS` to a positive number of milliseconds if your local or remote Hermes API Server needs a different bound. Zero is rejected because every Hermes request must remain bounded.
 
 Realtime provider sessions must report ready within 15 seconds by default. Set `HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS` if your provider or network needs a longer startup bound.
+
+Provider shutdown is also confirmation-based: the gateway waits for the upstream provider's close event and reports cleanup as unconfirmed if it never arrives. The Google Gen AI SDK does not currently expose its pre-open WebSocket, so a timed-out Gemini handshake cannot be physically aborted in place. The gateway retains that pending attempt, reports cleanup as unconfirmed if it misses the cleanup deadline, and closes the session if the SDK later returns one; the provider-smoke command applies the same late-close safeguard after reporting a timeout.
 
 The one-shot `hermes-live client` command must complete both its WebSocket upgrade and protocol `session.ready` handshake within 10 seconds by default. Set `HERMES_LIVE_CLIENT_READY_TIMEOUT_MS` only when a slower trusted network requires it.
 
@@ -117,6 +119,8 @@ Production runs default the demo off when `NODE_ENV=production`. If you want to 
 HERMES_LIVE_DEMO_ENABLED=true docker compose -f examples/docker-compose.yml up
 ```
 
+The Compose example publishes the gateway only on `127.0.0.1` by default. Set `HERMES_LIVE_HOST_PORT` to choose a different host port; use a TLS reverse proxy for remote access rather than removing the loopback bind without equivalent network controls. Its container filesystem is read-only except for a bounded `/tmp` tmpfs.
+
 ## 7. Terminal Clients
 
 With the gateway running:
@@ -131,7 +135,7 @@ That one-shot client is useful in smoke tests and scripts. For a persistent inte
 node dist/cli.js terminal
 ```
 
-The terminal console supports text turns, task progress, approvals, `/interrupt`, and `/stop`. It does not capture or play gateway audio. For local microphone use, run `hermes` and press Ctrl+B for Hermes Voice Mode; for remote gateway voice, use the Dashboard or browser UI.
+The terminal console supports text turns, task progress, negotiated approval requests or compatibility warnings, `/interrupt`, and `/stop`. It does not capture or play gateway audio. For local microphone use, run `hermes` and press Ctrl+B for Hermes Voice Mode; for remote gateway voice, use the Dashboard or browser UI.
 
 For the CLI clients, `HERMES_LIVE_URL` may be an HTTP(S) gateway origin or a WS(S) endpoint. The CLI normalizes an origin to `/v1/live` and sends `HERMES_LIVE_AUTH_TOKEN` as an upgrade header. Do not embed credentials in the URL.
 

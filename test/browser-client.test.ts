@@ -534,6 +534,45 @@ describe("HermesLiveAudio", () => {
     expect(audio.microphoneState).toBe("disposed");
   });
 
+  it("stops without waiting for a microphone permission prompt that never settles", async () => {
+    const getUserMedia = vi.fn()
+      .mockImplementationOnce(async () => await new Promise<MediaStream>(() => undefined))
+      .mockRejectedValueOnce(new Error("second permission attempt"));
+    const audio = createAudio({ mediaDevices: { getUserMedia } });
+
+    const starting = audio.startMicrophone();
+    await vi.waitFor(() => expect(getUserMedia).toHaveBeenCalledOnce());
+
+    await expect(audio.stopMicrophone({ endTurn: false })).resolves.toBeUndefined();
+    await expect(starting).resolves.toBeUndefined();
+    expect(audio.microphoneState).toBe("idle");
+    await expect(audio.startMicrophone()).rejects.toThrow("second permission attempt");
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    await expect(audio.dispose()).resolves.toBeUndefined();
+  });
+
+  it("disposes without waiting for a capture context resume that never settles", async () => {
+    const track = { stop: vi.fn() };
+    const stream = { getTracks: () => [track] } as unknown as MediaStream;
+    const context = new FakeAudioContext({});
+    context.state = "suspended";
+    context.resume = vi.fn(async () => await new Promise<void>(() => undefined));
+    context.close = vi.fn(async () => await new Promise<void>(() => undefined));
+    const audio = createAudio({
+      mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+      audioContextFactory: () => context as unknown as AudioContext,
+    });
+
+    const starting = audio.startMicrophone();
+    await vi.waitFor(() => expect(context.resume).toHaveBeenCalledOnce());
+
+    await expect(audio.dispose()).resolves.toBeUndefined();
+    await expect(starting).resolves.toBeUndefined();
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(context.close).toHaveBeenCalledOnce();
+    expect(audio.microphoneState).toBe("disposed");
+  });
+
   it("rejects negotiated G.711 microphone sessions before requesting permission", async () => {
     const client = audioClient() as ReturnType<typeof audioClient> & { session: unknown };
     client.session = {

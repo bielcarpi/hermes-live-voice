@@ -20,7 +20,7 @@ The current plugin registers:
 
 - `hermes_live_status` tool.
 - `/hermes-live` slash command.
-- Official Dashboard **Live Voice** tab with connection state, transcript, task activity, interruption, run stop, and approval controls.
+- Official Dashboard **Live Voice** tab with connection state, transcript, task activity, interruption, run stop, and capability-gated approval controls.
 - Same-origin Dashboard status and WebSocket endpoints authenticated by Hermes.
 - Server-side gateway credential injection so browser code never receives `HERMES_LIVE_AUTH_TOKEN`.
 - Packaged shared browser client, microphone worklet, and styles.
@@ -44,7 +44,7 @@ Choose **Live Voice** from the plugin navigation group. The page checks readines
 - text fallback for mock mode and inaccessible microphones;
 - separate **Interrupt speech** and **Stop Hermes task** controls;
 - sanitized task events and final output;
-- approval choices, including a second confirmation for permanent inspectable patterns;
+- negotiated approval status and, when Hermes supports targeted response IDs, explicit choices with a second confirmation for permanent inspectable patterns;
 - responsive desktop and mobile layouts.
 
 `HERMES_LIVE_URL` in the Dashboard process must be a credential-free HTTP(S) gateway origin, such as `http://127.0.0.1:8788`. It must not contain user information, query parameters, fragments, or an embedded bearer. Configure `HERMES_LIVE_AUTH_TOKEN` separately in the Dashboard process when the gateway requires it.
@@ -124,7 +124,7 @@ The terminal surface is text-control only. Use Hermes Ctrl+B Voice Mode for loca
 
 ## Boundary
 
-The realtime provider does not receive Hermes tools directly. It receives gateway tools that start, stop, and inspect Hermes runs. Approval decisions are never provider tools: they come from the authenticated human client and are checked against the gateway's pending FIFO approval envelope. That boundary is what lets Hermes stay the brain while realtime providers handle voice and turn-taking.
+The realtime provider does not receive Hermes tools directly. It receives gateway tools that start, stop, and inspect Hermes runs. Approval decisions are never provider tools: when Hermes advertises targeted approval identity, they come from the authenticated human client and are checked against the exact pending gateway envelope. An older uncorrelated approval request triggers deny/stop/session-close containment instead of an interactive decision. That boundary is what lets Hermes stay the brain while realtime providers handle voice and turn-taking.
 
 ## Install In Hermes
 

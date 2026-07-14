@@ -20,6 +20,6 @@ After installing the npm package, the equivalent command is `hermes-live serve`.
 
 Set `HERMES_LIVE_URL` when the gateway is not at `http://127.0.0.1:8788`. Set `HERMES_LIVE_AUTH_TOKEN` in the Hermes process when the gateway requires authentication. The status tool reports whether a token is configured but never returns its value.
 
-Start or restart `hermes dashboard` after enabling the plugin, then choose **Live Voice**. The Dashboard tab provides microphone and playback controls, text fallback, transcripts, task progress, separate speech interruption and Hermes run cancellation, and approval decisions. Its backend applies the gateway bearer server-side; the browser connects only to an authenticated same-origin plugin WebSocket.
+Start or restart `hermes dashboard` after enabling the plugin, then choose **Live Voice**. The Dashboard tab provides microphone and playback controls, text fallback, transcripts, task progress, separate speech interruption and Hermes run cancellation, and capability-gated approval decisions. Hermes versions without targeted approval IDs show a fail-closed status; an approval-requiring run is denied where possible, stopped, and its voice session closed for verification. Its backend applies the gateway bearer server-side; the browser connects only to an authenticated same-origin plugin WebSocket.
 
 For installation, provider configuration, architecture, and security guidance, see the main [Hermes Live Voice repository](https://github.com/bielcarpi/hermes-live-voice).
