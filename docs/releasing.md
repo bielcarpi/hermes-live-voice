@@ -1,13 +1,30 @@
 # Releasing
 
-Releases are tag-driven and must be reproducible from a clean `main` branch.
+Releases are tag-driven, immutable, and reproducible from protected `main`. Prereleases publish to npm's `next` tag; stable releases publish to `latest`.
+
+## Version And Evidence Policy
+
+Use a prerelease such as `0.5.0-beta.1` while a new protocol or durability contract is gathering real-world evidence. Do not promote a beta to `0.5.0` merely because automated tests pass.
+
+For the v0.5 task-supervisor line, release notes must distinguish:
+
+- client/provider disconnect continuation;
+- gateway-restart recovery while the same Hermes process remains alive;
+- the honest lack of in-progress recovery after a Hermes Agent restart;
+- fenced `dispatch_unknown` behavior;
+- OpenAI out-of-band versus Gemini best-effort spoken notifications;
+- the absence of interactive approvals.
 
 ## Prepare
 
-1. Move user-visible entries from `Unreleased` into a versioned changelog section.
-2. Update `package.json`, `package-lock.json`, `plugins/hermes-live/plugin.yaml`, and `plugins/hermes-live/dashboard/manifest.json` to the same semantic version.
-3. Confirm the documented provider defaults against official provider documentation.
-4. Run the complete local gate:
+1. Move user-visible changelog entries from `Unreleased` into the exact version section.
+2. Keep these versions identical:
+   - `package.json`
+   - `package-lock.json`
+   - `plugins/hermes-live/plugin.yaml`
+   - `plugins/hermes-live/dashboard/manifest.json`
+3. Confirm provider defaults against current official documentation.
+4. From a clean checkout, run:
 
    ```sh
    npm ci
@@ -17,25 +34,58 @@ Releases are tag-driven and must be reproducible from a clean `main` branch.
    docker build -t hermes-live-voice:release .
    ```
 
-5. Run `npm run check:live-provider` for every provider whose adapter or default model changed. Record the tested model and date in the release notes.
-6. Confirm `git status --short` is empty and all required GitHub checks are green.
+5. Run `npm run check:live-provider` for each changed provider/default model and record provider, model, region when relevant, and date.
+6. Install the packed tarball in a clean temporary directory and run CLI/plugin/mock smokes.
+7. Confirm `git status --short` is empty and every required GitHub check is green.
 
-## Tag and GitHub release
+## v0.5 Proof Gate
 
-Create a signed or annotated tag from the verified commit:
+Before tagging a v0.5 beta, record evidence for:
+
+- real Hermes submission, SSE completion, retained result, and exact stop;
+- immediate receipt and a second conversation turn while a task remains active;
+- exclusive serialization and disjoint read-only concurrency;
+- client detach/reconnect with snapshot and notification deduplication;
+- gateway restart using the same state file while Hermes stays alive;
+- Hermes restart producing `unknown`, not a fabricated terminal result;
+- fail-closed approval deny-all plus exact stop, with no approval UI;
+- a persistent Docker state volume with non-root/read-only hardening;
+- real OpenAI/Gemini session smoke for each advertised provider;
+- browser/Dashboard/terminal and clean-package installation smokes.
+
+Before promoting the stable v0.5 tag, repeat the gate on the final commit and complete an appropriate soak window. Document any manual audio/device coverage; tests cannot prove microphones, autoplay, perceived latency, or provider speech quality on untested hardware.
+
+## Tag And GitHub Release
+
+Create an annotated tag from the verified commit:
 
 ```sh
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-The repository ruleset prevents updates or deletion of `v*` tags, and immutable releases protect their tags and assets after publication. The release workflow serializes version tags, reruns verification, audits dependencies, packs the npm tarball, and records its SHA-256 checksum in a read-only job. It also reads the packaged `CHANGELOG.md`, extracts its exact matching version section, and fails before publication if that section is missing, duplicated, or empty. The checksum manifest stores only the tarball basename so users can download both release assets into one directory and verify them directly with `sha256sum --check SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS` on macOS). A separate job with `contents: write` downloads only those artifacts and creates a draft release with the verified changelog section prepended to GitHub's generated notes. It checks that body and byte-compares exactly two uploaded assets—the tarball and `SHA256SUMS`—before publishing the release and activating immutability. `RELEASE_NOTES.md` remains an internal Actions artifact and is never attached to the GitHub release. The write-capable job never checks out or executes repository/dependency code. If a rerun finds an existing release or recoverable draft, it requires every existing asset to match instead of replacing it.
+The repository ruleset prevents moving/deleting `v*` tags. The release workflow:
 
-## npm publication
+1. serializes version tags and reruns verification/audit;
+2. builds the npm tarball and SHA-256 manifest in a read-only job;
+3. extracts the exact matching `CHANGELOG.md` section;
+4. creates and verifies a GitHub release with exactly the tarball and `SHA256SUMS`;
+5. publishes the release and activates immutability;
+6. publishes the exact verified tarball to npm when `PUBLISH_NPM=true`.
 
-The workflow publishes only when the repository variable `PUBLISH_NPM` is `true`. Its OIDC job uses the protected `npm` environment, Node 24, and a pinned npm 11 CLI. It verifies the downloaded tarball and publishes that exact artifact without checking out or installing repository dependencies under the OIDC credential. Stable versions use the `latest` dist-tag and prereleases use `next`.
+The write-capable release job does not check out or execute repository code. Existing drafts/assets must match exactly on rerun; the workflow does not replace mismatched immutable artifacts.
 
-Configure the one npm trusted publisher with these exact values:
+Download both assets into one directory and verify with:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+```
+
+## npm Trusted Publication
+
+The OIDC publication job uses the protected `npm` environment, Node 24, and a pinned npm 11 CLI. It downloads and verifies the prepared artifact without checking out or installing repository dependencies under the publishing credential.
+
+Configure npm's trusted publisher exactly:
 
 | Field | Value |
 | --- | --- |
@@ -46,48 +96,38 @@ Configure the one npm trusted publisher with these exact values:
 | Environment | `npm` |
 | Allowed action | `npm publish` |
 
-Enter only `release.yml`, not `.github/workflows/release.yml`. The workflow filename must already exist on the default branch. Keep the GitHub environment restricted to version tags matching `v*` plus the protected `main` branch used by the recovery path below, require a release approval, and do not add an `NPM_TOKEN`.
+Enter `release.yml`, not its repository path. Keep the GitHub `npm` environment restricted to `v*` tags plus protected `main` for recovery, require a reviewer, and do not add `NPM_TOKEN`.
 
-The package must exist before its trusted publisher can be configured. For the initial claim only, enable account-level npm 2FA and manually publish the exact verified tarball from the existing GitHub release:
-
-```sh
-gh release download vX.Y.Z --pattern 'hermes-live-voice-X.Y.Z.tgz' --pattern SHA256SUMS
-shasum -a 256 -c SHA256SUMS
-npm publish ./hermes-live-voice-X.Y.Z.tgz --access public --ignore-scripts --provenance=false
-npm view hermes-live-voice@X.Y.Z name version dist.integrity repository --json
-```
-
-After the registry readback succeeds, create the trusted publisher, set `PUBLISH_NPM=true`, and restrict conventional token-based package publication:
+Once trusted publication is active, restrict conventional token publication:
 
 ```sh
 npm access set mfa=publish hermes-live-voice
 ```
 
-This setting requires 2FA for interactive publication, disallows granular and automation tokens from publishing, and leaves trusted OIDC publication available. Future version tags must publish only through the protected OIDC workflow.
+The registry verification job checks exact integrity, expected `next`/`latest` dist-tag, provenance, signatures, clean exact-version install, executable version, and help output. An already-published version is accepted only if its integrity exactly matches the verified tarball.
 
-Publication is retry-safe: an existing version is accepted only when its registry integrity exactly matches the verified tarball. A separate job with no repository or OIDC permissions then verifies the registry integrity, expected dist-tag, SLSA provenance, clean exact-version install, executable version/help output, and registry signatures. The expected `latest` or `next` tag must point to this version on every run, including recovery and idempotent reruns; rerunning a historical release after that mutable tag has legitimately advanced therefore fails closed instead of reporting stale channel state as fully verified.
+## Recover A Failed Tag Publish
 
-### Recover a failed tag publish
+Never move/delete a protected version tag or replace immutable release assets. If npm has not accepted the version and only the workflow needs repair:
 
-Never move or delete a protected version tag, and never replace assets on an immutable release. If the tag workflow exposes a publishing bug before npm accepts the version:
-
-1. Fix only `.github/workflows/release.yml` through the normal protected pull-request path.
-2. Wait for all required checks on the resulting `main` commit.
-3. Confirm the target npm version is still absent, or already has the exact expected integrity.
-4. Dispatch the recovery path from protected `main`:
+1. fix `.github/workflows/release.yml` through the protected pull-request path;
+2. wait for required checks on `main`;
+3. confirm the npm version is absent or has the exact expected integrity;
+4. dispatch from protected `main`:
 
    ```sh
    gh workflow run release.yml --ref main -f release_tag=vX.Y.Z
    ```
 
-5. Review and approve the resulting `npm` environment deployment.
+5. review/approve the `npm` environment deployment.
 
-The recovery path checks out the immutable version tag, requires that the tag remains in protected `main` history, and rejects the run if `main` differs from the tag anywhere except `release.yml`. It then rebuilds the package, byte-compares both release assets, and runs the same OIDC publication and registry verification jobs. If source or documentation changed after the release, prepare a new version instead of weakening these checks.
+The recovery path checks out the immutable tag, requires it in protected `main` history, and rejects differences from the tag outside `release.yml`. If source, tests, or documentation changed, publish a new version instead.
 
-## Post-release
+## Post-Release Readback
 
-- Install the exact released package or tarball into a clean temporary directory.
-- Run `hermes-live --help`, `hermes-live plugin status`, and the mock quick start.
-- Download the GitHub release tarball and `SHA256SUMS` into one directory, verify the checksum, and confirm the release body starts with the matching version section from `CHANGELOG.md` before the generated pull-request notes.
-- Verify the npm package metadata, dist-tag, provenance, signatures, README rendering, and executable from a clean registry install.
-- Confirm the npm package page and GitHub release both point to the same version before announcing the release.
+- Install the exact registry version into a clean directory.
+- Run `hermes-live --version`, `hermes-live --help`, `hermes-live plugin status`, and the mock quick start.
+- Verify GitHub asset checksums and that the release body begins with the exact changelog section.
+- Verify npm version, dist-tag, integrity, provenance, signatures, repository URL, README rendering, and executable.
+- Confirm GitHub and npm point to the same semantic version before announcing it.
+- Recheck `/v1/capabilities` from the released container/package and archive the v0.5 proof matrix with release notes.

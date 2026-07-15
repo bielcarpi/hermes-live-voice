@@ -1,126 +1,136 @@
 # Security Model
 
-`hermes-live` sits between untrusted clients and a powerful private agent. Treat it as a security boundary.
+Hermes Live sits between untrusted clients, realtime model providers, a private task store, and a powerful Hermes Agent. Treat the gateway as a security boundary, not as a public multi-tenant service.
 
-## Do Not Expose Hermes Directly
+## Network Boundary
 
-Hermes may have terminal, file, browser, memory, and MCP capabilities. Do not put Hermes API credentials in mobile apps or browser code. The client should talk to `hermes-live`; `hermes-live` should talk to Hermes.
+Do not expose Hermes Agent directly to browsers or mobile apps. Clients talk to Hermes Live; only the gateway talks to Hermes.
 
-## Credentials
+When `HERMES_LIVE_HOST` is network-accessible, startup requires a `HERMES_LIVE_AUTH_TOKEN` of at least 16 characters. Generate a high-entropy value, terminate TLS before the gateway, and add edge rate limits. `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` is an unsafe opt-out for an isolated trusted network only.
 
-Server-side only:
+When gateway auth is enabled:
 
-- `HERMES_AGENT_API_SERVER_KEY`
-- `GEMINI_API_KEY`
+- `WS /v1/live`, `GET /ready`, and `GET /v1/capabilities` require the bearer;
+- `GET /health` remains public;
+- server-side clients use `Authorization: Bearer <token>`;
+- direct browser WebSockets may use a query token only when they cannot set upgrade headers.
+
+Query-token URLs are secrets and must stay out of logs, analytics, referrers, screenshots, and support output. Production browser clients should use an authenticated same-origin WebSocket relay or a host-issued short-lived ticket. The Dashboard plugin implements the relay pattern and never returns the gateway token or upstream URL to browser code.
+
+Set an exact `HERMES_LIVE_ALLOW_ORIGIN` for browser deployments. Without it, browser upgrades are accepted only for matching literal loopback/localhost origins and ports. Origin policy is defense in depth, not authentication.
+
+## Credentials And Outbound Endpoints
+
+Keep these server-side:
+
+- `HERMES_AGENT_API_SERVER_KEY` (Hermes `API_SERVER_KEY`)
+- `HERMES_LIVE_AUTH_TOKEN`
+- `GEMINI_API_KEY` or Google Cloud credentials
 - `OPENAI_API_KEY`
-- Vertex/Google Cloud credentials
 
-`HERMES_LIVE_AUTH_TOKEN` is an installation-wide shared bearer. Keep it server-side for production browser/community UIs. A direct browser may use it only in a trusted local or single-user development deployment where every person with page access is allowed to control the same gateway and Hermes identity.
+`HERMES_API_KEY` is a legacy alias for the Hermes key.
 
-Set `HERMES_AGENT_API_SERVER_KEY` to Hermes Agent's `API_SERVER_KEY`. Current Hermes API Server deployments require bearer auth for every deployment, including loopback, and `hermes-live` only sends `X-Hermes-Session-Key` memory scope headers when the Hermes client is authenticated. The gateway includes that server-side session key on run creation and follow-up run-scoped calls such as event streaming, status, stop, and approval.
+`HERMES_BASE_URL` must be a credential-free HTTP(S) root origin. Paths, query strings, fragments, and embedded user information are rejected. Hermes JSON, SSE, stop, and denial requests reject redirects, preventing prompts, the API bearer, and server-owned session scope from being replayed to another origin.
 
-Hermes JSON and event-stream requests reject HTTP redirects. This pins run prompts, instructions, the API bearer, and the server-owned session scope to the configured Hermes origin instead of replaying any of them to a redirect target.
+`OPENAI_REALTIME_BASE_URL` must be a credential-free WS(S) URL without a fragment. Custom path/query values are permitted but redacted from public diagnostics; WebSocket redirects are rejected. Gemini connections are pinned to the official Developer API or a validated regional Vertex endpoint, ignoring ambient SDK base-URL overrides.
 
-Outbound endpoints are validated before use. `HERMES_BASE_URL` must be a credential-free HTTP(S) root origin: paths, query parameters, fragments, and embedded user information are rejected. `OPENAI_REALTIME_BASE_URL` must be a credential-free WS(S) URL without a fragment; custom paths and query parameters remain supported for Realtime-compatible deployments. The OpenAI adapter explicitly rejects WebSocket redirects, so its bearer is used only for the configured connection attempt.
+Provider-controlled error bodies, close reasons, event MIME types, and tool names are not copied into public diagnostics. Non-success Hermes bodies are drained through a size limit and reduced to bounded status/path context.
 
-Treat provider URL path and query values as potentially secret. `print-config`, readiness, and capability diagnostics retain only the OpenAI origin, plus structural markers showing whether a path or query is configured; they do not expose path text, query parameter names, or query values. Prefer `OPENAI_API_KEY` over putting a credential in a URL whenever the provider supports header authentication.
+## Identity And Authorization
 
-Gemini connections are pinned explicitly to the official Gemini Developer API or the official Vertex endpoint derived from a validated Google Cloud location. `GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL`, and SDK cloud-mode environment overrides cannot replace that endpoint. Vertex project/location values and `GOOGLE_GENAI_API_VERSION` are bounded to canonical tokens before they reach SDK endpoint or authentication construction.
+The server derives one Hermes session key from its configured prefix, profile, and user label. The hash of that value is the durable task owner id. List, get, stop, subscription, and notification acknowledgement all verify that owner.
 
-Realtime providers and compatible custom endpoints are untrusted response peers. Gateway logs and `provider-smoke` output do not include provider-controlled error text, close reasons, event MIME types, or tool names; only generic failure markers and bounded WebSocket-range numeric close codes are retained. This prevents an endpoint from reflecting an API key or configured URL path/query value into logs or support output.
+By default, client `profileId` and `userLabel` values are ignored. This means clients using the same gateway defaults share the same task inbox and Hermes memory scope. `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true` lets already-trusted clients choose a scope; it does not authenticate the strings, isolate tenants, or add per-user quotas.
 
-Non-success Hermes response bodies are drained through the normal size limit but are not copied into gateway errors, readiness output, or logs. Only bounded request path and HTTP status context is retained.
+Do not use the shared bearer plus trusted client identity as a multi-tenant authorization system. Put a real authenticated broker in front and map its user identity to isolated gateway/Hermes deployments or a future signed identity mechanism.
 
-`HERMES_API_KEY` remains supported as a legacy alias for existing deployments.
+## Durable State File
 
-Client-supplied identity is not trusted by default. `HERMES_LIVE_PROFILE_ID` and `HERMES_LIVE_USER_LABEL` define the server-owned Hermes memory scope. `session.start.profileId` and `session.start.userLabel` are ignored unless the operator explicitly sets `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true` for a trusted-client deployment.
+`HERMES_LIVE_TASK_STATE_FILE` contains task prompts, titles, hashed owner ids, internal Hermes run/session ids, bounded event summaries, results, usage, and notification state. It does not contain provider or Hermes API keys, but task content may include credentials, source code, paths, customer data, or other sensitive material.
 
-When `HERMES_LIVE_AUTH_TOKEN` is set, `WS /v1/live`, `GET /ready`, and `GET /v1/capabilities` require authentication. `GET /health` intentionally stays public for health checks.
+The store:
 
-When `HERMES_LIVE_HOST` is network-accessible, `hermes-live` refuses to start without a strong `HERMES_LIVE_AUTH_TOKEN`. Generate one with a command such as `openssl rand -hex 32`. Set `HERMES_LIVE_ALLOW_UNAUTHENTICATED=true` only for an isolated trusted network.
+- requires an absolute path in a dedicated gateway-owned directory;
+- creates/forces directory mode `0700` and file mode `0600` on supported Unix systems;
+- rejects a symlinked file or directory and a directory owned by another Unix user;
+- bounds document and record counts;
+- writes through a private exclusive temporary file, `fsync`, atomic rename, and directory `fsync`;
+- refuses to reset invalid JSON or schema-corrupt state;
+- freezes further mutation if durability after rename cannot be confirmed.
 
-Use `Authorization: Bearer <token>` for HTTP endpoints and server-side clients. Query-token auth is accepted only for direct browser WebSocket clients that cannot set upgrade headers; treat the resulting URL as secret and prevent it from entering logs, analytics, referrers, screenshots, or support output.
+Back up the state file as sensitive data. Stop the gateway before copying or moving it. Do not edit task status, owner, run id, or revision fields by hand. In Docker, persist `/var/lib/hermes-live` on a private volume; otherwise gateway restart recovery and the task inbox are lost.
 
-For production browser clients, use an authenticated same-origin WebSocket proxy or a backend-issued short-lived ticket. The Hermes Dashboard integration implements the proxy pattern: Hermes authenticates the browser, the plugin backend revalidates the Dashboard WebSocket request, and only that backend applies `HERMES_LIVE_AUTH_TOKEN` to the upstream gateway connection. The browser never receives the shared bearer or upstream gateway URL.
+## Provider Data Boundary
 
-The shared browser client accepts `webSocketUrlProvider` so community UIs can request a fresh host-authorized URL at connection time. The Hermes Live gateway does not currently mint per-user tickets or turn its shared bearer into multi-tenant identity.
+The selected realtime provider receives:
 
-## Data Sent To Providers
+- user audio/text;
+- the gateway system instruction and four background-task tool definitions;
+- task prompts/context that the provider chooses to delegate;
+- immediate task receipts and bounded list/get/stop tool results;
+- a generic completion digest used for spoken notification.
 
-The selected realtime provider receives user audio/text, the gateway system instruction and three tool definitions, and bounded tool results. When a delegated Hermes run completes, its final response is sent back to the realtime provider so it can continue the conversation; that response can contain information Hermes obtained from memory, files, MCP servers, or other tools.
+An exact retained result reaches the provider only when it calls `get_background_task`, normally because the user asks for details. Connected protocol clients receive their own sanitized task lifecycle independently.
 
-The provider does not receive Hermes/provider credentials, the internal Hermes session key, raw Hermes tool APIs, or approval authority. Those boundaries protect credentials and control paths, not the conversational content deliberately returned through the provider. Do not request or return information the selected provider is not allowed to process.
+The provider never receives Hermes/provider credentials, the server-owned Hermes session key, raw Hermes APIs/events, upstream run ids, the task state file, or approval authority. These controls protect credentials and action boundaries; they do not make conversational content private from the selected provider. Do not delegate data that provider is not allowed to process.
 
-Clients use one server-owned Hermes profile/user scope by default. `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true` only permits trusted clients to select a scope; it does not authenticate them and does not turn the shared gateway into a multi-tenant service.
+Task titles, summaries, and results are untrusted data. The realtime instruction forbids following instructions, links, commands, or tool requests embedded in them. UIs must render them as text, not executable HTML or trusted markup.
 
-## Built-in Demo
+## Delegation And Concurrency
 
-The browser demo is useful for local testing but should not be exposed accidentally. It is enabled by default for local development and disabled by default when `NODE_ENV=production`; set `HERMES_LIVE_DEMO_ENABLED=true` only when you intentionally want to serve it.
+The provider can request only the gateway's four task operations. Task access remains owner-scoped and exact-id based.
 
-Static demo responses include `no-store`, `nosniff`, `no-referrer`, frame denial, and a restrictive content security policy.
+Mutating or uncertain work must use `exclusive`; only provably read-only work may use `parallel_read_only`, and then only across disjoint resource keys. Resource modes are model-supplied policy metadata, not a sandbox. Hermes permissions, container isolation, filesystem permissions, network controls, and tool policy remain necessary.
 
-## Origin Checks
+Queue and session limits control accidental load, not hostile traffic. Keep `HERMES_LIVE_MAX_SESSIONS`, task concurrency, and queue bounds aligned with provider quota, Hermes capacity, and cost limits; add rate limiting before public exposure.
 
-Set:
+## Ambiguous Mutations
 
-```sh
-HERMES_LIVE_ALLOW_ORIGIN=https://app.example.com
-```
+Hermes does not currently accept an idempotency key for run creation. The gateway automatically retries only definitive `429 rate_limit_exceeded` and `503 gateway_draining` rejections. A timeout, connection loss, malformed success, or other ambiguous POST outcome becomes internal `dispatch_unknown` and public `unknown`; it is not retried.
 
-Use `*` only for local experiments.
+That state remains an admission fence because the original task may be running. Never change it to queued or repeat a mutating task until Hermes has been stopped and the target resources audited. See [operator recovery](background-tasks.md#ambiguous-dispatch-fence).
 
-Without an explicit allow-origin value, browser WebSocket upgrades are accepted only when both `Origin` and `Host` name localhost or a literal loopback address and their effective ports match. This prevents a public hostname that has been rebound to `127.0.0.1` from satisfying the default policy. Headerless terminal and native clients remain supported. Set `HERMES_LIVE_ALLOW_ORIGIN` to the exact browser origin when using any custom hostname.
-
-Origin checks are defense in depth, not authentication. They do not make an embedded shared bearer safe and do not identify a user.
-
-## Transport
-
-Use `wss://` for non-local clients. Terminate TLS at a trusted reverse proxy and forward to the local gateway port.
+An ambiguous stop also becomes `unknown`. The gateway never treats “stop requested” as terminal success and never guesses another run id.
 
 ## Approvals
 
-Interactive approval is a negotiated capability, not an assumption. The gateway requires Hermes to advertise `run_approval_response_by_id: true`, emit a bounded stable `approval_id`, and echo the exact run, approval, choice, and single resolved count. Clients receive that negotiated state in `session.ready` and must not render positive approval controls when it is unavailable.
+Protocol v3 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
 
-Hermes versions without targeted response identity are handled fail closed. The gateway never guesses which FIFO entry a visible event represents. It attempts `deny` with `resolve_all: true`, then stops the run and closes the voice session even if that denial was confirmed. The fatal `hermes_approval_identity_unsupported` error tells the operator to verify the run in Hermes before retrying. This is necessary because another authenticated controller could have resolved a different FIFO entry first; a denial count or empty queue cannot prove that the event this client observed was denied.
+When Hermes reports `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all: true` and requests stop for that exact upstream run. The public projection is non-actionable. This fail-closed rule applies even if Hermes exposes a targeted approval capability: v0.5 does not offer a human approval path.
 
-For targeted-capable Hermes versions, approval decisions should be rendered clearly in the client. The gateway does not decide whether a dangerous action should be approved, but it deliberately narrows what a client is allowed to approve.
+Do not work around this boundary by constructing a local approval card from raw Hermes events or calling the Hermes approval endpoint from browser code.
 
-Run-scoped actions are limited to the active Hermes run for the current voice session. Client messages and realtime provider tool calls cannot stop or inspect arbitrary Hermes run IDs through the gateway. The realtime provider has no approval-submission tool.
+## Recovery Boundaries
 
-The gateway projects only exact, bounded approval display values. It never truncates or strips unsafe characters and then asks the user to approve the altered text. Opaque or incomplete requests are deny-only. `once` is available only when the user can see an exact command or description. `session` and `always` require an exact inspectable permission pattern, and interactive clients require a second confirmation before `always`.
+Client and provider disconnects do not cancel tasks. Gateway restart recovery depends on the private state file and the same live Hermes process retaining its upstream run state. Current Hermes run state does not survive a Hermes Agent restart; a confirmed missing run becomes `unknown`, not failed.
 
-Every interactive approval envelope receives a gateway-owned ID correlated to a bounded upstream Hermes approval identity. Responses must match the active run, exact queue-head approval ID, exact offered choice, and a previously unused client request ID. Hermes must then confirm the exact upstream run ID, approval ID, choice, and `resolved: 1`. Exact retries are acknowledged from a bounded idempotency cache; reuse with changed data, duplicate upstream identities, widened choices, out-of-order responses, and bulk resolution fail closed.
+Persistence proves what the gateway recorded, not whether external side effects occurred. Review external systems before retrying an unknown task.
 
-Mutating Hermes calls are treated as outcome-sensitive. If the gateway cannot determine whether an approval, run start, or stop took effect, it contains the owned run and closes the session rather than retrying against uncertain state. Graceful client disconnect waits for provider cleanup and active-run stop confirmation. If complete shutdown cannot be confirmed, the gateway emits `session_shutdown_unconfirmed`, closes with WebSocket code `1011`, and tells the operator to verify task state in Hermes.
+## Audio And Payload Safety
 
-## Abuse Handling
+Raw WebSocket frames, decoded audio, text, ids, metadata, provider events, outbound buffering, Hermes JSON/SSE, task output, usage, notifications, logs, and CLI rendering have independent ceilings. Oversized or malformed known messages close/fail the session instead of being partially trusted.
 
-The gateway sends a hashed session key as `OpenAI-Safety-Identifier` when using OpenAI Realtime. This is privacy-preserving and stable enough for provider-side abuse monitoring.
+PCM sample rates and output codecs are validated. The browser helper rejects unsupported G.711 output instead of interpreting it as PCM16. Provider and Hermes requests have bounded startup/header deadlines; established Hermes SSE streams also have an idle timeout refreshed by events or keepalive bytes.
 
-Raw client WebSocket payload size is capped from `HERMES_LIVE_MAX_AUDIO_BYTES` and `HERMES_LIVE_MAX_TEXT_CHARS`, so oversized frames are closed before JSON parsing. Provider events, provider audio/transcripts, client/provider queues, gateway output buffering, Hermes JSON/SSE bodies, public run events, usage data, and CLI output have independent hard ceilings as well. Hermes JSON requests and initial SSE response headers have a request deadline; established run-event streams also have an independent idle deadline that is refreshed by events or keepalive bytes.
+OpenAI receives a hashed `OpenAI-Safety-Identifier` derived from the server-owned session key for provider-side abuse monitoring without sending the raw identity.
 
-Client metadata fields are also bounded before dispatch, including profile IDs, user labels, run IDs, reasons, MIME types, and playback truncation values.
+## Demo And Static Content
 
-Hermes run events can contain tool arguments, output, paths, errors, or other operational detail. The default `HERMES_LIVE_RUN_EVENT_DETAIL=summary` policy emits only `event`, `run_id`, `timestamp`, and `status`. It omits the upstream `approval_id`; clients receive a separate gateway-owned approval identity for correlation. Use `none` to suppress run events or `raw` only when the client is fully trusted to receive upstream Hermes payloads.
+The bundled demo is enabled by default in development and disabled by default when `NODE_ENV=production`. Leave `HERMES_LIVE_DEMO_ENABLED=false` unless it is intentionally exposed. Static responses use no-store, nosniff, no-referrer, frame denial, and a restrictive content security policy.
 
-The gateway enforces `HERMES_LIVE_MAX_SESSIONS` before opening another provider session. Keep that limit aligned with provider quotas and cost controls.
+## Deployment Checklist
 
-Add your own rate limiting before public deployment.
+- Use a high-entropy `HERMES_LIVE_AUTH_TOKEN` and exact `HERMES_LIVE_ALLOW_ORIGIN`.
+- Keep Hermes API Server private to the gateway network.
+- Use TLS and edge rate limits for non-local clients.
+- Keep all Hermes/provider credentials server-side.
+- Use a same-origin authenticated relay for browser/community UIs.
+- Keep `HERMES_LIVE_TRUST_CLIENT_IDENTITY=false` unless every client is trusted.
+- Put `HERMES_LIVE_TASK_STATE_FILE` in a private, backed-up, persistent location.
+- Persist `/var/lib/hermes-live` when using Docker.
+- Set session, task concurrency, queue, retention, and request-size limits intentionally.
+- Disable the demo unless it is a deliberate production surface.
+- Treat unknown task outcomes as potentially partially executed.
+- Inspect logs and state backups for sensitive task content before sharing them.
 
-## Public Deployment Checklist
-
-- `HERMES_LIVE_AUTH_TOKEN` is set to a high-entropy value.
-- `HERMES_AGENT_API_SERVER_KEY` is set to Hermes Agent's `API_SERVER_KEY`.
-- `HERMES_LIVE_ALLOW_ORIGIN` is exact.
-- `HERMES_LIVE_DEMO_ENABLED=false` if the public browser demo is not intentionally exposed.
-- Hermes API Server is private to the gateway network.
-- TLS is enabled.
-- Reverse proxy request size limits are configured.
-- Logs do not include secrets.
-- Provider and Hermes credentials are managed by the server environment.
-- Hermes/OpenAI base URLs satisfy the credential-free endpoint constraints; any required OpenAI query values are treated as secrets.
-- Gemini/Vertex uses the gateway-pinned official endpoint and canonical project, location, and API-version values.
-- Browser/community UIs use a same-origin authenticated WebSocket proxy or short-lived host-issued ticket instead of embedding the shared gateway bearer.
-- Rate limits exist at the edge.
-- `HERMES_LIVE_MAX_SESSIONS` matches provider quota and cost limits.
-- `HERMES_LIVE_RUN_EVENT_DETAIL` is `summary` or `none` unless every client is trusted.
+For vulnerability reporting, see the repository-level [Security Policy](../SECURITY.md).

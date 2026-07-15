@@ -3,10 +3,11 @@ import type { HermesCapabilities, HermesRunsPort } from "./ports/hermes-runs.por
 export const HERMES_TARGETED_APPROVAL_FEATURE = "run_approval_response_by_id" as const;
 
 export interface HermesApprovalCompatibility {
-  uiSupported: true;
-  interactive: boolean;
+  uiSupported: false;
+  interactive: false;
   fallback: "deny_all_then_stop";
   requiredFeature: typeof HERMES_TARGETED_APPROVAL_FEATURE;
+  upstreamTargetedResponseAdvertised: boolean;
   negotiated: boolean;
 }
 
@@ -30,12 +31,16 @@ export async function negotiateHermesApprovalCompatibility(
   }
 }
 
-function approvalCompatibility(interactive: boolean, negotiated: boolean): HermesApprovalCompatibility {
+function approvalCompatibility(upstreamTargetingAdvertised: boolean, negotiated: boolean): HermesApprovalCompatibility {
   return {
-    uiSupported: true,
-    interactive,
+    // Protocol v3 deliberately does not expose an approval UI until Hermes can
+    // prove stable approval identity across both events and targeted mutation.
+    // A capability bit alone is not sufficient proof at this boundary.
+    uiSupported: false,
+    interactive: false,
     fallback: "deny_all_then_stop",
     requiredFeature: HERMES_TARGETED_APPROVAL_FEATURE,
+    upstreamTargetedResponseAdvertised: upstreamTargetingAdvertised,
     negotiated,
   };
 }

@@ -1,7 +1,7 @@
 {
   "name": "hermes-live-voice",
-  "version": "0.4.0",
-  "description": "Give Hermes Agent a realtime voice—natural, interruptible, tool-powered conversations with live progress in the Dashboard and your own apps.",
+  "version": "0.5.0-beta.1",
+  "description": "Keep talking while Hermes keeps working—realtime voice, durable background tasks, and completion notifications for Hermes Agent.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -42,6 +42,13 @@
     "voice",
     "hermes-plugin",
     "hermes-dashboard",
+    "background-agents",
+    "durable-tasks",
+    "parallel-agents",
+    "task-supervisor",
+    "completion-notifications",
+    "self-hosted",
+    "jarvis",
     "browser-client",
     "voice-ui",
     "terminal",
@@ -56,7 +63,7 @@
     "node": ">=20"
   },
   "bin": {
-    "hermes-live": "./dist/cli.js"
+    "hermes-live": "dist/cli.js"
   },
   "files": [
     "dist",

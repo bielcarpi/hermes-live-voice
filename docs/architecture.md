@@ -1,163 +1,114 @@
 # Architecture
 
-`hermes-live-voice` is a Hermes Agent plugin package with a realtime voice gateway runtime. It installs the `hermes-live` CLI and Hermes plugin.
+Hermes Live Voice is a realtime voice control plane for Hermes Agent. The speech provider handles conversation and turn-taking; Hermes keeps its memory, tools, skills, MCP servers, and execution environment; the gateway owns authentication, durable background-task supervision, and the protocol between them.
 
-It is not a replacement for Hermes. It deliberately gives the realtime model one narrow way to use Hermes: call gateway tools that start, stop, and inspect Hermes runs. Targeted approval decisions stay on the authenticated human-client path; legacy uncorrelated requests trigger fail-closed denial, run stop, and voice-session closure.
+It is an independent integration, not a replacement for Hermes and not an official Hermes or Marvel product.
 
-## Components
+## System Shape
 
 ```txt
-Hermes Dashboard browser
-  -> authenticated same-origin plugin WebSocket
-  -> Hermes Dashboard plugin backend
-  -> authenticated hermes-live gateway
-  -> realtime provider + Hermes API Server
-
-Custom browser/mobile/desktop client
-  -> authenticated hermes-live WebSocket
-  -> realtime provider + Hermes API Server
+Hermes Dashboard / browser / terminal / native client
+  -> authenticated Hermes Live protocol v3 WebSocket
+  -> LiveGatewaySession (conversation and client subscription)
+       -> Gemini Live or OpenAI Realtime (speech and delegation decisions)
+       -> TaskSupervisor (server-owned queue, persistence, reconciliation)
+            -> Hermes Agent API Server /v1/runs
+            -> private tasks-v1.json
 ```
 
-### Client
+The Dashboard path adds a same-origin relay:
 
-Voice clients capture microphone audio, encode frames as base64 PCM16, and send JSON messages to `/v1/live`. The gateway returns provider audio, transcript deltas, Hermes run events, negotiated targeted approval requests, errors, and logs. The shared browser client provides the connection lifecycle, protocol validation, request IDs, bounded buffering, microphone worklet, and audio playback helpers used by the Hermes Dashboard integration and the bundled demo.
+```txt
+Dashboard browser
+  -> Hermes-authenticated plugin WebSocket
+  -> Hermes Live plugin backend
+  -> gateway bearer applied server-side
+  -> Hermes Live gateway
+```
 
-The terminal client is deliberately different: it keeps the same persistent session and control contract but sends and renders text only. Local terminal microphone use remains the responsibility of official Hermes Voice Mode.
+The browser never receives the installation-wide gateway bearer or Hermes API key.
 
-Clients may be:
+## Responsibilities
 
-- A Hermes-focused web or mobile client.
-- A **Live Voice** integration for Hermes Dashboard.
-- A community web UI integration or the bundled web demo.
-- A native desktop app.
-- The text-control terminal client.
+### Clients
+
+Voice clients capture microphone audio, send base64 PCM frames, play provider audio, render transcript and task state, and expose separate controls for speech interruption and exact task stop. The shared browser SDK supplies protocol validation, reconnect snapshots, task/notification caches, bounded buffering, a microphone worklet, and audio playback.
+
+The terminal uses the same persistent protocol but is text-control only. It supports the durable task inbox and exact stop without adding native audio dependencies.
 
 ### Hermes Plugin
 
-The plugin owns the Hermes-facing discovery surface:
+The optional `hermes-live` plugin provides:
 
-- Gateway metadata.
-- `hermes_live_status` tool registration.
-- `/hermes-live` slash command.
-- A Hermes Dashboard **Live Voice** tab supplied by this plugin.
-- Dashboard-packaged browser client, microphone worklet, and styles.
-- An authenticated same-origin HTTP/WebSocket proxy that keeps gateway credentials out of browser code.
-- Default local gateway URL.
-- WebSocket, readiness, and capability paths.
+- `hermes_live_status` and `/hermes-live` discovery;
+- the Hermes Dashboard **Live Voice** tab;
+- an authenticated same-origin HTTP/WebSocket relay;
+- packaged browser client, microphone worklet, and styles.
 
-The plugin should remain small and Hermes-specific. It should not turn Hermes core into a public audio/WebSocket server.
+The plugin stays small and Hermes-specific. The companion gateway remains a separate process.
 
-### Gateway
+### Live Gateway Session
 
-The gateway owns:
+`LiveGatewaySession` owns one client/provider conversation:
 
-- Client WebSocket sessions.
-- Client authentication.
-- Browser origin checks.
-- Realtime provider connections.
-- Hermes session key generation.
-- Tool-call routing.
-- Hermes run/event/approval/stop calls.
-- Static demo serving.
+- protocol negotiation, client authentication, and browser origin checks;
+- realtime provider connection and interruption state;
+- the four narrow background-task tools;
+- subscription to the owner's durable task stream;
+- safe completion announcements while the conversation is idle.
 
-### Dashboard Authentication Boundary
+A session does not own task lifetime. Closing it detaches from tasks and closes only the realtime provider connection.
 
-The Dashboard browser never receives `HERMES_LIVE_AUTH_TOKEN`. It authenticates to Hermes' own Dashboard, obtains a host-authorized same-origin WebSocket URL, and connects to the plugin backend. The backend revalidates Dashboard authentication and origin policy, then opens the upstream gateway socket with the installation credential server-side.
+### Task Supervisor
 
-The credentialed Dashboard WebSocket rejects handshake redirects. Hermes JSON calls and the long-lived event stream also reject redirects, keeping private run input and the server-owned Hermes session scope pinned to the configured origin. The OpenAI Realtime adapter likewise disables WebSocket redirects so its provider bearer cannot trigger a second connection attempt. Hermes accepts only a credential-free HTTP(S) root origin; OpenAI accepts a credential-free WS(S) URL without a fragment and redacts path/query text from public diagnostics. Gemini explicitly supplies the official Developer API or validated regional Vertex base URL to the SDK, preventing ambient SDK base-URL or cloud-mode variables from retargeting provider credentials.
+`TaskSupervisor` is a server-wide service shared by sessions. It owns:
 
-Custom/community web UIs should use the same shape: an authenticated same-origin WebSocket proxy or a backend-issued short-lived ticket. A static frontend that embeds the shared gateway bearer is suitable only for trusted local development.
+- persist-before-publish task creation;
+- owner-scoped list, get, stop, subscription, and notification acknowledgement;
+- bounded queueing and safe admission;
+- exclusive execution and disjoint read-only parallelism;
+- Hermes run creation, SSE consumption, periodic status reconciliation, and exact stop;
+- gateway-restart recovery from persisted upstream run ids;
+- retry of only definitive `429 rate_limit_exceeded` and `503 gateway_draining` rejections;
+- ambiguity fencing when a mutating outcome cannot be proven;
+- fail-closed approval denial and stop.
 
-The gateway code is organized as a small ports-and-adapters system:
-
-| Layer | Path | Responsibility |
-| --- | --- | --- |
-| Domain | `src/domain/*` | Client/server wire protocol and pure audio helpers. |
-| Application | `src/application/live-gateway/*` | Voice-session orchestration, gateway tool policy, and ports. |
-| Inbound adapters | `src/adapters/inbound/http/*` | HTTP endpoints, WebSocket upgrade/auth/origin checks, static demo serving, and WebSocket client adaptation. |
-| Hermes outbound adapter | `src/adapters/outbound/hermes/*` | Hermes API Server JSON/SSE calls behind the `HermesRunsPort`. |
-| Realtime outbound adapters | `src/adapters/outbound/realtime/*` | Gemini Live, OpenAI Realtime, and mock provider implementations behind the realtime model port. |
-
-`LiveGatewaySession` is the core use case. It depends on `ClientConnectionPort`, `HermesRunsPort`, and `LiveModelAdapter`, not on raw `ws`, provider SDKs, or Hermes HTTP details.
+See [Durable Background Tasks](background-tasks.md) for the state and recovery contract.
 
 ### Realtime Provider
 
-The provider owns:
+The realtime provider owns speech recognition/generation, conversational flow, and the decision to delegate. It receives only these gateway tools:
 
-- Speech input handling.
-- Speech output.
-- Realtime conversational flow.
-- Interruption behavior.
-- Deciding when to call a gateway tool.
+- `start_background_task`
+- `list_background_tasks`
+- `get_background_task`
+- `stop_background_task`
 
-Supported providers:
+It never receives Hermes credentials, raw Hermes tools, upstream run ids, the local state file, or approval authority. A task receipt returns quickly, so the provider can continue talking while Hermes works.
 
-- Gemini Live through `@google/genai`.
-- OpenAI Realtime through WebSocket.
-- Mock provider for local text tests.
+Supported adapters are Gemini Live, OpenAI Realtime, and a text-only mock. OpenAI can generate a response-scoped out-of-band completion announcement. Gemini completion speech is best-effort because Gemini Live has no equivalent out-of-band response channel.
 
-Provider credential tests are not part of the default CI gate. See [live-provider-testing.md](live-provider-testing.md) for the manual evidence required before calling a live deployment ready.
+### Hermes Agent
 
-### Hermes
+Hermes owns the actual delegated work. The gateway currently requires these Hermes capability flags:
 
-Hermes owns:
+- `run_submission`
+- `run_status`
+- `run_events_sse`
+- `run_stop`
+- `run_approval_response`
 
-- Memory.
-- Tools.
-- Skills.
-- MCP servers.
-- Terminal/file operations.
-- Long-running task state.
-- Human approval policy.
+The adapter uses `POST /v1/runs`, `GET /v1/runs/{run_id}`, `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/stop`, and the approval endpoint only for fail-closed denial. These upstream details never appear in protocol v3.
 
-The gateway depends on these Hermes API Server capabilities:
+Hermes currently retains active run state in its process. The gateway can reconcile after its own restart if that Hermes process remains alive; it cannot make an in-progress Hermes run survive a Hermes restart.
 
-- `GET /v1/capabilities`
-- `POST /v1/runs`
-- `GET /v1/runs/{run_id}`
-- `GET /v1/runs/{run_id}/events`
-- `POST /v1/runs/{run_id}/stop`
-- `POST /v1/runs/{run_id}/approval`
+## Ownership And Identity
 
-## Why a Gateway Runtime
-
-Realtime voice needs persistent sockets, audio frames, provider sessions, auth for app clients, barge-in handling, and latency-sensitive state. `hermes-live-voice` keeps those concerns in a gateway runtime while making the project installable and discoverable as a Hermes plugin.
-
-## Tool Boundary
-
-The realtime provider does not receive the full Hermes toolset directly.
-
-It receives gateway tools:
-
-- `start_hermes_run`
-- `get_hermes_run_status`
-- `stop_hermes_run`
-
-The realtime provider cannot submit approvals. Interactive approval is enabled only when Hermes advertises targeted response support and supplies a stable approval id. The gateway then assigns every sanitized envelope a gateway-owned id, keeps envelopes in FIFO display order, and accepts a human `approval.respond` only when its request id has not been reused and its run id, approval id, and choice match the queue head. Opaque requests are deny-only; session and permanent policy choices require an inspectable visible pattern. Mutating responses are idempotently cached, and an ambiguous Hermes approval outcome stops the run and closes the session. Bulk approval resolution is rejected in protocol v2.
-
-When Hermes cannot target a response by approval id, a displayed FIFO event is not sufficient evidence that any response resolved the same underlying queue entry. The gateway therefore exposes no interactive envelope, attempts a legacy `deny` with `resolve_all`, stops the run, and closes the voice session for operator verification. It never treats a denial count, empty queue, or FIFO timing as permission to continue.
-
-This preserves the intended chain:
-
-```txt
-Realtime model = ears, mouth, turn-taking
-Hermes = brain, memory, actions
-Gateway = translator, session manager, safety boundary
-```
-
-### Current delegation model
-
-Currently, `start_hermes_run` is synchronous from the realtime provider's perspective: its tool result returns after the Hermes SSE run reaches a terminal event. The Dashboard and connected clients still receive progress and stop controls while that work runs, plus approval controls when the negotiated Hermes contract supports them, but the speech model cannot naturally hold a second provider-side conversation or call `get_hermes_run_status` during the outstanding tool call. Provider-authored transcript lines are therefore labeled **Live voice**, not Hermes. A future async run bridge will return the run id immediately and deliver bounded progress/completion notifications independently.
-
-Gemini Live can separately emit `toolCallCancellation.ids` when an interrupted provider turn withdraws previously issued function calls. The adapter preserves those ids as a distinct event instead of treating them as ordinary speech cancellation. The gateway requires every id to match its bounded per-session tool-call ledger, suppresses queued execution and unsent/replayed results for cancelled calls, and uses the existing idempotent Hermes stop path when a cancelled `start_hermes_run` still owns a known active run. If cancellation races the Hermes start response, arrives after the owned run becomes terminal, or overlaps an in-flight provider-result send, the session fails closed for operator verification. A result whose provider send already started cannot be recalled, and completed Hermes side effects cannot be generically undone. See the [Gemini Live API reference](https://ai.google.dev/api/live#BidiGenerateContentToolCallCancellation).
-
-## Session Identity
-
-The gateway derives a Hermes session key from:
+The gateway derives a server-side Hermes session key from:
 
 - `HERMES_LIVE_SESSION_PREFIX`
-- server-owned `HERMES_LIVE_PROFILE_ID`
-- server-owned `HERMES_LIVE_USER_LABEL`
+- `HERMES_LIVE_PROFILE_ID`
+- `HERMES_LIVE_USER_LABEL`
 
 Example:
 
@@ -165,25 +116,53 @@ Example:
 agent:main:hermes-live:profile:default:user:voice
 ```
 
-Client `profileId` and `userLabel` values are ignored by default. A trusted-client deployment can explicitly set `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`, but a shared gateway must not treat those client strings as authenticated user identity.
+The same value defines the task owner scope and is hashed before persistence. Client `profileId` and `userLabel` are ignored unless `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`. That option is for already-trusted clients and does not create multi-tenant authorization.
 
-For OpenAI Realtime, the gateway also sends a hashed privacy-preserving safety identifier in the `OpenAI-Safety-Identifier` header.
+Each background task receives a separate Hermes session id derived from its stable `task_<id>`. This isolates task execution history from the realtime conversation while the owner scope controls who may inspect or stop it.
 
-The derived Hermes session key stays server-side. Clients receive the gateway session id, not the internal Hermes session key or Hermes base URL.
+## Persistence Boundary
 
-When the Hermes client is authenticated, the gateway sends the derived session key on run creation and follow-up run-scoped Hermes calls. This keeps start, event streaming, status, stop, and approval requests tied to the same server-side voice session without exposing that key to browser or mobile clients.
+The local file store contains task prompts, titles, internal run/session ids, bounded event summaries, results, usage, and notification state. It does not store provider or Hermes API keys, but prompts and results can still be sensitive.
+
+Every state is persisted before subscribers see it. The store uses atomic replacement and strict filesystem checks; corruption is fatal rather than silently replaced. In Docker, `/var/lib/hermes-live` is the only persistent writable volume and the remaining root filesystem is read-only.
+
+## Public Projection
+
+Hermes event streams are internal. Protocol v3 exposes only bounded task snapshots and lifecycle facts:
+
+- no upstream run id;
+- no raw reasoning, tool arguments, approval identity, paths, or provider envelopes;
+- bounded progress summaries;
+- retained output only for completion lifecycle or an exact `task.get`;
+- generic durable notifications.
+
+Task titles, summaries, and results remain untrusted data. The provider instruction and UIs must summarize/render them as data, never execute embedded instructions, links, markup, or tool requests.
 
 ## Failure Model
 
-The gateway should fail closed:
+The gateway favors a visible unknown state over a fabricated result:
 
-- No realtime credentials: refuse to start except in mock mode.
-- Network-accessible gateway bind without gateway auth: refuse to start unless explicitly opted out.
-- Hermes missing run features: refuse session startup.
-- Invalid client frames: return `session.error`.
-- Provider tool calls without response ids: fail before Hermes side effects.
-- Invalid or oversized provider output: close the provider/client session before forwarding it.
-- Slow client: terminate its WebSocket when bounded outbound buffering is exhausted.
-- Stream ends without a terminal run event: request stop, mark ownership indeterminate, and close the voice session until terminal state can be re-established.
-- Stop request accepted: emit `run.stopping`; retain run ownership until terminal SSE confirmation.
-- Active or still-starting run on socket close: close the realtime provider immediately, capture any late run id, and issue a separately bounded Hermes stop.
+- unsupported protocol or missing Hermes features: reject session startup;
+- missing provider credentials: reject startup except in mock mode;
+- network bind without gateway auth: reject unless the unsafe opt-out is explicit;
+- slow or oversized client/provider data: fail within bounded queues and payload limits;
+- client/provider disconnect: detach; tasks keep running;
+- confirmed busy/draining dispatch rejection: bounded backoff and safe retry;
+- ambiguous dispatch: `dispatch_unknown`, no automatic retry, scheduler fence;
+- ambiguous stop or missing upstream state: `unknown` until reconciliation can prove more;
+- approval required: deny all and stop the exact task;
+- state-file corruption or uncertain disk commit: refuse further mutation and require operator recovery.
+
+## Code Boundaries
+
+| Layer | Path | Responsibility |
+| --- | --- | --- |
+| Domain | `src/domain/protocol`, `src/domain/tasks` | Wire schemas, task records, and pure transitions. |
+| Application | `src/application/live-gateway`, `src/application/task-supervisor` | Conversation orchestration, task policy, scheduling, recovery, and ports. |
+| Inbound adapters | `src/adapters/inbound/http` | HTTP, WebSocket auth/origin policy, and demo serving. |
+| Hermes adapter | `src/adapters/outbound/hermes` | Bounded JSON/SSE calls to Hermes Runs API. |
+| Task store | `src/adapters/outbound/task-store` | Private atomic local-file persistence. |
+| Provider adapters | `src/adapters/outbound/realtime` | Gemini Live, OpenAI Realtime, and mock implementations. |
+| Clients | `clients/browser`, `src/cli` | Browser SDK/audio and terminal surfaces. |
+
+`LiveGatewaySession` and `TaskSupervisor` depend on ports, not raw WebSockets, provider SDKs, or filesystem APIs. This keeps conversation lifetime, task lifetime, and external transports independently testable.

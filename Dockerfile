@@ -8,11 +8,13 @@ FROM node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+RUN npm run check:dashboard-assets \
+    && npm run build
 
 FROM node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
+    HERMES_LIVE_TASK_STATE_FILE=/var/lib/hermes-live/tasks-v1.json \
     NPM_CONFIG_FUND=false \
     NPM_CONFIG_UPDATE_NOTIFIER=false
 COPY package.json package-lock.json* ./
@@ -23,6 +25,9 @@ COPY apps ./apps
 COPY clients ./clients
 COPY docs ./docs
 COPY plugins ./plugins
+RUN mkdir -p /var/lib/hermes-live \
+    && chown node:node /var/lib/hermes-live \
+    && chmod 700 /var/lib/hermes-live
 USER node:node
 EXPOSE 8788
 STOPSIGNAL SIGTERM

@@ -8,50 +8,696 @@ import {
 } from "../clients/browser/hermes-live-client.js";
 
 describe("HermesLiveClient", () => {
-  it("connects through session readiness and sends correlated commands", async () => {
+  it("negotiates protocol v3 and sends the exact task command envelopes", async () => {
     const client = createClient();
     const connection = client.connect();
     const socket = await nextSocket();
 
     socket.open();
-    expect(socket.sent[0]).toMatchObject({ type: "session.start", id: "req_1", profileId: "demo" });
+    expect(socket.sent[0]).toEqual({
+      type: "session.start",
+      id: "req_1",
+      protocolVersion: 3,
+      profileId: "demo",
+    });
     socket.message(readyMessage("live_1"));
 
-    await expect(connection).resolves.toMatchObject({ sessionId: "live_1" });
+    await expect(connection).resolves.toMatchObject({ sessionId: "live_1", protocolVersion: 3 });
     expect(client.connected).toBe(true);
-    expect(client.getSnapshot()).toMatchObject({ connection: "ready", run: { state: "idle" } });
+    expect(client.getSnapshot()).toMatchObject({
+      connection: "ready",
+      tasks: [],
+      activeTasks: [],
+      recentTasks: [],
+    });
 
     expect(client.sendText(" inspect this repo ")).toBe("req_2");
     expect(socket.sent.at(-1)).toEqual({ type: "text.input", id: "req_2", text: "inspect this repo" });
-
-    socket.message({ type: "run.started", runId: "run_1", sessionId: "live_1" });
+    expect(client.listTasks({ limit: 25 })).toBe("req_3");
+    expect(socket.sent.at(-1)).toEqual({ type: "task.list", id: "req_3", limit: 25 });
+    socket.message({ type: "task.snapshot", reason: "list", requestId: "req_3", tasks: [], truncated: false });
     await flushMessages();
-    expect(client.getSnapshot().run).toEqual({ state: "running", runId: "run_1" });
-    expect(client.stopRun()).toBe("req_3");
-    expect(client.getSnapshot().run).toEqual({ state: "stopping", runId: "run_1" });
+    expect(client.getTask("task_one")).toBe("req_4");
+    expect(socket.sent.at(-1)).toEqual({ type: "task.get", id: "req_4", taskId: "task_one" });
+    socket.message({
+      type: "task.snapshot",
+      reason: "get",
+      requestId: "req_4",
+      tasks: [taskSnapshot("task_one", "running", 1)],
+      truncated: false,
+    });
+    await flushMessages();
+    expect(client.tasks[0]).toMatchObject({ taskId: "task_one", state: "running" });
   });
 
-  it("restores run controls when a correlated stop request fails", async () => {
-    const client = createClient();
-    const connection = client.connect();
-    const socket = await nextSocket();
-    socket.open();
-    socket.message(readyMessage("live_stop_error"));
-    await connection;
-    socket.message({ type: "run.started", runId: "run_stop", sessionId: "live_stop_error" });
+  it("tracks overlapping tasks independently and ignores out-of-order events per task", async () => {
+    const { client, socket } = await connectedClient("live_parallel");
+    const stale = vi.fn();
+    client.on("task.stale", stale);
+
+    socket.message(taskAccepted("task_a", 1, 100));
+    socket.message(taskAccepted("task_b", 1, 101));
+    socket.message({ type: "task.started", taskId: "task_a", sequence: 3, occurredAt: 300 });
+    socket.message({
+      type: "task.progress",
+      taskId: "task_a",
+      sequence: 2,
+      occurredAt: 200,
+      progress: { message: "stale progress", percent: 10 },
+    });
+    socket.message({
+      type: "task.progress",
+      taskId: "task_b",
+      sequence: 2,
+      occurredAt: 201,
+      progress: { message: "second task", current: 1, total: 2 },
+    });
+    socket.message({
+      type: "task.completed",
+      taskId: "task_b",
+      sequence: 3,
+      occurredAt: 400,
+      result: { summary: "done", truncated: false },
+    });
     await flushMessages();
 
-    const stopRequestId = client.stopRun();
-    expect(client.getSnapshot().run).toEqual({ state: "stopping", runId: "run_stop" });
+    expect(client.tasks).toHaveLength(2);
+    expect(client.activeTasks.map((task) => task.taskId)).toEqual(["task_a"]);
+    expect(client.recentTasks.map((task) => task.taskId)).toEqual(["task_b"]);
+    expect(client.tasks.find((task) => task.taskId === "task_a")).toMatchObject({
+      sequence: 3,
+      state: "running",
+    });
+    expect(stale).toHaveBeenCalledWith({
+      taskId: "task_a",
+      type: "task.progress",
+      sequence: 2,
+      currentSequence: 3,
+    });
+  });
+
+  it("treats reconnect snapshots as authoritative for retained client history", async () => {
+    const client = createClient();
+    const firstConnection = client.connect();
+    const first = await nextSocket();
+    first.open();
+    first.message(readyMessage("live_before_reconnect"));
+    await firstConnection;
+    first.message({
+      type: "task.snapshot",
+      reason: "initial",
+      tasks: [
+        taskSnapshot("task_kept", "running", 4, { updatedAt: 400 }),
+        taskSnapshot("task_absent", "running", 2, { updatedAt: 200 }),
+        taskSnapshot("task_history", "completed", 3, { updatedAt: 300, finishedAt: 300 }),
+      ],
+      truncated: false,
+    });
+    await flushMessages();
+    const disconnecting = client.disconnect();
+    await vi.waitFor(() => expect(first.sent.at(-1)).toMatchObject({ type: "session.close", detach: true }));
+    first.serverClose(1000, "detached");
+    await disconnecting;
+    expect(client.tasks.map((task) => task.taskId)).toEqual(["task_kept", "task_history", "task_absent"]);
+
+    const secondConnection = client.connect();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const second = FakeWebSocket.instances[1]!;
+    second.open();
+    second.message(readyMessage("live_after_reconnect"));
+    await secondConnection;
+    second.message({
+      type: "task.snapshot",
+      reason: "reconnect",
+      tasks: [
+        taskSnapshot("task_kept", "completed", 5, { updatedAt: 500, finishedAt: 500 }),
+        taskSnapshot("task_new", "running", 1, { createdAt: 450, updatedAt: 450 }),
+      ],
+      truncated: false,
+    });
+    await flushMessages();
+
+    expect(client.activeTasks.map((task) => task.taskId)).toEqual(["task_new"]);
+    expect(client.recentTasks.map((task) => task.taskId)).toEqual(["task_kept"]);
+    expect(client.tasks.some((task) => task.taskId === "task_history")).toBe(false);
+    expect(client.tasks.some((task) => task.taskId === "task_absent")).toBe(false);
+  });
+
+  it("does not let stale list snapshots roll task state backward", async () => {
+    const { client, socket } = await connectedClient("live_stale_snapshot");
+    socket.message(taskAccepted("task_stable", 1, 100));
+    socket.message({ type: "task.started", taskId: "task_stable", sequence: 5, occurredAt: 500 });
+    await flushMessages();
+
+    const requestId = client.listTasks();
     socket.message({
-      type: "session.error",
-      code: "client_message_failed",
-      message: "Hermes rejected the stop request.",
-      requestId: stopRequestId,
-      recoverable: true,
+      type: "task.snapshot",
+      reason: "list",
+      requestId,
+      tasks: [taskSnapshot("task_stable", "queued", 4, { updatedAt: 400, queuePosition: 2 })],
+      truncated: false,
+    });
+    await flushMessages();
+
+    expect(client.tasks[0]).toMatchObject({ taskId: "task_stable", state: "running", sequence: 5 });
+  });
+
+  it("rejects a task.get snapshot that mutates a different task", async () => {
+    const { client, socket } = await connectedClient("live_get_correlation");
+    const requestId = client.getTask("task_requested");
+    socket.message({
+      type: "task.snapshot",
+      reason: "get",
+      requestId,
+      tasks: [taskSnapshot("task_substituted", "running", 1)],
+      truncated: false,
     });
 
-    await vi.waitFor(() => expect(client.getSnapshot().run).toEqual({ state: "running", runId: "run_stop" }));
+    await vi.waitFor(() => expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" }));
+    expect(client.tasks).toEqual([]);
+  });
+
+  it("retains more than 256 task shells without evicting active tasks", async () => {
+    const { client, socket } = await connectedClient("live_bounded_tasks");
+    socket.message(taskAccepted("task_active", 1, 100));
+    await flushMessages();
+    for (let page = 0; page < 3; page += 1) {
+      const requestId = client.listTasks({ limit: 100 });
+      socket.message({
+        type: "task.snapshot",
+        reason: "list",
+        requestId,
+        tasks: Array.from({ length: 100 }, (_, index) =>
+          taskSnapshot(`task_terminal_${page}_${index}`, "completed", 1)),
+        truncated: page < 2,
+      });
+      await flushMessages();
+    }
+
+    expect(client.tasks).toHaveLength(301);
+    expect(client.activeTasks.map((task) => task.taskId)).toEqual(["task_active"]);
+  });
+
+  it("compacts old task output while retaining every task shell and summary", async () => {
+    const { client, socket } = await connectedClient("live_bounded_task_output");
+    for (let page = 0; page < 3; page += 1) {
+      socket.message({
+        type: "task.snapshot",
+        reason: "reconnect",
+        tasks: Array.from({ length: page < 2 ? 100 : 57 }, (_, index) => {
+          const ordinal = page * 100 + index;
+          return taskSnapshot(`task_output_${ordinal}`, "completed", 1, {
+            createdAt: ordinal + 1,
+            updatedAt: ordinal + 1,
+            finishedAt: ordinal + 1,
+            result: {
+              summary: `summary ${ordinal}`,
+              output: `output ${ordinal}`,
+              truncated: false,
+            },
+          });
+        }),
+        truncated: true,
+      });
+    }
+    await flushMessages();
+
+    expect(client.tasks).toHaveLength(257);
+    expect(client.tasks.filter((task) => task.result?.output !== undefined)).toHaveLength(256);
+    expect(client.tasks.find((task) => task.taskId === "task_output_0")?.result).toEqual({
+      summary: "summary 0",
+      truncated: true,
+    });
+    expect(client.tasks.find((task) => task.taskId === "task_output_256")?.result).toEqual({
+      summary: "summary 256",
+      output: "output 256",
+      truncated: false,
+    });
+  });
+
+  it("reconciles active state once while merging multiple bounded reconnect snapshots", async () => {
+    const { client, socket } = await connectedClient("live_chunked_reconnect");
+    socket.message(taskAccepted("task_stale_active", 1, 100));
+    socket.message(taskAccepted("task_retained_terminal", 1, 101));
+    socket.message({
+      type: "task.completed",
+      taskId: "task_retained_terminal",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "done", output: "done", truncated: false },
+    });
+    await flushMessages();
+
+    socket.message(readyMessage("live_chunked_reconnect_2"));
+    socket.message({
+      type: "task.snapshot",
+      reason: "reconnect",
+      tasks: [taskSnapshot("task_new_terminal", "completed", 3)],
+      truncated: true,
+    });
+    socket.message({
+      type: "task.snapshot",
+      reason: "reconnect",
+      tasks: [taskSnapshot("task_current_active", "running", 4)],
+      truncated: true,
+    });
+    await flushMessages();
+
+    expect(client.tasks.map((task) => task.taskId)).toEqual(expect.arrayContaining([
+      "task_new_terminal",
+      "task_current_active",
+    ]));
+    expect(client.tasks.map((task) => task.taskId)).not.toContain("task_retained_terminal");
+    expect(client.tasks.map((task) => task.taskId)).not.toContain("task_stale_active");
+    expect(client.activeTasks.map((task) => task.taskId)).toEqual(["task_current_active"]);
+  });
+
+  it("hydrates more than 256 unread task notifications across reconnect frames", async () => {
+    const { client, socket } = await connectedClient("live_large_unread_inbox");
+    const close = vi.fn();
+    client.on("close", close);
+
+    for (let page = 0; page < 3; page += 1) {
+      socket.message({
+        type: "task.snapshot",
+        reason: "reconnect",
+        tasks: Array.from({ length: 100 }, (_, index) => {
+          const ordinal = page * 100 + index;
+          return taskSnapshot(`task_unread_${ordinal}`, "completed", 2, {
+            createdAt: ordinal + 1,
+            updatedAt: ordinal + 1,
+            finishedAt: ordinal + 1,
+          });
+        }),
+        truncated: true,
+      });
+    }
+    for (let ordinal = 0; ordinal < 300; ordinal += 1) {
+      socket.message(taskNotification(
+        `task_unread_${ordinal}`,
+        `notice_unread_${ordinal}`,
+        2,
+        false,
+      ));
+    }
+
+    await vi.waitFor(() => {
+      expect(client.tasks).toHaveLength(300);
+      expect(client.getSnapshot().unreadNotifications).toHaveLength(300);
+    });
+    expect(socket.closeCalls).toEqual([]);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("stops only an explicit known task and applies the correlated acknowledgement", async () => {
+    const { client, socket } = await connectedClient("live_stop");
+    socket.message(taskAccepted("task_stop", 1, 100));
+    socket.message(taskAccepted("task_other", 1, 101));
+    await flushMessages();
+
+    expect(() => client.stopTask("task_missing")).toThrow(/does not know task/);
+    const requestId = client.stopTask("task_stop", "cancel this exact task");
+    expect(socket.sent.at(-1)).toEqual({
+      type: "task.stop",
+      id: requestId,
+      taskId: "task_stop",
+      reason: "cancel this exact task",
+    });
+    expect(client.tasks.find((task) => task.taskId === "task_stop")?.state).toBe("accepted");
+    socket.message({
+      type: "task.stopping",
+      taskId: "task_stop",
+      sequence: 2,
+      occurredAt: 200,
+      requestId,
+      reason: "cancel this exact task",
+    });
+    await flushMessages();
+
+    expect(client.tasks.find((task) => task.taskId === "task_stop")?.state).toBe("stopping");
+    expect(client.tasks.find((task) => task.taskId === "task_other")?.state).toBe("accepted");
+  });
+
+  it("correlates queued cancellation as the exact task.stop result", async () => {
+    const { client, socket } = await connectedClient("live_stop_queued");
+    const succeeded = vi.fn();
+    client.on("request.succeeded", succeeded);
+    socket.message({
+      ...taskAccepted("task_queued", 1, 100),
+      state: "queued",
+      queuePosition: 1,
+    });
+    await flushMessages();
+
+    const requestId = client.stopTask("task_queued", "remove from queue");
+    socket.message({
+      type: "task.cancelled",
+      taskId: "task_queued",
+      sequence: 2,
+      occurredAt: 200,
+      requestId,
+      reason: "Task cancelled: remove from queue",
+    });
+    await flushMessages();
+
+    expect(client.tasks[0]).toMatchObject({ taskId: "task_queued", state: "cancelled", sequence: 2 });
+    expect(succeeded).toHaveBeenCalledWith(expect.objectContaining({
+      requestId,
+      request: { type: "task.stop", taskId: "task_queued" },
+      response: expect.objectContaining({ type: "task.cancelled", taskId: "task_queued" }),
+    }));
+  });
+
+  it("correlates an idempotent stop readback for an already-terminal task", async () => {
+    const { client, socket } = await connectedClient("live_stop_terminal");
+    const succeeded = vi.fn();
+    client.on("request.succeeded", succeeded);
+    socket.message(taskAccepted("task_terminal", 1, 100));
+    const terminal = {
+      type: "task.completed",
+      taskId: "task_terminal",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "already done", truncated: false },
+    };
+    socket.message(terminal);
+    await flushMessages();
+
+    const requestId = client.stopTask("task_terminal", "idempotent confirmation");
+    socket.message({ ...terminal, requestId });
+    await flushMessages();
+
+    expect(client.tasks[0]).toMatchObject({ taskId: "task_terminal", state: "completed", sequence: 2 });
+    expect(succeeded).toHaveBeenCalledWith(expect.objectContaining({
+      requestId,
+      request: { type: "task.stop", taskId: "task_terminal" },
+      response: expect.objectContaining({ type: "task.completed", taskId: "task_terminal" }),
+    }));
+    expect(() => client.stopTask("task_terminal", "repeat", { id: requestId })).not.toThrow();
+  });
+
+  it("retains unread notifications until the exact correlated acknowledgement", async () => {
+    const { client, socket } = await connectedClient("live_notification");
+    socket.message(taskAccepted("task_notice", 1, 100));
+    socket.message({
+      type: "task.completed",
+      taskId: "task_notice",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "finished", truncated: false },
+    });
+    // The lifecycle and first notification are complementary projections of
+    // one task revision, so they intentionally share sequence 2.
+    socket.message(taskNotification("task_notice", "notice_1", 2, false));
+    await flushMessages();
+
+    expect(client.getSnapshot().unreadNotifications).toEqual([
+      expect.objectContaining({ taskId: "task_notice", notificationId: "notice_1", acknowledged: false }),
+    ]);
+    // Persisting "announced" advances the task sequence without changing the
+    // stable notification identity or its creation timestamp.
+    socket.message(taskNotification("task_notice", "notice_1", 3, false));
+    await flushMessages();
+    expect(client.tasks[0]).toMatchObject({ sequence: 3 });
+    expect(client.getSnapshot().unreadNotifications[0]).toMatchObject({
+      notificationId: "notice_1",
+      createdAt: 200,
+      acknowledged: false,
+    });
+    expect(() => client.acknowledgeNotification("task_notice", "notice_wrong")).toThrow(/exact unread/);
+    const requestId = client.acknowledgeNotification("task_notice", "notice_1");
+    expect(socket.sent.at(-1)).toEqual({
+      type: "task.notification.ack",
+      id: requestId,
+      taskId: "task_notice",
+      notificationId: "notice_1",
+    });
+    socket.message(taskNotification("task_notice", "notice_1", 4, true, requestId));
+    await flushMessages();
+    expect(client.getSnapshot().unreadNotifications).toEqual([]);
+    socket.message(taskNotification("task_notice", "notice_1", 3, false));
+    await flushMessages();
+    expect(client.getSnapshot().unreadNotifications).toEqual([]);
+  });
+
+  it("withdraws an unknown notice during exact-stop recovery and publishes the terminal replacement", async () => {
+    const { client, socket } = await connectedClient("live_replaced_notification");
+    socket.message(taskAccepted("task_recovered_stop", 1, 100));
+    socket.message({
+      type: "task.unknown",
+      taskId: "task_recovered_stop",
+      sequence: 2,
+      occurredAt: 200,
+      error: { code: "task_state_unknown", message: "Stop response was ambiguous.", recoverable: false },
+    });
+    socket.message(taskNotification(
+      "task_recovered_stop",
+      "notice_unknown",
+      2,
+      false,
+      undefined,
+      "unknown",
+    ));
+    socket.message({
+      type: "task.stopping",
+      taskId: "task_recovered_stop",
+      sequence: 3,
+      occurredAt: 300,
+      reason: "Exact stop recovered.",
+    });
+    socket.message(taskNotification(
+      "task_recovered_stop",
+      "notice_unknown",
+      3,
+      true,
+      undefined,
+      "unknown",
+    ));
+    await flushMessages();
+    expect(client.getSnapshot().unreadNotifications).toEqual([]);
+    socket.message({
+      type: "task.cancelled",
+      taskId: "task_recovered_stop",
+      sequence: 4,
+      occurredAt: 400,
+      reason: "Stopped.",
+    });
+    socket.message(taskNotification(
+      "task_recovered_stop",
+      "notice_cancelled",
+      4,
+      false,
+      undefined,
+      "cancelled",
+    ));
+    await flushMessages();
+
+    expect(client.getSnapshot().unreadNotifications).toEqual([
+      expect.objectContaining({
+        taskId: "task_recovered_stop",
+        notificationId: "notice_cancelled",
+        kind: "cancelled",
+      }),
+    ]);
+    const requestId = client.acknowledgeNotification("task_recovered_stop", "notice_cancelled");
+    expect(socket.sent.at(-1)).toEqual({
+      type: "task.notification.ack",
+      id: requestId,
+      taskId: "task_recovered_stop",
+      notificationId: "notice_cancelled",
+    });
+    expect(() => client.acknowledgeNotification("task_recovered_stop", "notice_unknown"))
+      .toThrow(/exact unread/);
+  });
+
+  it("rejects a conflicting notification identity at the same task sequence", async () => {
+    const { client, socket } = await connectedClient("live_conflicting_notification_identity");
+    socket.message(taskAccepted("task_conflicting_notice", 1, 100));
+    socket.message({
+      type: "task.completed",
+      taskId: "task_conflicting_notice",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "finished", truncated: false },
+    });
+    socket.message(taskNotification("task_conflicting_notice", "notice_original", 2, false));
+    socket.message(taskNotification("task_conflicting_notice", "notice_conflict", 2, false));
+
+    await vi.waitFor(() => expect(socket.closeCalls.at(-1)).toMatchObject({
+      code: 4000,
+      reason: "invalid server message",
+    }));
+    expect(client.getSnapshot().unreadNotifications).toEqual([
+      expect.objectContaining({ notificationId: "notice_original" }),
+    ]);
+  });
+
+  it("restores one durable unread inbox item per reconnect until its exact acknowledgement", async () => {
+    const { client, socket: first } = await connectedClient("live_notice_first");
+    const delivered = vi.fn();
+    client.on("task.notification", (message) => {
+      if (message.notification.acknowledged === false) delivered(message);
+    });
+    first.message(taskAccepted("task_notice_reconnect", 1, 100));
+    first.message({
+      type: "task.completed",
+      taskId: "task_notice_reconnect",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "finished", truncated: false },
+    });
+    first.message(taskNotification("task_notice_reconnect", "notice_reconnect", 3, false));
+    await flushMessages();
+    expect(client.getSnapshot().unreadNotifications).toHaveLength(1);
+    expect(delivered).toHaveBeenCalledTimes(1);
+
+    let activeSocket = first;
+    const reconnectWithUnread = async (connectionNumber: number): Promise<FakeWebSocket> => {
+      const disconnecting = client.disconnect();
+      await vi.waitFor(() => expect(activeSocket.sent.at(-1)).toMatchObject({
+        type: "session.close",
+        detach: true,
+      }));
+      activeSocket.serverClose(1000, "detached before notification ack");
+      await disconnecting;
+
+      const reconnecting = client.connect();
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(connectionNumber));
+      const reconnected = FakeWebSocket.instances[connectionNumber - 1]!;
+      reconnected.open();
+      reconnected.message(readyMessage(`live_notice_reconnect_${connectionNumber}`));
+      await reconnecting;
+      reconnected.message({
+        type: "task.snapshot",
+        reason: "reconnect",
+        tasks: [taskSnapshot("task_notice_reconnect", "completed", 3, {
+          updatedAt: 300,
+          finishedAt: 200,
+        })],
+        truncated: false,
+      });
+      reconnected.message(taskNotification("task_notice_reconnect", "notice_reconnect", 3, false));
+      await flushMessages();
+
+      expect(client.getSnapshot().unreadNotifications).toEqual([
+        expect.objectContaining({
+          taskId: "task_notice_reconnect",
+          notificationId: "notice_reconnect",
+          acknowledged: false,
+        }),
+      ]);
+      expect(delivered).toHaveBeenCalledTimes(connectionNumber);
+      return reconnected;
+    };
+
+    activeSocket = await reconnectWithUnread(2);
+    const third = await reconnectWithUnread(3);
+    const requestId = client.acknowledgeNotification("task_notice_reconnect", "notice_reconnect");
+    third.message(taskNotification("task_notice_reconnect", "notice_reconnect", 4, true, requestId));
+    await flushMessages();
+    expect(client.getSnapshot().unreadNotifications).toEqual([]);
+
+    const disconnecting = client.disconnect();
+    await vi.waitFor(() => expect(third.sent.at(-1)).toMatchObject({ type: "session.close", detach: true }));
+    third.serverClose(1000, "detached after notification ack");
+    await disconnecting;
+    const reconnecting = client.connect();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(4));
+    const fourth = FakeWebSocket.instances[3]!;
+    fourth.open();
+    fourth.message(readyMessage("live_notice_after_ack"));
+    await reconnecting;
+    fourth.message({
+      type: "task.snapshot",
+      reason: "reconnect",
+      tasks: [taskSnapshot("task_notice_reconnect", "completed", 4, {
+        updatedAt: 400,
+        finishedAt: 200,
+      })],
+      truncated: false,
+    });
+    await flushMessages();
+    expect(client.getSnapshot().unreadNotifications).toEqual([]);
+    expect(delivered).toHaveBeenCalledTimes(3);
+  });
+
+  it("applies complementary lifecycle and notification projections in either order at one sequence", async () => {
+    const { client, socket } = await connectedClient("live_complementary_revision");
+    socket.message(taskAccepted("task_reordered", 1, 100));
+    socket.message(taskNotification("task_reordered", "notice_reordered", 2, false));
+    socket.message({
+      type: "task.completed",
+      taskId: "task_reordered",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "finished", truncated: false },
+    });
+    await flushMessages();
+
+    expect(client.tasks[0]).toMatchObject({ taskId: "task_reordered", state: "completed", sequence: 2 });
+    expect(client.getSnapshot().unreadNotifications[0]).toMatchObject({
+      taskId: "task_reordered",
+      notificationId: "notice_reordered",
+    });
+  });
+
+  it("rejects an uncorrelated task mutation without changing task state", async () => {
+    const { client, socket } = await connectedClient("live_uncorrelated");
+    socket.message(taskAccepted("task_secure", 1, 100));
+    await flushMessages();
+    socket.message({
+      type: "task.stopping",
+      taskId: "task_secure",
+      sequence: 2,
+      occurredAt: 200,
+      requestId: "request_not_ours",
+      reason: "not requested here",
+    });
+
+    await vi.waitFor(() => expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" }));
+    expect(client.tasks.find((task) => task.taskId === "task_secure")).toMatchObject({
+      sequence: 1,
+      state: "accepted",
+    });
+  });
+
+  it("preserves tasks and notifications across detach", async () => {
+    const { client, socket } = await connectedClient("live_detach");
+    socket.message(taskAccepted("task_detached", 1, 100));
+    socket.message({
+      type: "task.started",
+      taskId: "task_detached",
+      sequence: 2,
+      occurredAt: 200,
+      title: "Detached task",
+    });
+    socket.message(taskNotification("task_detached", "notice_detached", 3, false));
+    await flushMessages();
+
+    const disconnecting = client.disconnect();
+    await vi.waitFor(() => expect(socket.sent.at(-1)).toMatchObject({ type: "session.close", detach: true }));
+    socket.serverClose(1000, "detached");
+    await disconnecting;
+
+    expect(client.getSnapshot()).toMatchObject({ connection: "closed", session: undefined });
+    expect(client.tasks).toHaveLength(1);
+    expect(client.tasks[0]).toMatchObject({ state: "running", sequence: 3 });
+    expect(client.getSnapshot().unreadNotifications).toHaveLength(1);
+
+    const reconnecting = client.connect();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const reconnectedSocket = FakeWebSocket.instances[1]!;
+    reconnectedSocket.open();
+    reconnectedSocket.message(readyMessage("live_detach_reconnected"));
+    await reconnecting;
+    reconnectedSocket.message({
+      type: "task.snapshot",
+      reason: "reconnect",
+      tasks: [client.tasks[0]],
+      truncated: false,
+    });
+    await flushMessages();
+    expect(client.getSnapshot().unreadNotifications).toEqual([]);
   });
 
   it("rejects recoverable startup errors immediately instead of waiting for timeout", async () => {
@@ -75,52 +721,37 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready", protocolVersion: 2 });
+    socket.message({ type: "session.ready", protocolVersion: 3 });
 
     await expect(connection).rejects.toThrow(/requires sessionId/);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
   });
 
-  it("never widens malformed approval details beyond deny-only", () => {
-    const transformed = validateServerMessage({
-      type: "approval.request",
-      runId: "run_approval",
-      event: { event: "approval.request" },
-      approval: {
-        approvalId: "approval_safe",
-        command: "git\u001b[2J push",
-        description: "Deploy\nproduction",
-        patternKey: "terminal:git-push\u001b[31m",
-        choices: ["once", "session", "always", "deny"],
-        allowPermanent: true,
-      },
-    });
-    const invalidChoices = validateServerMessage({
-      type: "approval.request",
-      runId: "run_approval",
-      event: { event: "approval.request" },
-      approval: {
-        approvalId: "approval_safe_2",
-        command: "git push",
-        patternKey: "terminal:git-push",
-        choices: ["once", "forever", "deny"],
-        allowPermanent: true,
-      },
-    });
+  it("rejects readiness correlated to a different session.start request", async () => {
+    const client = createClient();
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message({ ...readyMessage("live_wrong_request"), requestId: "req_someone_else" });
 
-    const transformedApproval = (transformed as any).approval;
-    const invalidChoiceApproval = (invalidChoices as any).approval;
-    expect(transformedApproval).toMatchObject({
-      approvalId: "approval_safe",
-      choices: ["deny"],
-      allowPermanent: false,
-    });
-    expect(transformedApproval).not.toHaveProperty("patternKey");
-    expect(invalidChoiceApproval).toMatchObject({
-      approvalId: "approval_safe_2",
-      choices: ["deny"],
-      allowPermanent: false,
-    });
+    await expect(connection).rejects.toThrow(/did not match.*session\.start/);
+    expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
+  });
+
+  it("rejects unsupported task states and notification kinds", () => {
+    expect(() => validateServerMessage({
+      type: "task.snapshot",
+      reason: "initial",
+      tasks: [taskSnapshot("task_paused", "paused", 1)],
+      truncated: false,
+    })).toThrow(/unsupported state/);
+    expect(() => validateServerMessage({
+      ...taskNotification("task_notice", "notice_attention", 2, false),
+      notification: {
+        ...taskNotification("task_notice", "notice_attention", 2, false).notification,
+        kind: "attention",
+      },
+    })).toThrow(/unsupported kind/);
   });
 
   it("decodes only the addressed typed-array slice", async () => {
@@ -243,14 +874,14 @@ describe("HermesLiveClient", () => {
     const secondConnection = client.connect();
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
     const second = FakeWebSocket.instances[1]!;
-    first.message({ type: "run.started", runId: "stale", sessionId: "old" });
+    first.message(taskAccepted("task_stale", 1, 100));
     second.open();
     second.message(readyMessage("new"));
     await secondConnection;
     await flushMessages();
 
     expect(client.session?.sessionId).toBe("new");
-    expect(client.activeRunId).toBe("");
+    expect(client.tasks).toEqual([]);
   });
 
   it("forwards unknown future messages without treating them as malformed", async () => {
@@ -268,65 +899,6 @@ describe("HermesLiveClient", () => {
     expect(unknown).toHaveBeenCalledWith({ type: "future.event", value: 42 });
   });
 
-  it("preserves approval FIFO order and resolves only the correlated approval id", async () => {
-    const client = createClient();
-    const connection = client.connect();
-    const socket = await nextSocket();
-    socket.open();
-    socket.message(readyMessage("live_approval_queue"));
-    await connection;
-
-    socket.message(approvalRequest("run_approval", "approval_1", "first command"));
-    socket.message(approvalRequest("run_approval", "approval_2", "second command"));
-    socket.message(approvalRequest("run_approval", "approval_1", "updated first command"));
-    await vi.waitFor(() => expect(
-      client.getSnapshot().pendingApprovals.map((entry: any) => entry.approval.command),
-    ).toEqual(["updated first command", "second command"]));
-
-    socket.message({
-      type: "approval.responded",
-      requestId: "response_1",
-      runId: "run_approval",
-      approvalId: "approval_1",
-      choice: "once",
-      resolved: 1,
-    });
-    await flushMessages();
-    expect(client.getSnapshot().pendingApprovals.map((entry: any) => entry.approval.command)).toEqual([
-      "second command",
-    ]);
-
-    socket.message(approvalRequest("run_approval", "approval_3", "third command"));
-    socket.message({
-      type: "approval.responded",
-      requestId: "response_1",
-      runId: "run_approval",
-      approvalId: "approval_1",
-      choice: "once",
-      resolved: 1,
-    });
-    await flushMessages();
-    expect(client.getSnapshot().pendingApprovals).toHaveLength(2);
-
-    socket.message({
-      type: "approval.responded",
-      requestId: "response_2",
-      runId: "run_approval",
-      approvalId: "approval_2",
-      choice: "deny",
-      resolved: 1,
-    });
-    socket.message({
-      type: "approval.responded",
-      requestId: "response_3",
-      runId: "run_approval",
-      approvalId: "approval_3",
-      choice: "deny",
-      resolved: 1,
-    });
-    await vi.waitFor(() => expect(client.getSnapshot().pendingApprovals).toEqual([]));
-  });
-
   it("waits for the gateway to confirm protocol shutdown", async () => {
     const client = createClient();
     const connection = client.connect();
@@ -337,6 +909,7 @@ describe("HermesLiveClient", () => {
 
     const disconnecting = client.disconnect(`line one\n${"🚫".repeat(100)}`);
     await vi.waitFor(() => expect(socket.sent.some((message) => message.type === "session.close")).toBe(true));
+    expect(socket.sent.at(-1)).toMatchObject({ type: "session.close", detach: true });
     expect(socket.closeCalls).toEqual([]);
     socket.serverClose(1000, "session closed");
     await expect(disconnecting).resolves.toBeUndefined();
@@ -360,7 +933,7 @@ describe("HermesLiveClient", () => {
     });
 
     await expect(disconnecting).rejects.toThrow("Verify the active task state in Hermes.");
-    expect(client.getSnapshot()).toMatchObject({ connection: "closed", run: { state: "idle" } });
+    expect(client.getSnapshot()).toMatchObject({ connection: "closed", tasks: [] });
   });
 
   it("recovers to a reconnectable state when a browser never emits close", async () => {
@@ -372,13 +945,23 @@ describe("HermesLiveClient", () => {
     await connection;
     socket.suppressCloseEvent = true;
 
-    await expect(client.disconnect("test stuck close")).rejects.toThrow("did not confirm session shutdown");
+    await expect(client.disconnect("test stuck close")).rejects.toThrow("did not confirm session detach");
     expect(client.getSnapshot()).toMatchObject({
       connection: "closed",
-      run: { state: "idle" },
-      pendingApprovals: [],
+      tasks: [],
     });
     expect(client.connected).toBe(false);
+  });
+
+  it("rejects protocol v2 readiness with an actionable upgrade message", async () => {
+    const client = createClient();
+    const connection = client.connect();
+    const socket = await nextSocket();
+    socket.open();
+    socket.message({ ...readyMessage("legacy"), protocolVersion: 2 });
+
+    await expect(connection).rejects.toThrow(/protocol v2.*protocol v3.*upgrade/i);
+    expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
   });
 });
 
@@ -645,7 +1228,14 @@ describe("browser client utilities", () => {
   });
 
   it("validates state-changing server messages", () => {
-    expect(() => validateServerMessage({ type: "run.started", runId: "run" })).toThrow(/sessionId/);
+    expect(() => validateServerMessage({ type: "task.started", taskId: "task_one" })).toThrow(/sequence/);
+    expect(() => validateServerMessage({
+      type: "task.snapshot",
+      reason: "initial",
+      tasks: [{ ...taskSnapshot("task_zero", "running", 1), sequence: 0 }],
+      truncated: false,
+    })).toThrow(/sequence/);
+    expect(() => validateServerMessage({ type: "run.started", runId: "run" })).toThrow(/legacy protocol v2/);
   });
 
   it("rejects out-of-contract enums from known server messages", () => {
@@ -664,14 +1254,6 @@ describe("browser client utilities", () => {
       .toThrow(/unsupported speaker/);
     expect(() => validateServerMessage({ type: "input.speech_started", provider: "gemini" }))
       .toThrow(/unsupported provider/);
-    expect(() => validateServerMessage({
-      type: "approval.responded",
-      requestId: "request_1",
-      runId: "run_1",
-      approvalId: "approval_1",
-      choice: "everything",
-      resolved: 1,
-    })).toThrow(/unsupported choice/);
     expect(() => validateServerMessage({ type: "log", level: "fatal", message: "no" }))
       .toThrow(/unsupported level/);
   });
@@ -692,7 +1274,7 @@ function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient
 function readyMessage(sessionId: string) {
   return {
     type: "session.ready",
-    protocolVersion: 2,
+    protocolVersion: 3,
     sessionId,
     model: "mock-live",
     hermes: {},
@@ -701,22 +1283,89 @@ function readyMessage(sessionId: string) {
       model: "mock-live",
       audio: { input: { enabled: false }, output: { enabled: false }, turnDetection: "none" },
     },
+    tasks: {
+      scope: "owner",
+      sequence: "per_task",
+      reconnect: "snapshot",
+      durable: true,
+      parallel: true,
+      maxConcurrent: 4,
+      maxRetained: 256,
+      supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+    },
   };
 }
 
-function approvalRequest(runId: string, approvalId: string, command: string) {
+async function connectedClient(sessionId: string): Promise<{ client: HermesLiveClient; socket: FakeWebSocket }> {
+  const client = createClient();
+  const connection = client.connect();
+  const socket = await nextSocket();
+  socket.open();
+  socket.message(readyMessage(sessionId));
+  await connection;
+  return { client, socket };
+}
+
+function taskAccepted(taskId: string, sequence: number, occurredAt: number) {
   return {
-    type: "approval.request",
-    runId,
-    event: { event: "approval.request", approval_id: approvalId },
-    approval: {
-      approvalId,
-      command,
-      description: `Allow ${command}`,
-      patternKey: `terminal:${approvalId}`,
-      choices: ["once", "always", "deny"],
-      allowPermanent: true,
+    type: "task.accepted",
+    taskId,
+    sequence,
+    occurredAt,
+    state: "accepted",
+    title: taskId,
+  };
+}
+
+function taskNotification(
+  taskId: string,
+  notificationId: string,
+  sequence: number,
+  acknowledged: boolean,
+  requestId?: string,
+  kind: "completed" | "failed" | "cancelled" | "unknown" = "completed",
+) {
+  return {
+    type: "task.notification",
+    taskId,
+    sequence,
+    occurredAt: sequence * 100,
+    ...(requestId ? { requestId } : {}),
+    notification: {
+      notificationId,
+      kind,
+      delivery: "when_idle",
+      message: `${taskId} finished`,
+      createdAt: 200,
+      acknowledged,
     },
+  };
+}
+
+function taskSnapshot(
+  taskId: string,
+  state: string,
+  sequence: number,
+  overrides: Record<string, unknown> = {},
+) {
+  const stateFields: Record<string, unknown> = {};
+  if (state === "queued") stateFields.queuePosition = 1;
+  if (state === "completed") {
+    stateFields.result = { summary: `${taskId} completed`, truncated: false };
+    stateFields.finishedAt = sequence * 100;
+  }
+  if (state === "failed" || state === "unknown") {
+    stateFields.error = { code: "task_error", message: `${taskId} error`, recoverable: false };
+  }
+  return {
+    taskId,
+    sequence,
+    state,
+    title: taskId,
+    createdAt: 100,
+    updatedAt: sequence * 100,
+    ...stateFields,
+    ...overrides,
   };
 }
 
@@ -891,6 +1540,5 @@ function deferred<T>() {
 }
 
 async function flushMessages(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 32; index += 1) await Promise.resolve();
 }

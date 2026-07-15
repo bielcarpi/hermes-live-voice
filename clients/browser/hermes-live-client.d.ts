@@ -7,13 +7,86 @@ export type HermesLiveClientState =
   | "closed"
   | "failed";
 
-export type HermesApprovalChoice = "once" | "session" | "always" | "deny";
-export const HERMES_LIVE_PROTOCOL_VERSION: 2;
-export type HermesRunEvent = Record<string, unknown> & { event?: string; approval_id?: string };
+export const HERMES_LIVE_PROTOCOL_VERSION: 3;
+
+export type HermesLiveTaskState =
+  | "accepted"
+  | "queued"
+  | "running"
+  | "stopping"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export interface HermesLiveTaskProgress {
+  message: string;
+  stage?: string;
+  current?: number;
+  total?: number;
+  percent?: number;
+}
+
+export interface HermesLiveTaskResult {
+  summary?: string;
+  output?: string;
+  truncated: boolean;
+  usage?: Record<string, unknown>;
+}
+
+export interface HermesLiveTaskError {
+  code: string;
+  message: string;
+  recoverable: boolean;
+}
+
+export interface HermesLiveTask {
+  taskId: string;
+  sequence: number;
+  state: HermesLiveTaskState;
+  title?: string;
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  queuePosition?: number;
+  progress?: HermesLiveTaskProgress;
+  result?: HermesLiveTaskResult;
+  error?: HermesLiveTaskError;
+}
+
+export interface HermesLiveTaskNotification {
+  notificationId: string;
+  kind: "completed" | "failed" | "cancelled" | "unknown";
+  delivery: "interrupt" | "when_idle" | "silent";
+  message: string;
+  createdAt: number;
+  acknowledged: boolean;
+}
+
+export type HermesLiveUnreadNotification = HermesLiveTaskNotification & { taskId: string };
+
+export interface HermesLiveTaskCapabilities {
+  scope: "owner";
+  sequence: "per_task";
+  reconnect: "snapshot";
+  durable: boolean;
+  parallel: boolean;
+  maxConcurrent: number;
+  maxRetained: number;
+  supports: {
+    list: boolean;
+    get: boolean;
+    stop: boolean;
+    resume: false;
+    notificationAck: boolean;
+  };
+}
 
 export interface HermesLiveSessionReady {
   type: "session.ready";
-  protocolVersion: 2;
+  protocolVersion: 3;
+  requestId?: string;
   sessionId: string;
   model: string;
   hermes: { model?: string; capabilities?: Record<string, unknown> };
@@ -26,7 +99,7 @@ export interface HermesLiveSessionReady {
       turnDetection: "disabled" | "semantic_vad" | "server_vad" | "provider" | "none";
     };
   };
-  [key: string]: unknown;
+  tasks: HermesLiveTaskCapabilities;
 }
 
 export interface HermesLiveTruncation {
@@ -35,7 +108,13 @@ export interface HermesLiveTruncation {
   audioEndMs: number;
 }
 
-export type HermesLiveServerMessage =
+export interface HermesLiveTaskEventBase {
+  taskId: string;
+  sequence: number;
+  occurredAt: number;
+}
+
+export type HermesLiveKnownServerMessage =
   | HermesLiveSessionReady
   | { type: "session.error"; code: string; message: string; requestId?: string; recoverable?: boolean }
   | { type: "audio.output"; data: string; mimeType: string; itemId?: string; contentIndex?: number }
@@ -45,36 +124,24 @@ export type HermesLiveServerMessage =
   | { type: "response.completed"; responseId?: string }
   | { type: "response.cancelled"; responseId?: string }
   | { type: "response.failed"; responseId?: string; error: string }
-  | { type: "run.started"; runId: string; sessionId: string }
-  | { type: "run.event"; runId: string; event: HermesRunEvent }
-  | {
-      type: "approval.request";
-      runId: string;
-      event: HermesRunEvent;
-      approval: {
-        approvalId: string;
-        command?: string;
-        description?: string;
-        patternKey?: string;
-        patternKeys?: string[];
-        choices: HermesApprovalChoice[];
-        allowPermanent: boolean;
-      };
-    }
-  | {
-      type: "approval.responded";
-      requestId: string;
-      runId: string;
-      approvalId: string;
-      choice: HermesApprovalChoice;
-      resolved: 1;
-    }
-  | { type: "run.completed"; runId: string; output: string; usage?: Record<string, unknown> }
-  | { type: "run.failed"; runId: string; error: string }
-  | { type: "run.stopping"; runId: string; status: string }
-  | { type: "run.stopped"; runId: string; status: string }
-  | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; data?: unknown }
-  | (Record<string, unknown> & { type: string });
+  | { type: "task.snapshot"; reason: "initial" | "reconnect" | "list" | "get"; requestId?: string; tasks: HermesLiveTask[]; truncated: boolean }
+  | (HermesLiveTaskEventBase & { type: "task.accepted"; requestId?: string; state: "accepted" | "queued"; title?: string; queuePosition?: number })
+  | (HermesLiveTaskEventBase & { type: "task.started"; title?: string })
+  | (HermesLiveTaskEventBase & { type: "task.progress"; progress: HermesLiveTaskProgress })
+  | (HermesLiveTaskEventBase & { type: "task.stopping"; requestId?: string; reason?: string })
+  | (HermesLiveTaskEventBase & { type: "task.completed"; requestId?: string; result: HermesLiveTaskResult })
+  | (HermesLiveTaskEventBase & { type: "task.failed"; requestId?: string; error: HermesLiveTaskError })
+  | (HermesLiveTaskEventBase & { type: "task.cancelled"; requestId?: string; reason?: string })
+  | (HermesLiveTaskEventBase & { type: "task.unknown"; requestId?: string; error: HermesLiveTaskError })
+  | (HermesLiveTaskEventBase & {
+      type: "task.notification";
+      requestId?: string;
+      notification: HermesLiveTaskNotification;
+    })
+  | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; data?: Record<string, unknown> };
+
+export type HermesLiveUnknownServerMessage = Record<string, unknown> & { type: string };
+export type HermesLiveServerMessage = HermesLiveKnownServerMessage | HermesLiveUnknownServerMessage;
 
 export interface HermesLiveClientOptions {
   url?: string | URL;
@@ -99,11 +166,18 @@ export interface HermesLiveClientError {
 export interface HermesLiveSnapshot {
   connection: HermesLiveClientState;
   session?: HermesLiveSessionReady;
-  run: { state: "idle" } | { state: "running" | "stopping"; runId: string };
-  lastRun?: { runId: string; status: "completed" | "failed" | "stopped"; output?: string; error?: string };
-  pendingApprovals: Array<Extract<HermesLiveServerMessage, { type: "approval.request" }>>;
+  tasks: readonly HermesLiveTask[];
+  activeTasks: readonly HermesLiveTask[];
+  recentTasks: readonly HermesLiveTask[];
+  unreadNotifications: readonly HermesLiveUnreadNotification[];
   lastError?: HermesLiveClientError;
 }
+
+export type HermesLivePendingRequest =
+  | { type: "task.list" }
+  | { type: "task.get"; taskId: string }
+  | { type: "task.stop"; taskId: string }
+  | { type: "task.notification.ack"; taskId: string; notificationId: string };
 
 export interface HermesLiveClientEventMap {
   state: { state: HermesLiveClientState; previous: HermesLiveClientState };
@@ -114,24 +188,33 @@ export interface HermesLiveClientEventMap {
   error: HermesLiveClientError;
   close: { code: number; reason: string; clean: boolean };
   "audio.dropped": { id: string; direction: "input"; reason: string; bufferedAmount: number };
-  "session.ready": Extract<HermesLiveServerMessage, { type: "session.ready" }>;
-  "session.error": Extract<HermesLiveServerMessage, { type: "session.error" }>;
-  "audio.output": Extract<HermesLiveServerMessage, { type: "audio.output" }>;
-  "transcript.delta": Extract<HermesLiveServerMessage, { type: "transcript.delta" }>;
-  "input.speech_started": Extract<HermesLiveServerMessage, { type: "input.speech_started" }>;
-  "response.started": Extract<HermesLiveServerMessage, { type: "response.started" }>;
-  "response.completed": Extract<HermesLiveServerMessage, { type: "response.completed" }>;
-  "response.cancelled": Extract<HermesLiveServerMessage, { type: "response.cancelled" }>;
-  "response.failed": Extract<HermesLiveServerMessage, { type: "response.failed" }>;
-  "run.started": Extract<HermesLiveServerMessage, { type: "run.started" }>;
-  "run.event": Extract<HermesLiveServerMessage, { type: "run.event" }>;
-  "approval.request": Extract<HermesLiveServerMessage, { type: "approval.request" }>;
-  "approval.responded": Extract<HermesLiveServerMessage, { type: "approval.responded" }>;
-  "run.completed": Extract<HermesLiveServerMessage, { type: "run.completed" }>;
-  "run.failed": Extract<HermesLiveServerMessage, { type: "run.failed" }>;
-  "run.stopping": Extract<HermesLiveServerMessage, { type: "run.stopping" }>;
-  "run.stopped": Extract<HermesLiveServerMessage, { type: "run.stopped" }>;
-  log: Extract<HermesLiveServerMessage, { type: "log" }>;
+  "session.ready": Extract<HermesLiveKnownServerMessage, { type: "session.ready" }>;
+  "session.error": Extract<HermesLiveKnownServerMessage, { type: "session.error" }>;
+  "audio.output": Extract<HermesLiveKnownServerMessage, { type: "audio.output" }>;
+  "transcript.delta": Extract<HermesLiveKnownServerMessage, { type: "transcript.delta" }>;
+  "input.speech_started": Extract<HermesLiveKnownServerMessage, { type: "input.speech_started" }>;
+  "response.started": Extract<HermesLiveKnownServerMessage, { type: "response.started" }>;
+  "response.completed": Extract<HermesLiveKnownServerMessage, { type: "response.completed" }>;
+  "response.cancelled": Extract<HermesLiveKnownServerMessage, { type: "response.cancelled" }>;
+  "response.failed": Extract<HermesLiveKnownServerMessage, { type: "response.failed" }>;
+  "task.snapshot": Extract<HermesLiveKnownServerMessage, { type: "task.snapshot" }>;
+  "task.accepted": Extract<HermesLiveKnownServerMessage, { type: "task.accepted" }>;
+  "task.started": Extract<HermesLiveKnownServerMessage, { type: "task.started" }>;
+  "task.progress": Extract<HermesLiveKnownServerMessage, { type: "task.progress" }>;
+  "task.stopping": Extract<HermesLiveKnownServerMessage, { type: "task.stopping" }>;
+  "task.completed": Extract<HermesLiveKnownServerMessage, { type: "task.completed" }>;
+  "task.failed": Extract<HermesLiveKnownServerMessage, { type: "task.failed" }>;
+  "task.cancelled": Extract<HermesLiveKnownServerMessage, { type: "task.cancelled" }>;
+  "task.unknown": Extract<HermesLiveKnownServerMessage, { type: "task.unknown" }>;
+  "task.notification": Extract<HermesLiveKnownServerMessage, { type: "task.notification" }>;
+  "task.updated": { task: HermesLiveTask; message: Extract<HermesLiveKnownServerMessage, HermesLiveTaskEventBase> };
+  "task.stale": { taskId: string; type: string; sequence: number; currentSequence: number };
+  "tasks.changed": { tasks: readonly HermesLiveTask[]; activeTasks: readonly HermesLiveTask[]; recentTasks: readonly HermesLiveTask[] };
+  "tasks.reconciled": { reason: "initial" | "reconnect" | "list" | "get"; requestId?: string; tasks: readonly HermesLiveTask[]; truncated: boolean };
+  "notifications.changed": readonly HermesLiveUnreadNotification[];
+  "request.failed": { requestId: string; request: HermesLivePendingRequest; error: Extract<HermesLiveKnownServerMessage, { type: "session.error" }> };
+  "request.succeeded": { requestId: string; request: HermesLivePendingRequest; response: HermesLiveKnownServerMessage };
+  log: Extract<HermesLiveKnownServerMessage, { type: "log" }>;
   "listener.error": { type: keyof HermesLiveClientEventMap; error: Error };
 }
 
@@ -140,8 +223,10 @@ export class HermesLiveClient {
   readonly configuredUrl?: string;
   readonly state: HermesLiveClientState;
   readonly connected: boolean;
-  readonly activeRunId: string;
   readonly session?: HermesLiveSessionReady;
+  readonly tasks: readonly HermesLiveTask[];
+  readonly activeTasks: readonly HermesLiveTask[];
+  readonly recentTasks: readonly HermesLiveTask[];
   on<K extends keyof HermesLiveClientEventMap>(type: K, listener: (event: HermesLiveClientEventMap[K]) => void): () => void;
   subscribe(listener: (snapshot: HermesLiveSnapshot) => void): () => void;
   getSnapshot(): HermesLiveSnapshot;
@@ -151,12 +236,10 @@ export class HermesLiveClient {
   sendAudio(data: string | ArrayBuffer | ArrayBufferView, mimeType?: string, options?: { id?: string }): string | undefined;
   endAudio(options?: { id?: string }): string;
   cancelResponse(reason?: string, truncate?: HermesLiveTruncation, options?: { id?: string }): string;
-  stopRun(reason?: string, runId?: string, options?: { id?: string }): string;
-  respondToApproval(
-    choice: HermesApprovalChoice,
-    runId: string | undefined,
-    options: { approvalId: string; id?: string },
-  ): string;
+  listTasks(options?: { id?: string; limit?: number }): string;
+  getTask(taskId: string, options?: { id?: string }): string;
+  stopTask(taskId: string, reason?: string, options?: { id?: string }): string;
+  acknowledgeNotification(taskId: string, notificationId: string, options?: { id?: string }): string;
   sendMessage(message: Record<string, unknown> & { type: string; id?: string }): string;
 }
 
@@ -191,7 +274,7 @@ export class HermesLiveAudio {
   primePlayback(): Promise<void>;
   startMicrophone(): Promise<void>;
   stopMicrophone(options?: { endTurn?: boolean }): Promise<void>;
-  play(message: Extract<HermesLiveServerMessage, { type: "audio.output" }>): Promise<boolean>;
+  play(message: Extract<HermesLiveKnownServerMessage, { type: "audio.output" }>): Promise<boolean>;
   interrupt(reason?: string): HermesLiveTruncation | undefined;
   clearPlayback(): HermesLiveTruncation | undefined;
   dispose(): Promise<void>;

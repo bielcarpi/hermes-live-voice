@@ -74,7 +74,7 @@ def main() -> None:
         if expected not in manifest:
             raise AssertionError(f"plugin.yaml missing {expected!r}")
 
-    version_match = re.search(r"^version:\s*([^\s#]+)", manifest, re.MULTILINE)
+    version_match = re.search(r"^version:[ \t]*([^\s#]+)", manifest, re.MULTILINE)
     if version_match is None:
         raise AssertionError("plugin.yaml is missing a version")
     assert_equal(version_match.group(1), package["version"], "plugin/package version")

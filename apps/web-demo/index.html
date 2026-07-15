@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Reference client for talking to Hermes Agent through a realtime voice session." />
+    <meta name="description" content="Talk to Hermes while durable background tasks keep working in parallel." />
     <title>Hermes Live Voice</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -14,9 +14,9 @@
           <div class="brand">
             <div class="brand-mark" aria-hidden="true">H</div>
             <div>
-              <p class="eyebrow">Hermes Agent · realtime bridge</p>
+              <p class="eyebrow">Hermes Agent · live voice + durable tasks</p>
               <h1 id="product-title">Hermes Live Voice</h1>
-              <p class="tagline">Talk to Hermes like a live call.</p>
+              <p class="tagline">Hermes has a voice. Now it keeps working.</p>
             </div>
           </div>
           <div class="connection-actions">
@@ -40,18 +40,38 @@
           <p>Credentials stay in this browser session and are sent only to your configured gateway.</p>
         </details>
 
-        <section id="log" class="conversation" aria-label="Conversation" aria-live="polite">
-          <div class="welcome" aria-hidden="true">
-            <span class="live-orb"></span>
-            <p class="welcome-title">Your Hermes, now conversational.</p>
-            <p>Connect, then speak or type a request that uses Hermes memory, tools, skills, and fail-closed task controls.</p>
-            <div class="prompt-examples">
-              <span>Inspect this repository and run the tests</span>
-              <span>What should I work on next?</span>
-              <span>Summarize my current project state</span>
+        <div class="workspace">
+          <section id="log" class="conversation" aria-label="Conversation" aria-live="polite">
+            <div class="welcome" aria-hidden="true">
+              <span class="live-orb"></span>
+              <p class="welcome-title">Talk naturally. Delegate without waiting.</p>
+              <p>Hermes can keep the conversation going while durable background tasks run, finish, and report back.</p>
+              <div class="prompt-examples">
+                <span>Inspect this repository while we plan the release</span>
+                <span>Run the tests and tell me when they finish</span>
+                <span>Check two approaches in parallel</span>
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+
+          <aside class="task-inbox" aria-labelledby="task-inbox-title">
+            <header class="task-inbox__header">
+              <div>
+                <p class="eyebrow">Durable background work</p>
+                <h2 id="task-inbox-title">Task inbox</h2>
+              </div>
+              <span id="task-badge" class="task-badge" aria-label="No unread task updates">0</span>
+            </header>
+            <p class="task-inbox__copy">Disconnecting only ends voice. Tasks keep working; reconnect to sync their latest state.</p>
+            <p id="task-summary" class="task-summary" role="status" aria-live="polite">No background tasks yet</p>
+            <div id="tasks" class="task-list" aria-live="polite" aria-relevant="additions text">
+              <div class="task-empty">
+                <span aria-hidden="true">⋯</span>
+                <p>Tasks delegated during the conversation will appear here.</p>
+              </div>
+            </div>
+          </aside>
+        </div>
 
         <form id="text-form" class="composer">
           <label class="sr-only" for="text">Message Hermes</label>
@@ -59,11 +79,10 @@
           <button id="send" type="submit" disabled>Send</button>
           <button id="mic" class="secondary" type="button" disabled>Start mic</button>
           <button id="interrupt" class="secondary" type="button" disabled>Interrupt speech</button>
-          <button id="stop" class="danger" type="button" disabled>Stop task</button>
         </form>
 
         <footer>
-          <span>Developer preview · self-hosted trusted-client use</span>
+          <span>Developer preview · voice sessions detach from durable tasks</span>
           <a href="https://github.com/bielcarpi/hermes-live-voice" target="_blank" rel="noreferrer">View on GitHub</a>
         </footer>
       </section>

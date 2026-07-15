@@ -1,67 +1,77 @@
 # Roadmap
 
-Hermes Live Voice is focused on one job: make Hermes Agent available behind a natural, interruptible realtime voice session without moving Hermes tools, memory, skills, or approvals into the speech provider.
+Hermes Live Voice has one product goal: keep a natural realtime conversation responsive while Hermes Agent performs supervised work in the background.
 
-The roadmap favors a small, trustworthy bridge over a broad voice platform.
+The project is a self-hosted voice control plane, not a replacement for Hermes, a generic agent framework, a telephony platform, or a claim of affiliation with Marvel.
 
-## Now: reliable self-hosted developer preview
+## v0.5 Beta: Durable Voice Supervisor
 
-- Keep Gemini Live and OpenAI Realtime adapters aligned with their documented event shapes.
-- Make installation, provider verification, and failure messages obvious.
-- Preserve the three-tool boundary between realtime providers and Hermes.
-- Keep credentials and Hermes session keys server-side.
-- Improve deterministic coverage with captured provider fixtures.
-- Keep the Dashboard integration, shared browser client, bundled demo, and terminal control surface aligned on protocol v2.
-- Collect installation, latency, interruption, and long-session evidence from real users.
+The `0.5.0-beta.1` gate is the protocol v3 architecture:
 
-## Next: excellent voice-agent experience
+- immediate stable task receipts while conversation continues;
+- server-owned tasks that outlive client/provider disconnects;
+- private atomic local-file persistence and reconnect snapshots;
+- owner-scoped list, exact get/result, exact stop, and notification acknowledgement;
+- bounded exclusive execution plus disjoint read-only parallelism;
+- internal Hermes SSE plus periodic status reconciliation;
+- gateway-restart recovery while the same Hermes process remains alive;
+- explicit `unknown` and ambiguous-dispatch fencing instead of unsafe retries;
+- durable completion notifications, with OpenAI out-of-band speech and Gemini best-effort speech;
+- aligned Dashboard, browser SDK/demo, terminal, Docker, and plugin surfaces;
+- fail-closed deny-all plus stop for approval-requiring tasks.
 
-- Return a run id immediately and deliver bounded progress/completion notifications asynchronously so provider conversation does not pause for the full Hermes task.
-- Safe structured narration for long Hermes runs, using allowlisted status messages rather than raw model reasoning or tool output.
-- Reconnect grace and explicit run reattachment for unreliable mobile networks.
-- Gemini context-window compression, session resumption, and `GoAway` handling for sessions beyond the current single-connection preview path.
-- Optional OpenAI spoken-input transcription with an explicit transcription model, separate-cost disclosure, and normalized user transcript events.
-- Session, delegation, interruption, latency, error, and cost telemetry hooks.
-- Explicit client event-detail policies for production integrations.
-- Track a stable public Hermes Dashboard backend-auth contract and test the plugin against an explicit upstream version matrix.
-- A curated extension for the community Hermes WebUI, paired with a small authenticated same-origin WebSocket proxy.
-- Accessibility testing with screen readers and real microphone permission flows across supported browsers.
+Beta exit requires real Hermes, real provider, Docker, reconnect, gateway-restart, exact-stop, package-install, and release-pipeline evidence—not only unit tests.
 
-## Later: proven deployment needs
+## Next: Make The Supervisor Operationally Complete
 
-These are demand-driven rather than assumed requirements:
+- A safe authenticated operator workflow for inspecting/resolving fenced `dispatch_unknown` state without hand-editing JSON.
+- Richer allowlisted progress stages without exposing reasoning, raw tool arguments, paths, or secrets.
+- Explicit telemetry hooks for task queue time, run time, recovery, interruption, errors, provider usage, and cost.
+- Provider reconnection: Gemini context-window compression, session resumption, and `GoAway` migration.
+- Optional OpenAI spoken-input transcription with explicit model and cost configuration.
+- Signed short-lived client identity, per-owner quotas, and a deployment model suitable for more than one trusted user.
+- A documented upstream compatibility matrix and stable Dashboard backend-auth contract.
+- A maintained Hermes WebUI adapter with an authenticated server-side relay.
+- Cross-browser/device accessibility and long-session evidence.
 
-- Signed short-lived client identity and per-user Hermes profile mapping.
-- Per-user quotas, concurrency limits, and provider cost controls.
-- WebRTC/Opus transport through an established media stack when real clients need it.
+Interactive approvals remain out until Hermes Live can prove one response targets exactly one upstream approval under concurrent controllers. UI polish is not a substitute for that identity contract.
+
+## Later: Demand-Proven Scale
+
+- Pluggable durable stores and leader/lease semantics for multi-node gateway failover.
+- Per-user/provider budgets and policy controls.
+- WebRTC/Opus through an established media stack when real remote/mobile deployments need it.
 - Additional realtime providers through the existing adapter port.
-- A separately maintained local speech adapter if users can demonstrate an offline deployment need.
-- Optional full-duplex terminal audio only if users demonstrate a need beyond official Hermes Voice Mode; it should not add native audio dependencies to the core package.
+- A separately maintained local speech adapter if offline demand is demonstrated.
+- Full-duplex terminal audio only if it adds value beyond official Hermes Voice Mode without burdening the core package.
 
-The project does not plan to become a telephony platform, device fleet manager, generic agent framework, or bundled speech-model server.
+Hermes Agent restart durability requires upstream support for persisted/recoverable execution. Hermes Live should not simulate that guarantee by replaying ambiguous mutations.
 
-## Provider roadmap
+## Provider Admission Gate
 
-Provider compatibility is earned through tests, not model-name configuration alone. A model is listed as supported only after:
+A provider/model is supported only after:
 
-1. A real session connects and acknowledges configuration.
-2. Speech input and speech output work with the expected audio format.
-3. Hermes gateway tool calls and tool responses complete.
-4. Barge-in, response cancellation, and playback truncation behave correctly.
-5. Provider errors close or recover without leaking credentials.
-6. Captured event fixtures cover the documented protocol shape.
+1. a real session connects and confirms close;
+2. negotiated speech input/output works;
+3. all four background-task tool calls and responses work;
+4. conversation continues during a task;
+5. completion notification behavior is characterized honestly;
+6. barge-in/cancellation/truncation behaves correctly;
+7. provider errors and redirects do not leak credentials;
+8. captured fixtures cover the documented event shapes.
 
-Provider source of truth: [OpenAI Realtime and audio](https://developers.openai.com/api/docs/guides/realtime) and the [Gemini Live API](https://ai.google.dev/gemini-api/docs/live-api). Future model names stay out of the roadmap until they are publicly documented and pass the compatibility gates above.
+Current sources of truth are [OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime) and the [Gemini Live API](https://ai.google.dev/gemini-api/docs/live-api). Future model names stay out until they are public and pass this gate.
 
-## Adoption gates
+## Adoption Signals
 
-Before expanding the scope, the project is looking for evidence that the bridge is useful beyond its bundled demo:
+Scope expands when there is evidence of:
 
-- independent installations that reach a real provider session;
-- repeat users rather than one-time clones;
+- independent installations completing a real background task;
+- repeat use, not one-time demos;
+- users continuing a conversation while multiple tasks run;
 - clients built outside this repository;
-- setup completed in under ten minutes by a new user;
-- real requests where Hermes tools, memory, skills, or approvals matter;
-- concrete preference for full-duplex realtime speech over the simpler built-in Hermes Voice Mode.
+- setup completed in under ten minutes;
+- real preference for this persistent voice supervisor over ordinary turn-based voice;
+- concrete demand for multi-user auth, multi-node recovery, or additional transports.
 
-If you are building one of these clients, open a focused [feature request](https://github.com/bielcarpi/hermes-live-voice/issues/new?template=feature_request.md) or start a GitHub Discussion with the deployment shape and evidence.
+Share a focused deployment shape and evidence through a [feature request](https://github.com/bielcarpi/hermes-live-voice/issues/new?template=feature_request.md) or GitHub Discussion.

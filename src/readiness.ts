@@ -49,8 +49,15 @@ function checkGatewayConfig(config: AppConfig): ReadinessSection {
     authRequired: Boolean(config.server.authToken),
     demoEnabled: config.server.demoEnabled,
     serverManagedIdentity: !config.server.trustClientIdentity,
-    runEventDetail: config.server.runEventDetail,
     maxSessions: config.server.maxSessions,
+    tasks: {
+      durable: true,
+      maxConcurrent: config.tasks.maxConcurrent,
+      maxQueued: config.tasks.maxQueued,
+      maxRetained: config.tasks.historyLimit,
+      retentionMs: config.tasks.retentionMs,
+      pollIntervalMs: config.tasks.pollIntervalMs,
+    },
   };
   try {
     assertGatewayExposureConfig(config);

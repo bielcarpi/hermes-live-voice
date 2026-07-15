@@ -195,7 +195,7 @@ async def gateway_status() -> dict[str, Any]:
     reachable = any(probe.reached_server for probe in (health, capabilities, readiness))
     capabilities_valid = _capabilities_identity_is_valid(capabilities)
     ready = capabilities_valid and _readiness_is_ready(readiness)
-    protocol_version, provider, model, audio = _capabilities_summary(
+    protocol_version, provider, model, audio, tasks = _capabilities_summary(
         capabilities.body if capabilities_valid else None,
         sensitive_values=(token,) if token else (),
     )
@@ -221,6 +221,7 @@ async def gateway_status() -> dict[str, Any]:
         "provider": provider,
         "model": model,
         "audio": audio,
+        "tasks": tasks,
         "error": error,
     }
 
@@ -235,6 +236,7 @@ def _empty_status(*, configured: bool, error: str) -> dict[str, Any]:
         "provider": None,
         "model": None,
         "audio": None,
+        "tasks": None,
         "error": error,
     }
 
@@ -276,20 +278,21 @@ def _capabilities_summary(
     capabilities: dict[str, Any] | None,
     *,
     sensitive_values: tuple[str, ...] = (),
-) -> tuple[int | None, str | None, str | None, dict[str, Any] | None]:
+) -> tuple[int | None, str | None, str | None, dict[str, Any] | None, dict[str, Any] | None]:
     if not isinstance(capabilities, dict):
-        return None, None, None, None
+        return None, None, None, None, None
 
     protocol_version = _safe_protocol_version(capabilities.get("protocolVersion"))
+    tasks = _safe_task_capabilities(capabilities.get("tasks"))
 
     realtime = capabilities.get("realtime")
     if not isinstance(realtime, dict):
-        return protocol_version, None, None, None
+        return protocol_version, None, None, None, tasks
 
     provider = _safe_text(realtime.get("provider"), sensitive_values=sensitive_values)
     model = _safe_text(realtime.get("model"), sensitive_values=sensitive_values)
     audio = _safe_audio(realtime.get("audio"), sensitive_values=sensitive_values)
-    return protocol_version, provider, model, audio
+    return protocol_version, provider, model, audio, tasks
 
 
 def _capabilities_identity_is_valid(capabilities: _Probe) -> bool:
@@ -364,6 +367,25 @@ def _safe_audio(value: Any, *, sensitive_values: tuple[str, ...] = ()) -> dict[s
     )
     if turn_detection is not None:
         result["turnDetection"] = turn_detection
+    return result or None
+
+
+def _safe_task_capabilities(value: Any) -> dict[str, Any] | None:
+    """Expose only the task settings needed by the Dashboard, never persistence paths."""
+    if not isinstance(value, dict):
+        return None
+
+    result: dict[str, Any] = {}
+    for name in ("durable", "disconnectContinuation"):
+        raw = value.get(name)
+        if isinstance(raw, bool):
+            result[name] = raw
+    for name in ("maxConcurrent", "maxRetained"):
+        raw = value.get(name)
+        if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= 1_000_000:
+            result[name] = raw
+    if "maxConcurrent" in result:
+        result["parallel"] = result["maxConcurrent"] > 1
     return result or None
 
 

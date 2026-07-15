@@ -7,7 +7,10 @@ import {
   buildOpenAIRealtimeAudioAppend,
   buildOpenAIResponseCancel,
   buildOpenAISessionUpdate,
+  buildOpenAITaskNotificationResponse,
   normalizeOpenAIRealtimeEvent,
+  OPENAI_MAX_HANDLED_TOOL_CALLS,
+  OPENAI_MAX_QUEUED_RESPONSE_REQUESTS,
   OpenAIRealtimeAdapter,
 } from "../src/adapters/outbound/realtime/openai-realtime.adapter.js";
 
@@ -122,6 +125,54 @@ describe("OpenAI Realtime adapter helpers", () => {
       content_index: 0,
       audio_end_ms: 124,
     });
+  });
+
+  it("builds a no-context, out-of-band audio notification that cannot call tools", () => {
+    const context = "[HERMES_LIVE_TASK_EVENT_V1:0123456789abcdef0123456789abcdef] private marker";
+    const announcement = "The repository review is ready.";
+    const response = buildOpenAITaskNotificationResponse({
+      context,
+      announcement,
+      rawOutput: "private Hermes output must never cross this boundary",
+    } as any);
+
+    expect(response).toEqual({
+      conversation: "none",
+      input: [],
+      instructions: `Say exactly this one short task-status sentence and nothing else: ${JSON.stringify(announcement)}`,
+      output_modalities: ["audio"],
+      tools: [],
+      tool_choice: "none",
+      metadata: { hermes_live_purpose: "task_notification" },
+    });
+    expect(JSON.stringify(response)).not.toContain(context);
+    expect(JSON.stringify(response)).not.toContain("private Hermes output");
+  });
+
+  it.each([
+    ["a non-object notification", null],
+    ["a missing context", { announcement: "Done." }],
+    ["an empty context", { context: "", announcement: "Done." }],
+    ["a blank context", { context: "   ", announcement: "Done." }],
+    ["an overlong context", { context: "x".repeat(1_001), announcement: "Done." }],
+    ["a context control character", { context: "marker\nforged", announcement: "Done." }],
+    ["a context C1 control character", { context: "marker\u0085forged", announcement: "Done." }],
+    ["a missing announcement", { context: "marker" }],
+    ["an empty announcement", { context: "marker", announcement: "" }],
+    ["a blank announcement", { context: "marker", announcement: "   " }],
+    ["an overlong announcement", { context: "marker", announcement: "x".repeat(501) }],
+    ["an announcement control character", { context: "marker", announcement: "Done.\u0000" }],
+  ])("rejects %s before creating a task-notification response", (_label, notification) => {
+    expect(() => buildOpenAITaskNotificationResponse(notification as any)).toThrow(/Task notification/);
+  });
+
+  it("accepts task-notification fields exactly at their documented bounds", () => {
+    const response = buildOpenAITaskNotificationResponse({
+      context: "c".repeat(1_000),
+      announcement: "a".repeat(500),
+    });
+
+    expect(response.instructions).toContain("a".repeat(500));
   });
 
   it("builds session updates for push-to-talk and VAD modes", () => {
@@ -314,6 +365,260 @@ describe("OpenAI Realtime adapter helpers", () => {
         .resolves.toBeUndefined();
     } finally {
       await closeServer(server);
+    }
+  });
+
+  it("sends an idle task notification as an audio out-of-band response, never a user item", async () => {
+    const harness = await createOpenAITestHarness();
+    const notification = taskNotification("Repository review");
+
+    try {
+      await harness.session.sendTaskNotification?.({
+        ...notification,
+        rawOutput: "private raw Hermes output",
+      } as any);
+      const responses = await waitForResponseCreates(harness.clientMessages, 1);
+
+      expect(responses[0]).toEqual({
+        type: "response.create",
+        response: buildOpenAITaskNotificationResponse(notification),
+      });
+      expect(harness.clientMessages).not.toContainEqual(
+        expect.objectContaining({ type: "conversation.item.create" }),
+      );
+      expect(JSON.stringify(responses[0])).not.toContain(notification.context);
+      expect(JSON.stringify(responses[0])).not.toContain("private raw Hermes output");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("preserves FIFO order, coalesces adjacent default responses, and never coalesces notifications", async () => {
+    const responseStarted = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "response" && event.status === "started") responseStarted.resolve();
+      },
+    });
+    const firstNotification = taskNotification("First task");
+    const secondNotification = taskNotification("Second task");
+
+    try {
+      await harness.session.sendText("initial question");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_initial", status: "in_progress" },
+      }));
+      await withTimeout(responseStarted.promise, 1_000, "Initial response did not start.");
+
+      await harness.session.sendText("queued question one");
+      await harness.session.sendText("queued question two");
+      await harness.session.sendTaskNotification?.(firstNotification);
+      await harness.session.sendTaskNotification?.(secondNotification);
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_initial", status: "completed" },
+      }));
+      let responses = await waitForResponseCreates(harness.clientMessages, 2);
+      expect(responses[1]).toEqual({ type: "response.create" });
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_default", status: "in_progress" },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_default", status: "completed" },
+      }));
+      responses = await waitForResponseCreates(harness.clientMessages, 3);
+      expect(responses[2]).toEqual({
+        type: "response.create",
+        response: buildOpenAITaskNotificationResponse(firstNotification),
+      });
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_notice_1", status: "in_progress" },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_notice_1", status: "completed" },
+      }));
+      responses = await waitForResponseCreates(harness.clientMessages, 4);
+      expect(responses[3]).toEqual({
+        type: "response.create",
+        response: buildOpenAITaskNotificationResponse(secondNotification),
+      });
+      expect(
+        harness.clientMessages.filter((message) => message.type === "conversation.item.create"),
+      ).toHaveLength(3);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("keeps arrival order when a notification is queued before an ordinary response", async () => {
+    const responseStarted = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "response" && event.status === "started") responseStarted.resolve();
+      },
+    });
+    const notification = taskNotification("Earlier task");
+
+    try {
+      await harness.session.sendText("initial question");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_fifo_initial", status: "in_progress" },
+      }));
+      await withTimeout(responseStarted.promise, 1_000, "Initial response did not start.");
+
+      await harness.session.sendTaskNotification?.(notification);
+      await harness.session.sendText("later ordinary question");
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_fifo_initial", status: "completed" },
+      }));
+      let responses = await waitForResponseCreates(harness.clientMessages, 2);
+      expect(responses[1]).toEqual({
+        type: "response.create",
+        response: buildOpenAITaskNotificationResponse(notification),
+      });
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_fifo_notice", status: "in_progress" },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_fifo_notice", status: "completed" },
+      }));
+      responses = await waitForResponseCreates(harness.clientMessages, 3);
+      expect(responses[2]).toEqual({ type: "response.create" });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("ignores duplicate terminal events instead of releasing two queued responses concurrently", async () => {
+    const responseStarted = deferred<void>();
+    const lifecycleEvents: any[] = [];
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type !== "response") return;
+        lifecycleEvents.push(event);
+        if (event.status === "started") responseStarted.resolve();
+      },
+    });
+    const firstNotification = taskNotification("First duplicate-race task");
+    const secondNotification = taskNotification("Second duplicate-race task");
+
+    try {
+      await harness.session.sendText("initial question");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_duplicate", status: "in_progress" },
+      }));
+      await withTimeout(responseStarted.promise, 1_000, "Initial response did not start.");
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_duplicate", status: "in_progress" },
+      }));
+      await harness.session.sendTaskNotification?.(firstNotification);
+      await harness.session.sendTaskNotification?.(secondNotification);
+
+      const terminal = JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_duplicate", status: "completed" },
+      });
+      harness.upstream.send(terminal);
+      harness.upstream.send(terminal);
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { status: "completed" },
+      }));
+      let responses = await waitForResponseCreates(harness.clientMessages, 2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(2);
+      expect(lifecycleEvents.filter((event) => event.status === "completed")).toHaveLength(1);
+      expect(lifecycleEvents.filter((event) => event.status === "started")).toHaveLength(1);
+      expect(responses[1]).toEqual({
+        type: "response.create",
+        response: buildOpenAITaskNotificationResponse(firstNotification),
+      });
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_duplicate_notice", status: "in_progress" },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_duplicate_notice", status: "completed" },
+      }));
+      responses = await waitForResponseCreates(harness.clientMessages, 3);
+      expect(responses[2]).toEqual({
+        type: "response.create",
+        response: buildOpenAITaskNotificationResponse(secondNotification),
+      });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("bounds the response queue, preserves its ordinary head, and clears it on close", async () => {
+    const responseStarted = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "response" && event.status === "started") responseStarted.resolve();
+      },
+    });
+
+    try {
+      await harness.session.sendText("initial question");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_bounded", status: "in_progress" },
+      }));
+      await withTimeout(responseStarted.promise, 1_000, "Initial response did not start.");
+
+      await harness.session.sendText("ordinary response must remain first");
+      for (let index = 0; index < OPENAI_MAX_QUEUED_RESPONSE_REQUESTS - 1; index += 1) {
+        await harness.session.sendTaskNotification?.(taskNotification(`Queued task ${index}`));
+      }
+      await expect(
+        harness.session.sendTaskNotification?.(taskNotification("Overflow task")),
+      ).rejects.toThrow(`exceeded ${OPENAI_MAX_QUEUED_RESPONSE_REQUESTS}`);
+      const conversationItemsBeforeRejectedTurn = harness.clientMessages.filter(
+        (message) => message.type === "conversation.item.create",
+      ).length;
+      await expect(harness.session.sendText("must not be partially written"))
+        .rejects.toThrow(`exceeded ${OPENAI_MAX_QUEUED_RESPONSE_REQUESTS}`);
+      expect(harness.clientMessages.filter(
+        (message) => message.type === "conversation.item.create",
+      )).toHaveLength(conversationItemsBeforeRejectedTurn);
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_bounded", status: "completed" },
+      }));
+      const responses = await waitForResponseCreates(harness.clientMessages, 2);
+      expect(responses[1]).toEqual({ type: "response.create" });
+
+      await harness.session.close();
+      await expect(
+        harness.session.sendTaskNotification?.(taskNotification("After close")),
+      ).rejects.toThrow("session is closing");
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(2);
+    } finally {
+      await harness.close();
     }
   });
 
@@ -745,6 +1050,71 @@ describe("OpenAI Realtime adapter helpers", () => {
     }
   });
 
+  it("fails closed when the lifetime tool-call ledger is full instead of evicting replay ids", async () => {
+    const acceptedLimit = deferred<void>();
+    const replayBarrier = deferred<void>();
+    const adapterError = deferred<unknown>();
+    let acceptedToolCalls = 0;
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "tool_call") {
+          acceptedToolCalls += 1;
+          if (acceptedToolCalls === OPENAI_MAX_HANDLED_TOOL_CALLS) acceptedLimit.resolve();
+        } else if (event.type === "text" && event.text === "ledger barrier") {
+          replayBarrier.resolve();
+        }
+      },
+      onError: (error) => adapterError.resolve(error),
+    });
+    const providerClosed = deferred<{ code: number; reason: string }>();
+    harness.upstream.once("close", (code, reason) => {
+      providerClosed.resolve({ code, reason: reason.toString("utf8") });
+    });
+
+    try {
+      for (let index = 0; index < OPENAI_MAX_HANDLED_TOOL_CALLS; index += 1) {
+        harness.upstream.send(JSON.stringify({
+          type: "response.function_call_arguments.done",
+          call_id: `bounded_call_${index}`,
+          name: "start_background_task",
+          arguments: JSON.stringify({ message: `Mutation ${index}` }),
+        }));
+      }
+      await withTimeout(acceptedLimit.promise, 5_000, "OpenAI tool-call ledger did not reach its limit.");
+      expect(acceptedToolCalls).toBe(OPENAI_MAX_HANDLED_TOOL_CALLS);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "bounded_call_0",
+        name: "start_background_task",
+        arguments: '{"message":"Mutation 0"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_audio_transcript.delta",
+        delta: "ledger barrier",
+      }));
+      await withTimeout(replayBarrier.promise, 2_000, "Exact replay was not processed before the ledger barrier.");
+      expect(acceptedToolCalls).toBe(OPENAI_MAX_HANDLED_TOOL_CALLS);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "must_not_evict_an_old_id",
+        name: "start_background_task",
+        arguments: '{"message":"Must fail closed"}',
+      }));
+
+      await expect(withTimeout(adapterError.promise, 2_000, "Tool-call ledger overflow was not rejected."))
+        .resolves.toMatchObject({
+          message: `OpenAI Realtime exceeded the safe lifetime limit of ${OPENAI_MAX_HANDLED_TOOL_CALLS} tool calls.`,
+        });
+      await expect(withTimeout(providerClosed.promise, 2_000, "Tool-call ledger overflow did not close OpenAI."))
+        .resolves.toEqual({ code: 1011, reason: "OpenAI Realtime provider error" });
+      expect(acceptedToolCalls).toBe(OPENAI_MAX_HANDLED_TOOL_CALLS);
+    } finally {
+      await harness.close();
+    }
+  }, 15_000);
+
   it("fails closed instead of issuing a response before multiple tool outputs", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await once(server, "listening");
@@ -818,6 +1188,69 @@ function testConnectParams(): Parameters<OpenAIRealtimeAdapter["connect"]>[0] {
     sessionId: "live_openai_test",
     systemInstruction: "test",
     callbacks: { onEvent: () => undefined },
+  };
+}
+
+async function createOpenAITestHarness(
+  callbacks: Parameters<OpenAIRealtimeAdapter["connect"]>[0]["callbacks"] = {
+    onEvent: () => undefined,
+  },
+): Promise<{
+  server: WebSocketServer;
+  upstream: import("ws").WebSocket;
+  clientMessages: any[];
+  session: Awaited<ReturnType<OpenAIRealtimeAdapter["connect"]>>;
+  close(): Promise<void>;
+}> {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const clientMessages: any[] = [];
+  const upstreamReady = deferred<import("ws").WebSocket>();
+  server.once("connection", (socket) => {
+    upstreamReady.resolve(socket);
+    socket.on("message", (raw) => {
+      const message = JSON.parse(raw.toString("utf8"));
+      clientMessages.push(message);
+      if (message.type === "session.update") {
+        socket.send(JSON.stringify({ type: "session.updated" }));
+      }
+    });
+  });
+  const adapter = new OpenAIRealtimeAdapter(testOpenAIConfig({
+    apiKey: "test-key",
+    baseUrl: `ws://127.0.0.1:${portOf(server)}/v1/realtime`,
+  }));
+  const session = await adapter.connect({
+    sessionId: "live_openai_notification_test",
+    systemInstruction: "test",
+    callbacks,
+  });
+  const upstream = await upstreamReady.promise;
+  return {
+    server,
+    upstream,
+    clientMessages,
+    session,
+    close: async () => {
+      await session.close();
+      await closeServer(server);
+    },
+  };
+}
+
+function openAIResponseCreates(clientMessages: any[]): any[] {
+  return clientMessages.filter((message) => message.type === "response.create");
+}
+
+async function waitForResponseCreates(clientMessages: any[], count: number): Promise<any[]> {
+  await vi.waitFor(() => expect(openAIResponseCreates(clientMessages)).toHaveLength(count));
+  return openAIResponseCreates(clientMessages);
+}
+
+function taskNotification(label: string): { context: string; announcement: string } {
+  return {
+    context: `[HERMES_LIVE_TASK_EVENT_V1:0123456789abcdef0123456789abcdef] ${label} finished.`,
+    announcement: `${label} finished.`,
   };
 }
 

@@ -5,6 +5,7 @@ import {
   createGeminiLiveEventForwarder,
   buildGeminiRealtimeAudioInput,
   buildGeminiRealtimeTextInput,
+  buildGeminiTaskNotificationInput,
   buildGeminiTextTurn,
   buildGeminiToolResponse,
   GeminiLiveAdapter,
@@ -260,6 +261,74 @@ describe("Gemini Live adapter helpers", () => {
 
     expect(buildGeminiRealtimeTextInput("hello")).toEqual({ text: "hello" });
     expect(sdkSession.sendRealtimeInput).toHaveBeenCalledWith({ text: "hello" });
+    expect(sdkSession.sendClientContent).not.toHaveBeenCalled();
+  });
+
+  it("sends the authenticated task marker through Gemini 3.1 realtime text input as best effort", async () => {
+    const sdkSession = {
+      sendRealtimeInput: vi.fn(async () => undefined),
+      sendClientContent: vi.fn(async () => undefined),
+    };
+    const session = new GeminiLiveSession(sdkSession, confirmedClose());
+    const notification = {
+      context: "[HERMES_LIVE_TASK_EVENT_V1:0123456789abcdef0123456789abcdef] Task finished.",
+      announcement: "Task finished.",
+      rawOutput: "private Hermes output",
+    } as any;
+
+    await session.sendTaskNotification(notification);
+
+    expect(sdkSession.sendRealtimeInput).toHaveBeenCalledOnce();
+    expect(sdkSession.sendRealtimeInput).toHaveBeenCalledWith({ text: notification.context });
+    expect(sdkSession.sendClientContent).not.toHaveBeenCalled();
+    const rendered = JSON.stringify(sdkSession.sendRealtimeInput.mock.calls[0]);
+    expect(rendered).not.toContain(notification.rawOutput);
+    expect(buildGeminiTaskNotificationInput(notification)).toEqual(
+      buildGeminiRealtimeTextInput(notification.context),
+    );
+  });
+
+  it.each([
+    ["invalid context", { context: "marker\nforged", announcement: "Done." }],
+    ["invalid announcement", { context: "marker", announcement: "Done.\u0000" }],
+  ])("rejects a task notification with %s before calling the Gemini SDK", async (_label, notification) => {
+    const sdkSession = {
+      sendRealtimeInput: vi.fn(async () => undefined),
+      sendClientContent: vi.fn(async () => undefined),
+    };
+    const session = new GeminiLiveSession(sdkSession, confirmedClose());
+
+    await expect(session.sendTaskNotification(notification)).rejects.toThrow(/Task notification/);
+    expect(sdkSession.sendClientContent).not.toHaveBeenCalled();
+    expect(sdkSession.sendRealtimeInput).not.toHaveBeenCalled();
+  });
+
+  it("fails closed rather than misusing client-content history for a Gemini 3.1 notification", async () => {
+    const sdkSession = { sendClientContent: vi.fn(async () => undefined) };
+    const session = new GeminiLiveSession(sdkSession, confirmedClose());
+
+    await expect(session.sendTaskNotification({
+      context: "[HERMES_LIVE_TASK_EVENT_V1:0123456789abcdef0123456789abcdef] Done.",
+      announcement: "Done.",
+    })).rejects.toThrow("does not support realtime text input");
+    expect(sdkSession.sendClientContent).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a Gemini notification until realtime input accepts it", async () => {
+    const sdkError = new Error("Gemini realtime input rejected the marker");
+    const sdkSession = {
+      sendRealtimeInput: vi.fn(async () => {
+        throw sdkError;
+      }),
+      sendClientContent: vi.fn(async () => undefined),
+    };
+    const session = new GeminiLiveSession(sdkSession, confirmedClose());
+
+    await expect(session.sendTaskNotification({
+      context: "[HERMES_LIVE_TASK_EVENT_V1:0123456789abcdef0123456789abcdef] Done.",
+      announcement: "Done.",
+    })).rejects.toBe(sdkError);
+    expect(sdkSession.sendRealtimeInput).toHaveBeenCalledOnce();
     expect(sdkSession.sendClientContent).not.toHaveBeenCalled();
   });
 

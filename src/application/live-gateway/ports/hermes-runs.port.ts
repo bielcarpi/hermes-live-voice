@@ -24,6 +24,58 @@ export interface StartRunResult {
   status: string;
 }
 
+export type HermesRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_for_approval"
+  | "stopping"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface HermesRunUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+export interface HermesRunSnapshotBase {
+  object: "hermes.run";
+  run_id: string;
+  status: HermesRunStatus;
+  session_id?: string;
+  model?: string;
+  created_at?: number;
+  updated_at?: number;
+  last_event?: string;
+  [key: string]: unknown;
+}
+
+export interface HermesRunActiveSnapshot extends HermesRunSnapshotBase {
+  status: "queued" | "running" | "waiting_for_approval" | "stopping";
+}
+
+export interface HermesRunCompletedSnapshot extends HermesRunSnapshotBase {
+  status: "completed";
+  output: string;
+  usage: HermesRunUsage;
+}
+
+export interface HermesRunFailedSnapshot extends HermesRunSnapshotBase {
+  status: "failed";
+  error: string;
+}
+
+export interface HermesRunCancelledSnapshot extends HermesRunSnapshotBase {
+  status: "cancelled";
+}
+
+export type HermesRunSnapshot =
+  | HermesRunActiveSnapshot
+  | HermesRunCompletedSnapshot
+  | HermesRunFailedSnapshot
+  | HermesRunCancelledSnapshot;
+
 export interface HermesRequestOptions {
   signal?: AbortSignal;
   sessionKey?: string;
@@ -46,7 +98,7 @@ export interface HermesRunsPort {
   capabilities(signal?: AbortSignal): Promise<HermesCapabilities>;
   assertRunsSupported(signal?: AbortSignal): Promise<HermesCapabilities>;
   startRun(params: StartRunParams, signal?: AbortSignal): Promise<StartRunResult>;
-  getRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<Record<string, unknown>>;
+  getRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<HermesRunSnapshot>;
   stopRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<{ run_id: string; status: "stopping" }>;
   submitApproval(
     runId: string,

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.5.0-beta.1 - 2026-07-15
+
+- Replace session-bound delegation with a server-owned durable task supervisor: tasks are persisted before acceptance, retain bounded results, survive client detachment, and reconcile after a gateway restart when Hermes still knows the upstream run.
+- Keep the realtime conversation responsive while Hermes works, expose a durable unread completion inbox, restore every retained active/unread task even beyond the recent-history window, atomically claim spoken notices across concurrent sessions, and deliver bounded completion alerts without injecting task output into an unrelated provider turn.
+- Add safe bounded concurrency: mutating and unspecified work runs exclusively, while explicitly `parallel_read_only` work overlaps only when its declared resource keys are disjoint.
+- Introduce exact task control through `start_background_task`, `list_background_tasks`, `get_background_task`, and `stop_background_task`; provider interruption and task cancellation remain independent.
+- Move the breaking wire contract to protocol v3, replace public `run.*` lifecycle messages with owner-scoped `task.*` snapshots/events/notifications, add per-task sequences and exact notification acknowledgements, and reject older clients clearly.
+- Make ambiguous run dispatch fail closed as `dispatch_unknown` without automatic retry, reconcile Hermes run state through SSE plus bounded polling, and surface unprovable post-restart outcomes as `unknown` rather than guessing.
+- Remove interactive approval controls from the truthful v0.5 surface. Current Hermes approvals are denied and the exact task is stopped fail-closed until upstream provides safely targetable approval identity.
+- Upgrade the Dashboard, bundled browser demo, dependency-free browser SDK, and terminal around the same durable task inbox; add reconnect recovery, exact result/stop controls, and detach-without-cancel semantics.
+- Add `/tasks`, `/status <taskId>`, `/result <taskId>`, `/stop <taskId>`, and `/interrupt` to the terminal, and make the one-shot client wait for the exact accepted task rather than an unrelated provider response.
+- Isolate OpenAI completion notices from the active conversation, add authenticated best-effort Gemini realtime notices, and harden task/result content as untrusted input at the provider boundary.
+- Persist state in a private atomic file, add retention and queue/concurrency bounds, run Docker non-root/read-only/capability-free with a dedicated state volume, and keep upstream run IDs, credentials, and approval authority out of the public protocol.
+- Exercise the release candidate against the official Hermes Agent v0.18.2 Docker image for real run/SSE/stop behavior, exclusive serialization, reconnect restoration, retained results, and completion reporting, and require deterministic protocol, supervisor, client, plugin, terminal, gateway, package, security, and Docker gates before tagged publication.
+
 ## 0.4.0 - 2026-07-15
 
 - Handle Gemini Live `toolCallCancellation` as an explicit exported provider event, correlate every cancellation to the bounded tool-call ledger, stop owned active runs, suppress queued and not-yet-sent results, and fail closed when Hermes side effects or provider delivery become indeterminate.

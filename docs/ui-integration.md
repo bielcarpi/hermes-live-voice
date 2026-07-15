@@ -1,21 +1,23 @@
 # UI Integration
 
-Hermes Live Voice is a gateway and client protocol, not one fixed application. The Live Voice plugin makes Hermes Dashboard the recommended end-user surface; the shared browser client is the integration surface for community and custom UIs; the terminal client is the remote/headless control surface. This describes compatibility with Hermes Dashboard, not an endorsement by the Hermes maintainers.
+Hermes Live Voice is a gateway and protocol, not one fixed application. The bundled Hermes Dashboard tab is the recommended browser surface; `hermes-live-voice/browser` is the integration API for community/custom UIs; `hermes-live terminal` is the remote/headless text surface.
+
+This documents compatibility with Hermes Agent and community projects, not endorsement by their maintainers.
 
 ## Surface Matrix
 
-| Surface | Current support | Intended use |
+| Surface | Support | Purpose |
 | --- | --- | --- |
-| Hermes Dashboard + Live Voice plugin | First-class | Browser voice, text fallback, transcript, task activity, interruption, run stop, and negotiated approval status/controls. |
-| Bundled browser demo | First-class development tool | Local gateway setup and protocol troubleshooting. |
-| `hermes-live-voice/browser` | First-class integration API | Custom/community browser, Electron, mobile-web, React, Vue, Svelte, or vanilla clients. |
-| `hermes-live terminal` | First-class text control | SSH, headless hosts, remote operations, transcripts, task events, negotiated approval status/controls, interruption, and stop. |
-| Hermes Voice Mode and Desktop voice | Official Hermes features | First-party CLI/TUI, Desktop, messaging, and Discord voice experiences; not replaced by this project. |
-| Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement Hermes Live realtime audio, lifecycle, task, or approval events by itself. |
+| Hermes Dashboard + Live Voice plugin | First-class | Browser audio/text, transcript, durable task inbox, reconnect, notification acknowledgement, interruption, and exact stop. |
+| Bundled browser demo | First-class development tool | Local provider/audio/protocol troubleshooting. |
+| `hermes-live-voice/browser` | First-class integration API | Vanilla, React, Vue, Svelte, Electron, or mobile-web clients. |
+| `hermes-live terminal` | First-class text control | SSH/headless task supervision, retained results, interruption, and exact stop. |
+| Hermes Voice Mode/Desktop voice | Official Hermes features | First-party local voice experiences; not replaced by this project. |
+| Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement protocol v3 realtime audio, durable tasks, or notifications. |
 
 ## Hermes Dashboard
 
-Install and enable the plugin, run the companion gateway, and restart the Dashboard:
+Install the package/plugin, start the companion gateway, and restart Dashboard:
 
 ```sh
 npm install --global hermes-live-voice
@@ -24,49 +26,31 @@ hermes plugins enable hermes-live
 hermes dashboard
 ```
 
-See [plugin installation](plugin.md#install-in-hermes) for the latest-source and development alternatives.
+Choose **Live Voice**. The plugin contributes:
 
-Choose **Live Voice** in the plugin navigation group.
+- `dashboard/manifest.json` for the `/live-voice` tab;
+- a responsive, theme-aware frontend using the shared browser SDK and worklet;
+- authenticated `/status` and `/live` plugin routes;
+- a server-side WebSocket relay that applies the gateway bearer.
 
-The plugin contributes:
+The browser never receives `HERMES_LIVE_AUTH_TOKEN`. The plugin backend revalidates Hermes Dashboard authentication and origin policy, rejects redirects, and keeps the upstream URL and credential out of status responses.
 
-- `dashboard/manifest.json`, which registers the `/live-voice` tab;
-- a responsive, theme-aware frontend using the shared browser client and microphone worklet;
-- authenticated `/status` and `/live` plugin API routes;
-- a server-side WebSocket relay to the companion gateway.
-
-The browser talks only to same-origin Hermes Dashboard routes:
-
-```txt
-Dashboard browser
-  -> Hermes-authenticated /api/plugins/hermes-live/live
-  -> plugin_api.py
-  -> Authorization: Bearer HERMES_LIVE_AUTH_TOKEN
-  -> hermes-live gateway /v1/live
-```
-
-The backend delegates authentication and origin decisions to Hermes Dashboard's own request checks, fails closed when those checks are unavailable, applies bounded timeouts and message sizes, and never returns the gateway token or upstream origin in `/status`.
-
-Set these values in the Dashboard server process when needed:
+For a remote gateway, set in the Dashboard server process:
 
 ```sh
 HERMES_LIVE_URL=https://voice.example.com
-HERMES_LIVE_AUTH_TOKEN=your-random-gateway-token
+HERMES_LIVE_AUTH_TOKEN=your-high-entropy-gateway-token
 ```
 
-`HERMES_LIVE_URL` must be a credential-free HTTP(S) origin. The Dashboard backend rejects user information, paths, query parameters, fragments, and WS(S) schemes. The token is a separate server-side value.
-
-Hermes Live Voice v0.4.0 was manually exercised in the official `nousresearch/hermes-agent:latest` Docker image running Hermes Agent v0.18.2. The packaged plugin, authenticated readiness path, mock WebSocket session, and real Gemini Live handshake were verified. Compatibility is also guarded by captured upstream fixtures, plugin manifest, Python backend, generated-asset, browser-client, package, and protocol tests.
+See [Hermes Plugin](plugin.md) for installation and relay details.
 
 ## Custom Or Community Browser UI
 
-Install the package in your UI project:
+Install and import the dependency-free client:
 
 ```sh
 npm install hermes-live-voice
 ```
-
-Import the dependency-free browser client:
 
 ```js
 import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
@@ -85,102 +69,107 @@ const audio = new HermesLiveAudio(client, {
   workletUrl: "/assets/hermes-live/mic-worklet.js",
 });
 
-client.subscribe(renderSnapshot);
+client.subscribe(({ connection, tasks, unreadNotifications }) => {
+  renderConnection(connection);
+  renderTaskInbox(tasks, unreadNotifications);
+});
+
 client.on("transcript.delta", renderTranscript);
-client.on("run.event", renderTaskEvent);
-client.on("approval.request", renderApproval);
+client.on("task.notification", renderNotification);
 client.on("audio.output", (message) => void audio.play(message).catch(renderError));
 client.on("input.speech_started", () => audio.interrupt("provider detected user speech"));
+client.on("error", renderError);
 
-await audio.primePlayback(); // Run directly inside the initiating click or tap handler.
+await audio.primePlayback(); // Call directly in the initiating click/tap handler.
 await client.connect();
 ```
 
-The host endpoint should return either:
+The host endpoint must return either a same-origin authenticated WebSocket relay URL or a short-lived single-purpose URL issued by the host backend. Hermes Live does not mint per-user tickets. Never put the installation bearer in a public bundle, browser storage, or a long-lived URL.
 
-1. a same-origin authenticated WebSocket proxy URL; or
-2. a short-lived, single-purpose WebSocket URL issued by the host backend.
-
-The gateway accepts a static bearer for trusted direct clients, but it does not mint per-user tickets. Do not ship `HERMES_LIVE_AUTH_TOKEN` in a public JavaScript bundle, local storage, or a long-lived browser URL. Copy the Hermes Dashboard integration's proxy pattern when building a production community integration.
-
-### Required UI Event Mapping
-
-A complete UI should handle at least:
+## Required UI Mapping
 
 | Contract | UI behavior |
 | --- | --- |
-| `session.ready` | Show provider, model, protocol, audio input/output, and turn-detection capabilities. |
-| `transcript.delta` | Append speaker-attributed conversation text. |
-| `audio.output` | Queue PCM playback through `HermesLiveAudio`. |
-| `input.speech_started` | Stop local assistant playback and cancel/truncate provider output. |
-| `response.started/completed/cancelled/failed` | Represent provider speech lifecycle separately from Hermes work. |
-| `run.started/event/completed/failed/stopping/stopped` | Show task progress, keep stop controls pending through `stopping`, and render sanitized final output only at a terminal event. |
-| `approval.request/responded` | Render explicit choices and lock the decision while it is submitted. |
-| `session.error`, client `error`, and `close` | Show actionable connection state without leaking internal credentials or upstream error details. |
+| `session.ready` | Show provider, model, protocol v3, audio formats/turn detection, and task limits. |
+| `task.snapshot` | Reconcile the owner inbox after initial connect/reconnect and correlated list/get requests. |
+| `task.accepted/started/progress/stopping` | Show durable state and queue/progress without claiming success. |
+| `task.completed/failed/cancelled/unknown` | Render the exact terminal/indeterminate outcome; never convert `unknown` into failure or success. |
+| `task.notification` | Show unread completion/attention state and an exact “Mark read” action. |
+| `transcript.delta`, `audio.output` | Render speaker-attributed conversation and queue negotiated audio. |
+| `input.speech_started`, response lifecycle | Stop local playback and represent provider speech independently from Hermes work. |
+| `session.error`, SDK `error`, and `close` | Show bounded actionable connection state without leaking credentials or provider errors. |
 
-Speech interruption and Hermes task cancellation are different actions:
-
-- `audio.interrupt(...)` clears queued local playback and sends correlated provider cancellation/truncation.
-- `client.cancelResponse(...)` sends only the protocol cancellation request; a custom audio player must clear its own queue.
-- `client.stopRun(...)` requests a stop for the active Hermes run while leaving the voice session connected. Keep the UI in `stopping` until `run.stopped`, `run.completed`, or `run.failed` confirms a terminal state.
-
-Do not map both actions to one ambiguous stop button.
-
-### Approval UX
-
-Treat approvals as high-consequence controls:
-
-- first require `session.ready.hermes.capabilities.run_approval_response_by_id === true`; otherwise explain that an approval-requiring run will be denied where possible, stopped, and the voice session closed, and render no decision buttons;
-- show the command/description and inspectable pattern supplied by Hermes;
-- offer only the `choices` in the structured approval envelope;
-- show permanent approval only when `allowPermanent` is true and `patternKey` or `patternKeys` is present;
-- require a second confirmation before submitting `always`;
-- preserve the emitted FIFO order and make only the oldest pending approval actionable;
-- remove only the exact `runId` + `approvalId` acknowledged by `approval.responded` (protocol v2 always confirms `resolved: 1`);
-- disable duplicate decisions while a response is in flight;
-- keep the approval attached to the active run shown in the UI.
-
-Hermes versions without stable targeted approval IDs are not an interactive-UI case. The gateway attempts to deny their uncorrelated queue, stops the run, and emits fatal `session.error` code `hermes_approval_identity_unsupported` before closing the voice session. Keep its operator-verification message visible after the socket closes. Do not reconstruct a local approval card from the underlying `run.event`, and do not offer any FIFO-based fallback.
-
-Submit the exact gateway-owned identity; do not derive it from the upstream event:
+Use the SDK task controls:
 
 ```js
-client.respondToApproval(choice, request.runId, {
-  approvalId: request.approval.approvalId,
-});
+client.listTasks({ limit: 50 });
+client.getTask(taskId);
+client.stopTask(taskId, "user stopped this task");
+client.acknowledgeNotification(taskId, notificationId);
 ```
 
-### Audio And Browser Requirements
+List/reconnect snapshots contain summaries but omit full retained output. Use `getTask(taskId)` for details. Connected clients can also receive bounded output with `task.completed`. Reconnect hydration may arrive in multiple 100-task frames; every retained active task and unread notification is included even when older read history is truncated.
 
-- Microphone capture requires `localhost` or another secure context.
-- Copy `hermes-live-voice/browser/mic-worklet.js` into a same-origin static asset path.
-- Call `audio.primePlayback()` synchronously from a click or tap before awaiting network work; start microphone capture from a user gesture as well.
-- Respect `session.ready.realtime.audio`; mock mode and some future providers may disable input or output.
-- Bound queued playback before waiting for autoplay permission and clear it immediately on interruption or disconnect.
-- Await `client.disconnect()`. A clean resolution means the gateway confirmed session cleanup; rejection or `session_shutdown_unconfirmed` means the user must verify any active task in Hermes.
-- Test keyboard focus, screen-reader labels, reduced motion, narrow layouts, and permission denial.
+## Separate Speech And Task Controls
+
+Speech interruption and task cancellation are different operations:
+
+- `audio.interrupt(...)` clears queued local audio and sends correlated provider cancellation/truncation;
+- `client.cancelResponse(...)` cancels only provider output; a custom audio player must clear its own queue;
+- `client.stopTask(taskId, ...)` requests cancellation of one exact server-owned task;
+- disconnect/route change closes the conversation but leaves tasks running.
+
+Do not map speech and task cancellation to one ambiguous stop button. Keep a task in `stopping` until `completed`, `failed`, `cancelled`, or `unknown` proves the next state.
+
+## Durable Inbox And Notifications
+
+Treat the task inbox as the source of truth. The SDK deduplicates by `(taskId, sequence)`, clears stale cache state on the first reconnect frame, merges any additional bounded frames, and retains unread notifications until an exact acknowledgement succeeds or the gateway explicitly withdraws a superseded uncertainty notice.
+
+Provider speech is supplementary:
+
+- OpenAI can announce a generic result through a response-scoped out-of-band audio response;
+- Gemini receives a gateway-authenticated realtime text marker and is best-effort;
+- neither path replaces the durable UI notification or exact task result.
+
+Do not auto-acknowledge merely because a provider may have spoken. Let the user or clear UI policy mark the exact notification read.
+
+## Approval UX
+
+There is no interactive approval UX in protocol v3. Do not render approval buttons, synthesize approval identity from progress/events, or call Hermes approval APIs from the browser.
+
+When a task requires approval, the gateway attempts deny-all and stops the exact task fail-closed. Show the resulting non-actionable stopping/terminal state and explain that this release cannot approve the operation.
+
+## Audio And Browser Requirements
+
+- Microphone capture requires localhost or another secure context.
+- Copy `hermes-live-voice/browser/mic-worklet.js` to a same-origin static path.
+- Call `audio.primePlayback()` synchronously from a user gesture before awaiting network work; start microphone capture from a gesture too.
+- Respect `session.ready.realtime.audio`; mock mode disables audio.
+- Browser audio currently expects PCM16 and rejects G.711 output.
+- Bound playback while waiting for autoplay permission and clear it on interruption/disconnect.
+- Test permission denial, keyboard focus, screen readers, reduced motion, and narrow layouts.
 
 ## Community UI Compatibility
 
 ### Hermes WebUI
 
-The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is the most natural next adapter because it already has voice input and administrator-controlled extension injection. A secure Live Voice integration should be a separate panel using the shared browser client plus a small backend WebSocket proxy. A frontend-only extension would expose the shared gateway token and is not a production design.
+The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is a natural adapter candidate because it already has voice input and administrator-controlled extension injection. A production integration should add a separate protocol-v3 panel and a backend WebSocket relay. A frontend-only extension would expose the shared bearer.
 
-The existing microphone flow should remain available. Hermes Live is a persistent realtime provider/Hermes session with its own interruption and task lifecycle, so silently presenting it as an ordinary chat turn would make history and cancellation behavior confusing.
+Keep Hermes WebUI's existing microphone flow available. Hermes Live is a persistent realtime conversation plus a durable task inbox; presenting it as an ordinary chat turn would hide reconnect and cancellation semantics.
 
 ### Open WebUI
 
-[Open WebUI can connect to Hermes Agent](https://github.com/open-webui/docs/blob/main/docs/getting-started/quick-start/connect-an-agent/hermes-agent.mdx) through Hermes' OpenAI-compatible API. That provides ordinary text chat and Open WebUI's existing turn-based voice experience around Hermes.
+[Open WebUI can connect to Hermes Agent](https://github.com/open-webui/docs/blob/main/docs/getting-started/quick-start/connect-an-agent/hermes-agent.mdx) through Hermes' OpenAI-compatible API for ordinary chat and turn-based voice.
 
-It does not currently implement the Hermes Live protocol. OpenAI-compatible Chat Completions alone do not provide this project's persistent provider socket, PCM audio stream, barge-in/truncation, Hermes run events, or approval envelope. An Open WebUI integration therefore needs an explicit realtime extension point and authenticated server-side relay; do not advertise it as plug-and-play today.
+It does not currently implement Hermes Live protocol v3. An integration needs an explicit realtime extension and authenticated server-side relay; do not advertise it as plug-and-play.
 
 ### Hermes Desktop And Native Apps
 
-Hermes Desktop is a separate native React client with its own voice surface; it does not automatically consume Dashboard tabs. A future integration can reuse the JSON/WebSocket contract but needs a Desktop-specific audio transport and UI. Native mobile and device clients are similarly protocol-ready, not already implemented.
+Hermes Desktop has its own voice surface and does not automatically consume Dashboard tabs. A future native integration can reuse the JSON task contract but needs platform-specific audio transport, credential relay, background lifecycle, and UI work. “Protocol-ready” is not “already integrated.”
 
 ## Terminal
 
-For first-party local microphone use, use Hermes Voice Mode or Hermes Desktop. For a remote/headless gateway session:
+For a remote/headless gateway:
 
 ```sh
 HERMES_LIVE_URL=https://voice.example.com \
@@ -188,21 +177,22 @@ HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
 hermes-live terminal
 ```
 
-The terminal shows transcript, provider response state, sanitized Hermes task state, negotiated approval warnings or requests, and separate `/interrupt` and `/stop` commands. It intentionally has no native microphone/audio dependency stack, but still opens a realtime-provider session and can incur provider usage. Treat it as interactive remote control or a diagnostic/accessibility fallback, not deterministic automation.
+The terminal renders transcript, provider response state, task snapshots/lifecycle, notifications, and retained results. `/ack <taskId>` (or `/read`) acknowledges the exact current unread notification; `/interrupt` stops speech; `/stop <taskId>` stops one task; `/quit` detaches. It is an interactive control/diagnostic surface, not deterministic automation, and it can incur realtime-provider usage.
 
 ## Integration Verification
 
-Before calling a UI integration ready:
+Before calling a UI ready:
 
-1. Verify authenticated status and WebSocket connection without exposing a bearer in browser state or logs.
-2. Confirm protocol v2 and render the provider/model/audio capabilities from `session.ready`.
-3. Send text and complete a real Hermes run.
-4. Test microphone permission granted and denied.
-5. Verify provider audio playback and barge-in.
-6. Start a long Hermes tool run, stop it, and confirm the voice session remains connected.
-7. With a targeted-capable Hermes fixture, exercise allow, deny, and permanent confirmation with an inspectable pattern; with the Hermes v0.18.2 compatibility fixture, verify deny/stop/session-close containment, the fatal warning, and absence of buttons.
-8. Disconnect/reconnect and navigate away during an active run.
-9. Test desktop, narrow mobile, keyboard-only, reduced-motion, and screen-reader behavior.
-10. Inspect browser, Dashboard, gateway, and Hermes logs for errors and credential disclosure.
+1. Confirm protocol v3 and negotiated provider/audio/task capabilities.
+2. Verify the browser never receives the shared bearer or Hermes/provider credentials.
+3. Send text, receive an immediate task receipt, and keep conversing while the task runs.
+4. Start independent read-only work and verify only disjoint resource keys overlap.
+5. Stop one exact task while another continues.
+6. Disconnect/reconnect during work and reconcile from `task.snapshot` without duplicates.
+7. Verify completion/failed/cancelled/unknown notifications and exact acknowledgement.
+8. Restart only the gateway while Hermes stays alive and verify task recovery.
+9. Verify an approval-requiring task is denied/stopped with no approval controls.
+10. Test microphone permission, playback, barge-in, mobile layout, keyboard, reduced motion, and screen readers.
+11. Inspect browser, relay, gateway, and Hermes logs for errors and credential disclosure.
 
-The provider-specific manual checklist remains in [Live Provider Testing](live-provider-testing.md).
+Continue with [Live Provider Testing](live-provider-testing.md) for real provider evidence.

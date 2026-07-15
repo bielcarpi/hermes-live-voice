@@ -2,7 +2,10 @@ import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HermesClient,
+  HermesRequestError,
   MAX_HERMES_JSON_RESPONSE_BYTES,
+  MAX_HERMES_RETRY_AFTER_CHARS,
+  MAX_HERMES_RUN_OUTPUT_CHARS,
 } from "../src/adapters/outbound/hermes/hermes-runs.client.js";
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -97,7 +100,7 @@ describe("HermesClient", () => {
 
   it("sends the Hermes session key header on run-scoped follow-up requests", async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "running" }))
+      .mockResolvedValueOnce(runResponse({ run_id: "run_123", status: "running" }))
       .mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "stopping" }))
       .mockResolvedValueOnce(jsonResponse({
         run_id: "run_123",
@@ -128,6 +131,186 @@ describe("HermesClient", () => {
       resolve_all: false,
       approval_id: "approval_1",
     });
+  });
+
+  it.each([
+    ["queued", { status: "queued" }, { status: "queued" }],
+    ["running", { status: "running" }, { status: "running" }],
+    [
+      "waiting for approval",
+      { status: "waiting_for_approval", last_event: "approval.request" },
+      { status: "waiting_for_approval", last_event: "approval.request" },
+    ],
+    ["stopping", { status: "stopping" }, { status: "stopping" }],
+    [
+      "completed",
+      {
+        status: "completed",
+        output: "All checks passed.",
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18, ignored_tokens: 99 },
+      },
+      {
+        status: "completed",
+        output: "All checks passed.",
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+      },
+    ],
+    ["failed", { status: "failed", error: "Provider request failed." }, { status: "failed", error: "Hermes run failed." }],
+    ["cancelled", { status: "cancelled" }, { status: "cancelled" }],
+  ])("validates and normalizes a %s run snapshot", async (_label, statusFields, expectedStatusFields) => {
+    const body = {
+      object: "hermes.run",
+      run_id: "run_123",
+      runId: "run_123",
+      session_id: "task_123",
+      model: "hermes-agent",
+      created_at: 10,
+      updated_at: 20.5,
+      private_internal: "must not cross the adapter boundary",
+      ...statusFields,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.getRun("run_123")).resolves.toEqual({
+      object: "hermes.run",
+      run_id: "run_123",
+      session_id: "task_123",
+      model: "hermes-agent",
+      created_at: 10,
+      updated_at: 20.5,
+      ...expectedStatusFields,
+    });
+  });
+
+  it.each([
+    ["null", null],
+    ["an array", []],
+    ["a missing object discriminator", { run_id: "run_123", status: "running" }],
+    ["a conflicting object discriminator", { object: "other.run", run_id: "run_123", status: "running" }],
+    ["a missing run id", { object: "hermes.run", status: "running" }],
+    ["another run id", { object: "hermes.run", run_id: "run_other", status: "running" }],
+    ["an unsafe run id", { object: "hermes.run", run_id: "run\nother", status: "running" }],
+    ["a bidirectional run id", { object: "hermes.run", run_id: "run\u202eother", status: "running" }],
+    [
+      "conflicting run-id aliases",
+      { object: "hermes.run", run_id: "run_123", runId: "run_other", status: "running" },
+    ],
+    ["a missing status", { object: "hermes.run", run_id: "run_123" }],
+    ["an unsupported status", { object: "hermes.run", run_id: "run_123", status: "started" }],
+    [
+      "an unsafe session id",
+      { object: "hermes.run", run_id: "run_123", status: "running", session_id: "task\nother" },
+    ],
+    [
+      "unbounded model metadata",
+      { object: "hermes.run", run_id: "run_123", status: "running", model: "x".repeat(513) },
+    ],
+    [
+      "an invalid timestamp",
+      { object: "hermes.run", run_id: "run_123", status: "running", updated_at: -1 },
+    ],
+    [
+      "unsafe event metadata",
+      { object: "hermes.run", run_id: "run_123", status: "running", last_event: "tool\nstarted" },
+    ],
+    [
+      "bidirectional event metadata",
+      { object: "hermes.run", run_id: "run_123", status: "running", last_event: "tool\u202estarted" },
+    ],
+  ])("rejects a run snapshot containing %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.getRun("run_123")).rejects.toThrow("Hermes returned an invalid run snapshot");
+  });
+
+  it.each([
+    [
+      "completed output is missing",
+      { object: "hermes.run", run_id: "run_123", status: "completed", usage: validUsage() },
+    ],
+    [
+      "completed usage is missing",
+      { object: "hermes.run", run_id: "run_123", status: "completed", output: "done" },
+    ],
+    [
+      "completed usage has a negative token count",
+      {
+        object: "hermes.run",
+        run_id: "run_123",
+        status: "completed",
+        output: "done",
+        usage: { ...validUsage(), output_tokens: -1 },
+      },
+    ],
+    [
+      "completed usage has a fractional token count",
+      {
+        object: "hermes.run",
+        run_id: "run_123",
+        status: "completed",
+        output: "done",
+        usage: { ...validUsage(), total_tokens: 1.5 },
+      },
+    ],
+    [
+      "completed usage has an unsafe token count",
+      {
+        object: "hermes.run",
+        run_id: "run_123",
+        status: "completed",
+        output: "done",
+        usage: { ...validUsage(), input_tokens: Number.MAX_SAFE_INTEGER + 1 },
+      },
+    ],
+  ])("rejects a terminal snapshot when %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.getRun("run_123")).rejects.toThrow("Hermes returned an invalid run snapshot");
+  });
+
+  it("retains a bounded completion prefix and marks oversized upstream output", async () => {
+    fetchMock.mockResolvedValueOnce(runResponse({
+      run_id: "run_123",
+      status: "completed",
+      output: "x".repeat(MAX_HERMES_RUN_OUTPUT_CHARS + 7),
+      usage: validUsage(),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hermesClient().getRun("run_123")).resolves.toMatchObject({
+      status: "completed",
+      output: "x".repeat(MAX_HERMES_RUN_OUTPUT_CHARS),
+      outputTruncated: true,
+    });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+    ["sensitive", "Bearer upstream-secret at /Users/private/provider.ts"],
+    ["oversized", "x".repeat(100_000)],
+  ])("normalizes %s upstream failure text at the adapter boundary", async (_label, error) => {
+    fetchMock.mockResolvedValueOnce(runResponse({ run_id: "run_123", status: "failed", ...(error === undefined ? {} : { error }) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snapshot = await hermesClient().getRun("run_123");
+    expect(snapshot).toMatchObject({ status: "failed", error: "Hermes run failed." });
+    expect(JSON.stringify(snapshot)).not.toContain("upstream-secret");
+    expect(JSON.stringify(snapshot)).not.toContain("/Users/private");
+  });
+
+  it("rejects unsafe requested run ids before they enter a request URL", async () => {
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.getRun("run\nsecret")).rejects.toThrow("Hermes run id must be a bounded identifier.");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -190,7 +373,7 @@ describe("HermesClient", () => {
   });
 
   it("keeps AbortSignal shorthand support for run-scoped follow-up requests", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "running" }));
+    fetchMock.mockResolvedValueOnce(runResponse({ run_id: "run_123", status: "running" }));
     vi.stubGlobal("fetch", fetchMock);
     const client = hermesClient();
     const controller = new AbortController();
@@ -211,7 +394,9 @@ describe("HermesClient", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = hermesClient();
 
-    await expect(client.assertRunsSupported()).rejects.toThrow(/run_events_sse, run_stop, run_approval_response/);
+    await expect(client.assertRunsSupported()).rejects.toThrow(
+      /run_status, run_events_sse, run_stop, run_approval_response/,
+    );
   });
 
   it("does not expose Hermes response bodies in request failures", async () => {
@@ -223,9 +408,142 @@ describe("HermesClient", () => {
     const client = hermesClient();
 
     const error = await client.capabilities().catch((caught: unknown) => caught);
-    expect(error).toEqual(new Error("Hermes request failed: 401 /v1/capabilities"));
+    expect(error).toBeInstanceOf(HermesRequestError);
+    expect(error).toMatchObject({
+      status: 401,
+      publicPath: "/v1/capabilities",
+      retryAfter: undefined,
+      message: "Hermes request failed: 401 /v1/capabilities",
+    });
     expect(String(error)).not.toContain("hermes-secret");
     expect(String(error)).not.toContain("private-scope");
+  });
+
+  it("returns structured, public-safe HTTP failures for task reconciliation and admission", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("private missing-run detail", {
+        status: 404,
+        headers: { "retry-after": "7" },
+      }))
+      .mockResolvedValueOnce(new Response("Bearer secret-from-429-body", {
+        status: 429,
+        headers: { "retry-after": "3" },
+      }))
+      .mockResolvedValueOnce(new Response("private draining detail", {
+        status: 503,
+        headers: { "retry-after": "Bearer reflected-secret" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    const missing = await client.getRun("run_private_404").catch((caught: unknown) => caught);
+    const limited = await client.startRun({
+      input: "private task body",
+      sessionId: "task_private",
+      sessionKey: "private-session-key",
+    }).catch((caught: unknown) => caught);
+    const draining = await client.capabilities().catch((caught: unknown) => caught);
+
+    expect(missing).toBeInstanceOf(HermesRequestError);
+    expect(missing).toMatchObject({ status: 404, publicPath: "/v1/runs/{run_id}", retryAfter: "7" });
+    expect(limited).toBeInstanceOf(HermesRequestError);
+    expect(limited).toMatchObject({ status: 429, publicPath: "/v1/runs", retryAfter: "3" });
+    expect(draining).toBeInstanceOf(HermesRequestError);
+    expect(draining).toMatchObject({ status: 503, publicPath: "/v1/capabilities", retryAfter: undefined });
+
+    const rendered = [missing, limited, draining].map(String).join("\n");
+    expect(rendered).not.toContain("private missing-run detail");
+    expect(rendered).not.toContain("secret-from-429-body");
+    expect(rendered).not.toContain("private draining detail");
+    expect(rendered).not.toContain("reflected-secret");
+    expect(rendered).not.toContain("private-session-key");
+    expect(rendered).not.toContain("private task body");
+  });
+
+  it("extracts only bounded structured Hermes error codes without exposing response text", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { code: "rate_limit_exceeded", message: "Bearer private-upstream-secret" },
+      }), { status: 429, headers: { "retry-after": "1" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { code: "gateway_draining", message: "/Users/private/runtime" },
+      }), { status: 503, headers: { "retry-after": "1" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { code: "Bearer reflected secret", message: "private" },
+      }), { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    const limited = await client.startRun({ input: "one", sessionId: "task_1", sessionKey: "scope" }).catch((error) => error);
+    const draining = await client.startRun({ input: "two", sessionId: "task_2", sessionKey: "scope" }).catch((error) => error);
+    const unsafe = await client.startRun({ input: "three", sessionId: "task_3", sessionKey: "scope" }).catch((error) => error);
+
+    expect(limited).toMatchObject({ status: 429, errorCode: "rate_limit_exceeded", retryAfter: "1" });
+    expect(draining).toMatchObject({ status: 503, errorCode: "gateway_draining", retryAfter: "1" });
+    expect(unsafe).toMatchObject({ status: 429, errorCode: undefined });
+    expect([limited, draining, unsafe].map(String).join("\n")).not.toContain("private-upstream-secret");
+    expect([limited, draining, unsafe].map(String).join("\n")).not.toContain("/Users/private");
+    expect([limited, draining, unsafe].map(String).join("\n")).not.toContain("reflected secret");
+  });
+
+  it.each([
+    ["an overlong value", "9".repeat(MAX_HERMES_RETRY_AFTER_CHARS + 1)],
+    ["an excessive delay", "86401"],
+    ["unstructured text", "retry later with secret-token"],
+  ])("drops %s from Retry-After", async (_label, retryAfter) => {
+    fetchMock.mockResolvedValueOnce(new Response("private", {
+      status: 503,
+      headers: { "retry-after": retryAfter },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    const error = await client.capabilities().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(HermesRequestError);
+    expect(error).toMatchObject({ status: 503, retryAfter: undefined });
+    expect(String(error)).not.toContain(retryAfter);
+  });
+
+  it("preserves a bounded HTTP-date Retry-After value", async () => {
+    const retryAfter = "Thu, 16 Jul 2026 12:00:00 GMT";
+    fetchMock.mockResolvedValueOnce(new Response("private", {
+      status: 503,
+      headers: { "retry-after": retryAfter },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    const error = await client.capabilities().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(HermesRequestError);
+    expect(error).toMatchObject({ status: 503, retryAfter });
+    expect(String(error)).not.toContain(retryAfter);
+  });
+
+  it("retains the structured HTTP failure when its private body exceeds the safety limit", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_HERMES_JSON_RESPONSE_BYTES + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, {
+      status: 429,
+      headers: { "retry-after": "5" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    const error = await client.capabilities().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(HermesRequestError);
+    expect(error).toMatchObject({
+      status: 429,
+      publicPath: "/v1/capabilities",
+      retryAfter: "5",
+    });
+    expect(cancelled).toBe(true);
   });
 
   it("times out stalled JSON requests", async () => {
@@ -333,7 +651,12 @@ describe("HermesClient", () => {
     const error = await collectEvents(
       client.streamRunEvents("hermes-secret-private-session-scope", { sessionKey: "private-session-scope" }),
     ).catch((caught: unknown) => caught);
-    expect(error).toEqual(new Error("Hermes events request failed: 502 /v1/runs/{run_id}/events"));
+    expect(error).toBeInstanceOf(HermesRequestError);
+    expect(error).toMatchObject({
+      status: 502,
+      publicPath: "/v1/runs/{run_id}/events",
+      message: "Hermes events request failed: 502 /v1/runs/{run_id}/events",
+    });
     expect(String(error)).not.toContain("hermes-secret");
     expect(String(error)).not.toContain("private-session-scope");
   });
@@ -475,6 +798,14 @@ function hermesClient(overrides: Partial<ConstructorParameters<typeof HermesClie
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function runResponse(body: Record<string, unknown>): Response {
+  return jsonResponse({ object: "hermes.run", ...body });
+}
+
+function validUsage(): { input_tokens: number; output_tokens: number; total_tokens: number } {
+  return { input_tokens: 1, output_tokens: 2, total_tokens: 3 };
 }
 
 async function collectEvents(events: AsyncGenerator<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
