@@ -29,7 +29,7 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-The release workflow reruns verification, audits dependencies, packs the npm tarball, and records its SHA-256 checksum in a read-only job. A separate job with `contents: write` downloads only those artifacts and creates the GitHub release; it never checks out or executes repository/dependency code with the write credential.
+The release workflow reruns verification, audits dependencies, packs the npm tarball, and records its SHA-256 checksum in a read-only job. The checksum manifest stores only the tarball basename so users can download both release assets into one directory and verify them directly with `sha256sum --check SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS` on macOS). A separate job with `contents: write` downloads only those artifacts and creates the GitHub release; it never checks out or executes repository/dependency code with the write credential.
 
 ## npm publication
 
@@ -49,6 +49,6 @@ Do not add a long-lived npm token when trusted publishing is available.
 
 - Install the exact released package or tarball into a clean temporary directory.
 - Run `hermes-live --help`, `hermes-live plugin status`, and the mock quick start.
-- Verify the GitHub release asset and release notes.
+- Download the GitHub release tarball and `SHA256SUMS` into one directory, verify the checksum, and inspect the release notes.
 - Verify the npm package and provenance when npm publishing is enabled.
 - Update README install instructions only after the npm registry readback succeeds.

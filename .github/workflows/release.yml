@@ -37,7 +37,8 @@ jobs:
       - run: npm audit --audit-level=moderate
       - run: mkdir -p release
       - run: npm pack --pack-destination release
-      - run: sha256sum release/*.tgz > release/SHA256SUMS
+      - run: sha256sum -- *.tgz > SHA256SUMS
+        working-directory: release
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-package
@@ -58,12 +59,14 @@ jobs:
         with:
           name: release-package
           path: release
-      - name: Verify packaged version and checksum
+      - name: Verify packaged checksum
+        run: sha256sum --check SHA256SUMS
+        working-directory: release
+      - name: Verify packaged version
         run: |
           package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
-          sha256sum --check release/SHA256SUMS
           package_version="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => process.stdout.write(JSON.parse(data).version))')"
           test "$GITHUB_REF_NAME" = "v$package_version"
       - run: gh release create "$GITHUB_REF_NAME" release/*.tgz release/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
@@ -108,12 +111,14 @@ jobs:
               throw new Error("npm " + process.argv[1] + " is older than the trusted-publishing minimum 11.5.1");
             }
           ' "$npm_version"
+      - name: Verify packaged checksum
+        run: sha256sum --check SHA256SUMS
+        working-directory: release
       - name: Verify tag matches package version
         run: |
           package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
-          sha256sum --check release/SHA256SUMS
           package_version="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => process.stdout.write(JSON.parse(data).version))')"
           test "$GITHUB_REF_NAME" = "v$package_version"
       - run: npm publish ./release/*.tgz --access public --provenance
