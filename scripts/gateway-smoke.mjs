@@ -1,11 +1,15 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import WebSocket from "ws";
 
 const prompt = "hello from gateway smoke";
 const expectedOutput = "gateway smoke ok";
 const runId = "run_gateway_smoke";
+const stateDirectory = mkdtempSync(join(tmpdir(), "hermes-live-gateway-smoke-"));
 const observed = {
   capabilities: false,
   events: false,
@@ -44,6 +48,8 @@ const gateway = spawn(process.execPath, ["dist/cli.js", "serve"], {
     HERMES_LIVE_PROVIDER: "mock",
     HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: "5000",
     HERMES_LIVE_SESSION_PREFIX: "agent:main:hermes-live",
+    HERMES_LIVE_TASK_POLL_INTERVAL_MS: "250",
+    HERMES_LIVE_TASK_STATE_FILE: join(stateDirectory, "tasks-v1.json"),
     HERMES_LIVE_LOG_LEVEL: "warn",
     NODE_ENV: "test",
     PORT: String(gatewayPort),
@@ -86,20 +92,27 @@ try {
   const inbox = createInbox(socket);
   await waitForOpen(socket, 5_000);
 
-  socket.send(JSON.stringify({ type: "session.start", protocolVersion: 2, profileId: "smoke", userLabel: "gateway-smoke" }));
+  socket.send(JSON.stringify({ type: "session.start", protocolVersion: 3, profileId: "smoke", userLabel: "gateway-smoke" }));
   const ready = await inbox.next("session.ready");
   if (ready.model !== "mock-live") {
     throw new Error(`Gateway session advertised unexpected model: ${JSON.stringify(ready.model)}.`);
   }
+  if (ready.protocolVersion !== 3 || ready.tasks?.durable !== true || ready.tasks?.reconnect !== "snapshot") {
+    throw new Error(`Gateway session did not advertise the protocol-v3 task contract: ${JSON.stringify(ready)}.`);
+  }
+  const initial = await inbox.next("task.snapshot");
+  if (initial.reason !== "initial" || initial.tasks.length !== 0 || initial.truncated !== false) {
+    throw new Error(`Gateway emitted an unexpected initial task snapshot: ${JSON.stringify(initial)}.`);
+  }
 
   socket.send(JSON.stringify({ type: "text.input", text: prompt }));
-  const started = await inbox.next("run.started");
-  if (started.runId !== runId) {
-    throw new Error(`Gateway emitted unexpected run id: ${JSON.stringify(started.runId)}.`);
+  const accepted = await inbox.next("task.accepted");
+  if (!/^task_[0-9a-f]{32}$/u.test(accepted.taskId)) {
+    throw new Error(`Gateway emitted an invalid stable task id: ${JSON.stringify(accepted.taskId)}.`);
   }
-  const completed = await inbox.next("run.completed");
-  if (completed.output !== expectedOutput) {
-    throw new Error(`Gateway output mismatch. Expected ${JSON.stringify(expectedOutput)}, got ${JSON.stringify(completed.output)}.`);
+  const completed = await inbox.next("task.completed");
+  if (completed.taskId !== accepted.taskId || completed.result?.output !== expectedOutput) {
+    throw new Error(`Gateway task output mismatch. Expected ${JSON.stringify(expectedOutput)}, got ${JSON.stringify(completed)}.`);
   }
 
   socket.close(1000, "gateway smoke complete");
@@ -122,6 +135,7 @@ try {
 } finally {
   await stopChild(gateway, gatewayExit, () => gatewayExited);
   await closeServer(hermesServer);
+  rmSync(stateDirectory, { recursive: true, force: true });
 }
 
 async function handleHermesRequest(req, res) {
@@ -133,6 +147,7 @@ async function handleHermesRequest(req, res) {
       model: "hermes-agent",
       features: {
         run_submission: true,
+        run_status: true,
         run_events_sse: true,
         run_stop: true,
         run_approval_response: true,
@@ -161,11 +176,20 @@ async function handleHermesRequest(req, res) {
     if (body.input !== prompt) {
       throw new Error(`Unexpected Hermes input: ${JSON.stringify(body.input)}.`);
     }
-    if (typeof body.session_id !== "string" || !body.session_id.startsWith("live_")) {
+    if (typeof body.session_id !== "string" || !/^hermes-live:task:task_[0-9a-f]{32}$/u.test(body.session_id)) {
       throw new Error(`Unexpected Hermes session_id: ${JSON.stringify(body.session_id)}.`);
     }
 
-    writeJson(res, 200, { run_id: runId, status: "started" });
+    writeJson(res, 202, { run_id: runId, status: "started" });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === `/v1/runs/${runId}`) {
+    writeJson(res, 200, {
+      object: "hermes.run",
+      run_id: runId,
+      status: "running",
+    });
     return;
   }
 
@@ -184,9 +208,8 @@ async function handleHermesRequest(req, res) {
       "cache-control": "no-cache",
       connection: "close",
     });
-    res.write('event: message.delta\ndata: {"delta":"gateway "}\n\n');
-    res.write('event: message.delta\ndata: {"delta":"smoke ok"}\n\n');
-    res.end('event: run.completed\ndata: {"usage":{"source":"gateway-smoke"}}\n\n');
+    res.write('event: message.delta\ndata: {"event":"message.delta","run_id":"run_gateway_smoke","delta":"gateway smoke ok"}\n\n');
+    res.end('event: run.completed\ndata: {"event":"run.completed","run_id":"run_gateway_smoke","output":"gateway smoke ok","usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}\n\n');
     return;
   }
 
@@ -221,7 +244,7 @@ function createInbox(socket) {
 
   socket.on("message", (raw) => {
     const message = JSON.parse(raw.toString("utf8"));
-    if (message.type === "session.error" || message.type === "run.failed") {
+    if (["session.error", "task.failed", "task.unknown"].includes(message.type)) {
       const error = new Error(`Gateway emitted ${message.type}: ${message.message ?? message.error ?? JSON.stringify(message)}`);
       const waiters = pending;
       pending = [];
@@ -269,7 +292,7 @@ function createInbox(socket) {
         const [message] = queued.splice(index, 1);
         return Promise.resolve(message);
       }
-      const terminal = queued.find((message) => message.type === "session.error" || message.type === "run.failed");
+      const terminal = queued.find((message) => ["session.error", "task.failed", "task.unknown"].includes(message.type));
       if (terminal) {
         return Promise.reject(new Error(`Gateway emitted ${terminal.type}: ${terminal.message ?? terminal.error ?? JSON.stringify(terminal)}`));
       }

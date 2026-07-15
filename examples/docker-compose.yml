@@ -1,6 +1,7 @@
 services:
   hermes-live:
     init: true
+    restart: unless-stopped
     build:
       context: ..
       dockerfile: Dockerfile
@@ -19,6 +20,12 @@ services:
       HERMES_LIVE_MAX_TEXT_CHARS: ${HERMES_LIVE_MAX_TEXT_CHARS:-20000}
       HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: ${HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS:-15000}
       HERMES_LIVE_DEMO_ENABLED: ${HERMES_LIVE_DEMO_ENABLED:-false}
+      HERMES_LIVE_TASK_STATE_FILE: /var/lib/hermes-live/tasks-v1.json
+      HERMES_LIVE_MAX_CONCURRENT_TASKS: ${HERMES_LIVE_MAX_CONCURRENT_TASKS:-3}
+      HERMES_LIVE_MAX_QUEUED_TASKS: ${HERMES_LIVE_MAX_QUEUED_TASKS:-32}
+      HERMES_LIVE_TASK_HISTORY_LIMIT: ${HERMES_LIVE_TASK_HISTORY_LIMIT:-200}
+      HERMES_LIVE_TASK_RETENTION_HOURS: ${HERMES_LIVE_TASK_RETENTION_HOURS:-168}
+      HERMES_LIVE_TASK_POLL_INTERVAL_MS: ${HERMES_LIVE_TASK_POLL_INTERVAL_MS:-2000}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-live-preview}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -28,6 +35,8 @@ services:
       - "127.0.0.1:${HERMES_LIVE_HOST_PORT:-8788}:8788"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - hermes-live-state:/var/lib/hermes-live
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -37,3 +46,6 @@ services:
       - no-new-privileges:true
     pids_limit: 256
     stop_grace_period: 10s
+
+volumes:
+  hermes-live-state:

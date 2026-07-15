@@ -3,13 +3,19 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { WebSocketServer } from "ws";
 
-const hermesPrompt = "hello from cli";
+const taskPrompt = "hello from cli";
+const retainedResultPrompt = "hello retained result from cli";
 const directPrompt = "hello direct from cli";
 const audioOnlyPrompt = "hello audio only from cli";
+const failedTaskPrompt = "hello failed task from cli";
+const unknownTaskPrompt = "hello unknown task from cli";
 const cleanClosePrompt = "hello clean close from cli";
 const invalidOutputPrompt = "hello invalid output from cli";
-const expectedHermesOutput = "cli ok";
+const mismatchedGetPrompt = "hello mismatched get from cli";
+const expectedTaskOutput = "cli ok";
+const expectedRetainedOutput = "retained cli ok";
 const expectedDirectOutput = "direct cli ok";
+
 const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
 const stalledSockets = new Set();
 const stalledHandshakeServer = createServer((socket) => {
@@ -17,6 +23,8 @@ const stalledHandshakeServer = createServer((socket) => {
   socket.once("close", () => stalledSockets.delete(socket));
 });
 const receivedPrompts = new Set();
+const socketPrompts = new WeakMap();
+let retainedResultFetched = false;
 
 server.on("connection", (socket, request) => {
   socket.on("message", (raw) => {
@@ -24,24 +32,38 @@ server.on("connection", (socket, request) => {
     if (message.type === "session.start") {
       if (request.url === "/session-timeout") return;
       if (request.url === "/oversized-message") {
-        socket.send(JSON.stringify({ type: "log", message: "x".repeat(2_700_100) }));
+        socket.send(JSON.stringify({ type: "log", level: "info", message: "x".repeat(2_700_100) }));
         return;
       }
       if (request.url === "/invalid-ready") {
-        socket.send(JSON.stringify({ type: "session.ready", sessionId: "live_cli_smoke", model: "mock-live" }));
+        socket.send(JSON.stringify({ type: "session.ready", protocolVersion: 3, sessionId: "live_cli_smoke" }));
         return;
       }
+      if (request.url === "/wrong-version") {
+        socket.send(JSON.stringify({ ...readyMessage(), protocolVersion: 2 }));
+        return;
+      }
+      socket.send(JSON.stringify(readyMessage()));
       socket.send(JSON.stringify({
-        type: "session.ready",
-        protocolVersion: 2,
-        sessionId: "live_cli_smoke",
-        model: "mock-live",
-        hermes: {},
+        type: "task.snapshot",
+        reason: "initial",
+        tasks: [{
+          taskId: "task_existing",
+          sequence: 8,
+          state: "running",
+          title: "Existing task",
+          createdAt: 80,
+          updatedAt: 88,
+          startedAt: 81,
+          progress: { message: "Already running before this one-shot request" },
+        }],
+        truncated: false,
       }));
       return;
     }
     if (message.type === "text.input") {
       receivedPrompts.add(message.text);
+      socketPrompts.set(socket, message.text);
       if (message.text === directPrompt) {
         socket.send(JSON.stringify({ type: "transcript.delta", speaker: "assistant", text: "direct " }));
         socket.send(JSON.stringify({ type: "transcript.delta", speaker: "assistant", text: "cli ok" }));
@@ -49,6 +71,7 @@ server.on("connection", (socket, request) => {
         return;
       }
       if (message.text === audioOnlyPrompt) {
+        socket.send(JSON.stringify({ type: "audio.output", data: "AAA=", mimeType: "audio/pcm;rate=24000" }));
         socket.send(JSON.stringify({ type: "response.completed" }));
         return;
       }
@@ -57,12 +80,113 @@ server.on("connection", (socket, request) => {
         return;
       }
       if (message.text === invalidOutputPrompt) {
-        socket.send(JSON.stringify({ type: "run.started", runId: "run_cli_smoke", sessionId: "live_cli_smoke" }));
-        socket.send(JSON.stringify({ type: "run.completed", runId: "run_cli_smoke", output: 42 }));
+        socket.send(JSON.stringify(taskAccepted("task_invalid_output")));
+        socket.send(JSON.stringify({
+          type: "task.completed",
+          taskId: "task_invalid_output",
+          sequence: 2,
+          occurredAt: 102,
+          result: { summary: "invalid", output: 42, truncated: false },
+        }));
         return;
       }
-      socket.send(JSON.stringify({ type: "run.started", runId: "run_cli_smoke", sessionId: "live_cli_smoke" }));
-      socket.send(JSON.stringify({ type: "run.completed", runId: "run_cli_smoke", output: expectedHermesOutput }));
+      if (message.text === failedTaskPrompt) {
+        socket.send(JSON.stringify(taskAccepted("task_failed")));
+        socket.send(JSON.stringify({
+          type: "task.failed",
+          taskId: "task_failed",
+          sequence: 2,
+          occurredAt: 102,
+          error: { code: "test_failure", message: "simulated failure", recoverable: false },
+        }));
+        return;
+      }
+      if (message.text === unknownTaskPrompt) {
+        socket.send(JSON.stringify(taskAccepted("task_unknown")));
+        socket.send(JSON.stringify({
+          type: "task.unknown",
+          taskId: "task_unknown",
+          sequence: 2,
+          occurredAt: 102,
+          error: { code: "state_unknown", message: "cannot prove outcome", recoverable: false },
+        }));
+        return;
+      }
+      if (message.text === retainedResultPrompt || message.text === mismatchedGetPrompt) {
+        const taskId = message.text === retainedResultPrompt ? "task_retained" : "task_mismatch";
+        socket.send(JSON.stringify(taskAccepted(taskId)));
+        socket.send(JSON.stringify({
+          type: "task.completed",
+          taskId,
+          sequence: 2,
+          occurredAt: 102,
+          result: { summary: "Result retained by the gateway", truncated: false },
+        }));
+        return;
+      }
+      if (message.text === taskPrompt) {
+        socket.send(JSON.stringify({
+          type: "task.accepted",
+          taskId: "task_existing",
+          sequence: 9,
+          occurredAt: 99,
+          state: "accepted",
+          title: "Existing task",
+        }));
+      }
+      socket.send(JSON.stringify(taskAccepted("task_cli_smoke")));
+      socket.send(JSON.stringify({
+        type: "task.started",
+        taskId: "task_cli_smoke",
+        sequence: 2,
+        occurredAt: 102,
+        title: "CLI smoke",
+      }));
+      socket.send(JSON.stringify({
+        type: "task.completed",
+        taskId: "task_cli_smoke",
+        sequence: 3,
+        occurredAt: 103,
+        result: { summary: expectedTaskOutput, output: expectedTaskOutput, truncated: false },
+      }));
+      return;
+    }
+    if (message.type === "task.get") {
+      const prompt = socketPrompts.get(socket);
+      if (prompt === retainedResultPrompt) {
+        retainedResultFetched = true;
+        socket.send(JSON.stringify({
+          type: "task.snapshot",
+          reason: "get",
+          requestId: message.id,
+          tasks: [{
+            taskId: "task_retained",
+            sequence: 2,
+            state: "completed",
+            title: "Retained result",
+            createdAt: 100,
+            updatedAt: 102,
+            finishedAt: 102,
+            result: { summary: expectedRetainedOutput, output: expectedRetainedOutput, truncated: false },
+          }],
+          truncated: false,
+        }));
+      } else if (prompt === mismatchedGetPrompt) {
+        socket.send(JSON.stringify({
+          type: "task.snapshot",
+          reason: "get",
+          requestId: message.id,
+          tasks: [{
+            taskId: "task_wrong",
+            sequence: 2,
+            state: "completed",
+            createdAt: 100,
+            updatedAt: 102,
+            result: { summary: "wrong", output: "wrong", truncated: false },
+          }],
+          truncated: false,
+        }));
+      }
     }
   });
 });
@@ -73,21 +197,30 @@ await once(stalledHandshakeServer, "listening");
 
 const address = server.address();
 const port = typeof address === "object" && address ? address.port : undefined;
-if (!port) {
-  throw new Error("CLI smoke gateway did not bind a port.");
-}
+if (!port) throw new Error("CLI smoke gateway did not bind a port.");
 const stalledAddress = stalledHandshakeServer.address();
 const stalledPort = typeof stalledAddress === "object" && stalledAddress ? stalledAddress.port : undefined;
-if (!stalledPort) {
-  throw new Error("CLI smoke stalled-handshake server did not bind a port.");
-}
+if (!stalledPort) throw new Error("CLI smoke stalled-handshake server did not bind a port.");
 
 try {
-  await runClient(port, hermesPrompt, expectedHermesOutput, { httpOrigin: true });
+  await runClient(port, taskPrompt, expectedTaskOutput, { httpOrigin: true });
+  await runClient(port, retainedResultPrompt, expectedRetainedOutput);
   await runClient(port, directPrompt, expectedDirectOutput);
   await runClient(port, audioOnlyPrompt, "", {
     expectFailure: true,
     stderrIncludes: "Realtime provider completed without text output",
+  });
+  await runClient(port, failedTaskPrompt, "", {
+    expectFailure: true,
+    stderrIncludes: "Hermes task failed: simulated failure",
+  });
+  await runClient(port, unknownTaskPrompt, "", {
+    expectFailure: true,
+    stderrIncludes: "Hermes task outcome is unknown: cannot prove outcome",
+  });
+  await runClient(port, mismatchedGetPrompt, "", {
+    expectFailure: true,
+    stderrIncludes: "task.get snapshot did not match the accepted Hermes task",
   });
   await runClient(port, cleanClosePrompt, "", {
     expectFailure: true,
@@ -95,12 +228,17 @@ try {
   });
   await runClient(port, invalidOutputPrompt, "", {
     expectFailure: true,
-    stderrIncludes: "Gateway run.completed output must be a bounded string",
+    stderrIncludes: "task.completed did not match the bounded protocol-v3 schema",
   });
   await runClient(port, "invalid ready", "", {
     path: "/invalid-ready",
     expectFailure: true,
-    stderrIncludes: "Gateway session.ready protocolVersion must be an integer",
+    stderrIncludes: "session.ready did not match the bounded protocol-v3 schema",
+  });
+  await runClient(port, "wrong version", "", {
+    path: "/wrong-version",
+    expectFailure: true,
+    stderrIncludes: "Gateway protocol mismatch: expected v3, received 2",
   });
   await runClient(port, "session timeout", "", {
     path: "/session-timeout",
@@ -129,10 +267,55 @@ try {
   );
 }
 
-for (const expectedPrompt of [hermesPrompt, directPrompt, audioOnlyPrompt, cleanClosePrompt, invalidOutputPrompt]) {
-  if (!receivedPrompts.has(expectedPrompt)) {
-    throw new Error(`CLI smoke gateway did not receive prompt: ${expectedPrompt}`);
-  }
+for (const expectedPrompt of [
+  taskPrompt,
+  retainedResultPrompt,
+  directPrompt,
+  audioOnlyPrompt,
+  failedTaskPrompt,
+  unknownTaskPrompt,
+  mismatchedGetPrompt,
+  cleanClosePrompt,
+  invalidOutputPrompt,
+]) {
+  if (!receivedPrompts.has(expectedPrompt)) throw new Error(`CLI smoke gateway did not receive prompt: ${expectedPrompt}`);
+}
+if (!retainedResultFetched) throw new Error("One-shot CLI did not fetch a retained task result with task.get.");
+
+function readyMessage() {
+  return {
+    type: "session.ready",
+    protocolVersion: 3,
+    sessionId: "live_cli_smoke",
+    model: "mock-live",
+    hermes: {},
+    realtime: {
+      provider: "mock",
+      model: "mock-live",
+      audio: { input: { enabled: false }, output: { enabled: false }, turnDetection: "none" },
+    },
+    tasks: {
+      scope: "owner",
+      sequence: "per_task",
+      reconnect: "snapshot",
+      durable: true,
+      parallel: true,
+      maxConcurrent: 3,
+      maxRetained: 200,
+      supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+    },
+  };
+}
+
+function taskAccepted(taskId) {
+  return {
+    type: "task.accepted",
+    taskId,
+    sequence: 1,
+    occurredAt: 101,
+    state: "accepted",
+    title: "CLI smoke",
+  };
 }
 
 async function runClient(port, prompt, expectedOutput, options = {}) {
@@ -140,6 +323,7 @@ async function runClient(port, prompt, expectedOutput, options = {}) {
     env: {
       ...process.env,
       HERMES_LIVE_PROVIDER: "mock",
+      HERMES_LIVE_CLIENT_RESULT_TIMEOUT_MS: String(options.resultTimeoutMs ?? 2_000),
       ...(options.readyTimeoutMs ? { HERMES_LIVE_CLIENT_READY_TIMEOUT_MS: String(options.readyTimeoutMs) } : {}),
       HERMES_LIVE_URL: options.httpOrigin
         ? `http://127.0.0.1:${port}`
@@ -150,17 +334,10 @@ async function runClient(port, prompt, expectedOutput, options = {}) {
 
   let stdout = "";
   let stderr = "";
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk.toString("utf8");
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString("utf8");
-  });
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
 
-  const timeout = setTimeout(() => {
-    child.kill("SIGKILL");
-  }, 5_000);
-
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 5_000);
   const [code, signal] = await once(child, "exit");
   clearTimeout(timeout);
 

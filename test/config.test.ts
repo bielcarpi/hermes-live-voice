@@ -21,13 +21,20 @@ describe("config", () => {
     expect(config.server.defaultProfileId).toBe("default");
     expect(config.server.defaultUserLabel).toBe("voice");
     expect(config.server.trustClientIdentity).toBe(false);
-    expect(config.server.runEventDetail).toBe("summary");
     expect(config.server.maxSessions).toBe(8);
     expect(config.server.maxTextChars).toBe(20_000);
     expect(config.server.providerReadyTimeoutMs).toBe(15_000);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
     expect(config.hermes.timeoutMs).toBe(30_000);
     expect(config.hermes.streamIdleTimeoutMs).toBe(120_000);
+    expect(config.tasks).toMatchObject({
+      maxConcurrent: 3,
+      maxQueued: 32,
+      historyLimit: 200,
+      retentionMs: 7 * 24 * 60 * 60 * 1_000,
+      pollIntervalMs: 2_000,
+    });
+    expect(config.tasks.stateFile).toMatch(/tasks-v1\.json$/u);
     expect(config.realtime.provider).toBe("gemini");
     expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
     expect(config.realtime.model).toBe(config.gemini.model);
@@ -141,12 +148,11 @@ describe("config", () => {
       .toThrow();
   });
 
-  it("configures trusted identity, event detail, and session capacity explicitly", () => {
+  it("configures trusted identity and session capacity explicitly", () => {
     const config = loadConfig({
       HERMES_LIVE_PROFILE_ID: "private",
       HERMES_LIVE_USER_LABEL: "alice",
       HERMES_LIVE_TRUST_CLIENT_IDENTITY: "true",
-      HERMES_LIVE_RUN_EVENT_DETAIL: "none",
       HERMES_LIVE_MAX_SESSIONS: "3",
     });
 
@@ -154,7 +160,6 @@ describe("config", () => {
       defaultProfileId: "private",
       defaultUserLabel: "alice",
       trustClientIdentity: true,
-      runEventDetail: "none",
       maxSessions: 3,
     });
   });
@@ -163,6 +168,38 @@ describe("config", () => {
     const config = loadConfig({ HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: "2500" });
 
     expect(config.server.providerReadyTimeoutMs).toBe(2500);
+  });
+
+  it("configures bounded persistent background-task supervision", () => {
+    const config = loadConfig({
+      HERMES_LIVE_TASK_STATE_FILE: "/tmp/hermes-live/private-tasks.json",
+      HERMES_LIVE_MAX_CONCURRENT_TASKS: "4",
+      HERMES_LIVE_MAX_QUEUED_TASKS: "48",
+      HERMES_LIVE_TASK_HISTORY_LIMIT: "300",
+      HERMES_LIVE_TASK_RETENTION_HOURS: "24",
+      HERMES_LIVE_TASK_POLL_INTERVAL_MS: "750",
+    });
+
+    expect(config.tasks).toEqual({
+      stateFile: "/tmp/hermes-live/private-tasks.json",
+      maxConcurrent: 4,
+      maxQueued: 48,
+      historyLimit: 300,
+      retentionMs: 24 * 60 * 60 * 1_000,
+      pollIntervalMs: 750,
+    });
+  });
+
+  it("rejects unsafe or unbounded background-task configuration", () => {
+    for (const stateFile of ["relative/tasks.json", " /tmp/tasks.json", "/tmp/tasks.json\n"]) {
+      expect(() => loadConfig({ HERMES_LIVE_TASK_STATE_FILE: stateFile })).toThrow();
+    }
+    expect(() => loadConfig({ HERMES_LIVE_MAX_CONCURRENT_TASKS: "0" })).toThrow();
+    expect(() => loadConfig({ HERMES_LIVE_MAX_CONCURRENT_TASKS: "17" })).toThrow();
+    expect(() => loadConfig({ HERMES_LIVE_MAX_QUEUED_TASKS: "513" })).toThrow();
+    expect(() => loadConfig({ HERMES_LIVE_TASK_HISTORY_LIMIT: "9" })).toThrow();
+    expect(() => loadConfig({ HERMES_LIVE_TASK_RETENTION_HOURS: "0" })).toThrow();
+    expect(() => loadConfig({ HERMES_LIVE_TASK_POLL_INTERVAL_MS: "249" })).toThrow();
   });
 
   it("can disable the built-in browser demo", () => {

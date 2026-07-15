@@ -5,20 +5,25 @@ import { makeSessionKey, type AppConfig } from "../../config.js";
 import type { Logger } from "../../logger.js";
 import {
   parseClientMessage,
+  RequestIdSchema,
   type ClientMessage,
   type RealtimeResponseTruncation,
 } from "../../domain/protocol/client-protocol.js";
 import {
   serverMessage,
-  type HermesApprovalDetails,
-  type HermesRunEvent,
+  type PublicTaskSnapshot,
   type ServerMessage,
 } from "../../domain/protocol/server-protocol.js";
-import { HERMES_LIVE_PROTOCOL_VERSION } from "../../domain/protocol/version.js";
+import {
+  HERMES_LIVE_PROTOCOL_VERSION,
+  incompatibleProtocolVersionMessage,
+  isHermesLiveProtocolVersion,
+} from "../../domain/protocol/version.js";
+import type { TaskExecutionMode, TaskRecord } from "../../domain/tasks/index.js";
 import { realtimeClientCapabilities } from "./client-capabilities.js";
-import { HERMES_TARGETED_APPROVAL_FEATURE } from "./hermes-approval-compatibility.js";
 import type { ClientConnectionPort, ClientInboundFrame } from "./ports/client-connection.port.js";
 import type { HermesRunsPort } from "./ports/hermes-runs.port.js";
+import type { TaskSupervisorPort } from "./ports/task-supervisor.port.js";
 import {
   type LiveModelEvent,
   type LiveToolCall,
@@ -26,110 +31,82 @@ import {
   type LiveModelSession,
 } from "./ports/realtime-model.port.js";
 import { buildSystemInstruction } from "./system-instruction.js";
+import {
+  projectSupersededTaskNotification,
+  projectTaskLifecycle,
+  projectTaskNotification,
+  projectTaskSnapshot,
+} from "./task-public-projection.js";
 
-const MAX_PENDING_APPROVALS = 128;
-const MAX_PROCESSED_APPROVAL_RESPONSES = 256;
 const MAX_PENDING_PROVIDER_EVENTS = 256;
 const MAX_PENDING_PROVIDER_EVENT_BYTES = 8 * 1024 * 1024;
 const MAX_PROVIDER_TRANSCRIPT_CHARS = 20_000;
-const MAX_HERMES_OUTPUT_CHARS = 200_000;
-const MAX_PUBLIC_RUN_EVENT_BYTES = 256_000;
-const MAX_PUBLIC_USAGE_BYTES = 64_000;
-const MAX_RUN_START_CLOSE_WAIT_MS = 5_000;
-const MAX_PROVIDER_CANCEL_WAIT_MS = 1_000;
 const MAX_PROVIDER_IO_WAIT_MS = 10_000;
+const MAX_PROVIDER_CLOSE_WAIT_MS = 5_000;
+const MAX_PROVIDER_CANCEL_WAIT_MS = 1_000;
+const MAX_PROVIDER_NOTIFICATION_RESPONSE_WAIT_MS = 30_000;
 const MAX_PENDING_CLIENT_MESSAGES = 256;
 const MAX_PENDING_CLIENT_BYTES = 8 * 1024 * 1024;
 const MAX_CLIENT_MESSAGE_ERRORS = 16;
 const MAX_PENDING_PROVIDER_TOOL_CALLS = 32;
 const MAX_CONCURRENT_PROVIDER_TOOL_CALLS = 4;
 const MAX_PROCESSED_PROVIDER_TOOL_CALLS = 256;
+const MAX_SEEN_PROVIDER_TOOL_CALLS = 4_096;
 const MAX_PROVIDER_TOOL_CALL_ARGS_BYTES = 100_000;
 const MAX_PROVIDER_TOOL_RESPONSE_BYTES = 256_000;
 const MAX_CACHED_PROVIDER_TOOL_RESPONSE_BYTES = 4 * 1024 * 1024;
-const MAX_LEGACY_APPROVALS_RESOLVED = 10_000;
+const MAX_PUBLIC_TASKS = 100;
+const MAX_TOOL_RESOURCE_KEYS = 8;
 
 export interface LiveGatewaySessionDeps {
   config: AppConfig;
   hermes: HermesRunsPort;
+  taskSupervisor: TaskSupervisorPort;
   liveModel: LiveModelAdapter;
   logger: Logger;
 }
 
-interface PendingApprovalEnvelope {
-  runId: string;
-  approval: HermesApprovalDetails;
-  sourceApprovalId: string;
-  sourceKey: string;
-  semanticFingerprint: string;
-}
-
-interface ProcessedApprovalResponse {
-  fingerprint: string;
-  response: Extract<ServerMessage, { type: "approval.responded" }>;
-}
-
 interface ProviderToolCallRecord {
   fingerprint: string;
-  name: string;
   state: "pending" | "done";
+  cancelled: boolean;
   responseDelivery: "not_started" | "sending" | "sent";
-  operationStarted?: boolean;
-  cancelled?: boolean;
-  runId?: string;
-  runTerminalStatus?: "completed" | "failed" | "cancelled";
-  cancellationOperation?: Promise<void>;
   response?: Record<string, unknown>;
   responseBytes?: number;
-  replayUnavailable?: boolean;
-  replayPending?: boolean;
-  startMarkerActive?: boolean;
 }
 
 export class LiveGatewaySession {
   private readonly id = `live_${randomUUID().replaceAll("-", "")}`;
+  private readonly notificationToken = randomUUID().replaceAll("-", "");
   private readonly abort = new AbortController();
   private liveSession?: LiveModelSession;
+  private pendingLiveConnect?: Promise<LiveModelSession>;
   private starting = false;
+  private readySent = false;
   private closing = false;
+  private closePromise?: Promise<void>;
   private sessionKey?: string;
-  private hermesApprovalResponseByIdSupported = false;
+  private ownerId?: string;
   private profileId = "default";
   private userLabel = "anonymous";
-  private activeRunId: string | undefined;
-  private hermesRunActive = false;
-  private pendingApprovals: PendingApprovalEnvelope[] = [];
-  private readonly processedApprovalResponses = new Map<string, ProcessedApprovalResponse>();
-  private readonly processedApprovalSources = new Map<string, string>();
-  private readonly stopRequestedRunIds = new Set<string>();
-  private readonly stopIntentRunIds = new Set<string>();
-  private readonly stopNotificationRunIds = new Set<string>();
-  private readonly stopRunOperations = new Map<
-    string,
-    Promise<Awaited<ReturnType<HermesRunsPort["stopRun"]>>>
-  >();
-  private approvalSubmissionInFlight = false;
-  private deferredProviderTerminal?: Extract<LiveModelEvent, { type: "response" }>;
-  private pendingRunStart?: Promise<Awaited<ReturnType<HermesRunsPort["startRun"]>>>;
-  private runStartController?: AbortController;
-  private pendingLiveConnect?: Promise<LiveModelSession>;
-  private readonly providerCloseOperations = new WeakMap<LiveModelSession, Promise<boolean>>();
-  private readonly pendingProviderCleanupOperations = new WeakMap<Promise<LiveModelSession>, Promise<boolean>>();
-  private closePromise?: Promise<void>;
-  private clientClosePromise?: Promise<void>;
-  private requestedClientClose?: { code: number; reason: string; requestId?: string };
-  private sessionShutdownUnconfirmed = false;
-  private readonly runContainmentOperations = new Map<string, Promise<void>>();
+  private unsubscribeTasks?: () => void;
+  private readonly pendingTaskRecords = new Map<string, TaskRecord>();
+  private readonly pendingNotifications = new Map<string, TaskRecord>();
+  private notificationFlushRunning = false;
+  private notificationResponsePending = false;
+  private notificationResponseTimer?: ReturnType<typeof setTimeout>;
+  private providerResponseActive = false;
+  private userSpeaking = false;
   private messageQueue: Promise<void> = Promise.resolve();
   private pendingClientMessages = 0;
   private pendingClientBytes = 0;
   private clientInputOverflowed = false;
   private clientMessageErrors = 0;
   private readonly providerToolCalls = new Map<string, ProviderToolCallRecord>();
+  private readonly providerToolCallTombstones = new Map<string, string>();
   private readonly providerToolOperations: Array<() => Promise<void>> = [];
   private activeProviderToolOperations = 0;
   private pendingProviderToolCalls = 0;
-  private pendingStartToolCalls = 0;
   private cachedProviderToolResponseBytes = 0;
 
   constructor(
@@ -138,83 +115,34 @@ export class LiveGatewaySession {
   ) {}
 
   bind(): void {
-    this.client.onMessage((data) => {
-      if (this.closing || this.clientInputOverflowed) return;
-      const bytes = clientInboundFrameBytes(data);
-      if (
-        this.pendingClientMessages >= MAX_PENDING_CLIENT_MESSAGES ||
-        this.pendingClientBytes + bytes > MAX_PENDING_CLIENT_BYTES
-      ) {
-        this.clientInputOverflowed = true;
-        this.fail(
-          "client_input_backpressure",
-          new Error("Client sent messages faster than the realtime session could process them."),
-          false,
-        );
-        void this.closeClientAfterCleanup(1009, "client input backpressure");
-        return;
-      }
-      let message: ClientMessage;
-      let requestId: string | undefined;
-      try {
-        const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-        const parsed = JSON.parse(text) as unknown;
-        requestId = requestIdFromUnknown(parsed);
-        message = parseClientMessage(parsed);
-      } catch (error) {
-        this.handleClientMessageFailure(error, requestId);
-        return;
-      }
-      this.pendingClientMessages += 1;
-      this.pendingClientBytes += bytes;
-      const processMessage = async () => {
-        try {
-          if (!this.clientInputOverflowed && !this.closing) {
-            await this.handleClientMessage(message);
-            this.clientMessageErrors = 0;
-          }
-        } catch (error) {
-          this.handleClientMessageFailure(error, message.id);
-        } finally {
-          this.pendingClientMessages -= 1;
-          this.pendingClientBytes -= bytes;
-        }
-      };
-      if (isPreemptiveClientControl(message, Boolean(this.liveSession))) {
-        void processMessage();
-      } else {
-        this.messageQueue = this.messageQueue.then(processMessage);
-      }
-    });
+    this.client.onMessage((frame) => this.enqueueClientFrame(frame));
     this.client.onClose(() => {
       void this.close();
     });
     this.client.onError((error) => {
-      this.deps.logger.warn("client connection error", { sessionId: this.id, error: String(error) });
+      this.deps.logger.warn("client connection error", { sessionId: this.id, error: errorToMessage(error) });
     });
   }
 
   async start(message: Extract<ClientMessage, { type: "session.start" }>): Promise<void> {
-    if (message.protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
+    if (!isHermesLiveProtocolVersion(message.protocolVersion)) {
       this.fail(
         "unsupported_protocol_version",
-        new Error(
-          `Hermes Live protocol version ${message.protocolVersion} is not supported; use ${HERMES_LIVE_PROTOCOL_VERSION}.`,
-        ),
+        new Error(incompatibleProtocolVersionMessage(message.protocolVersion)),
         false,
         message.id,
       );
       return;
     }
-    if (this.liveSession || this.starting) {
+    if (this.liveSession || this.starting || this.readySent) {
       this.fail("session_already_started", new Error("Realtime session is already started."), true, message.id);
       return;
     }
 
     this.starting = true;
-    let liveSession: LiveModelSession | undefined;
-    let clearProviderReadyTimeout = () => {};
     let startupPhase: "hermes" | "realtime" = "hermes";
+    let connected: LiveModelSession | undefined;
+    let unsubscribe: (() => void) | undefined;
     try {
       this.profileId = this.deps.config.server.trustClientIdentity
         ? message.profileId ?? this.deps.config.server.defaultProfileId
@@ -223,84 +151,34 @@ export class LiveGatewaySession {
         ? message.userLabel ?? this.deps.config.server.defaultUserLabel
         : this.deps.config.server.defaultUserLabel;
       this.sessionKey = makeSessionKey(this.deps.config.server.sessionPrefix, this.profileId, this.userLabel);
+      this.ownerId = this.deps.taskSupervisor.registerOwner(this.sessionKey, this.sessionKey);
+      unsubscribe = this.deps.taskSupervisor.subscribe(this.ownerId, (record) => this.receiveTaskRecord(record));
+      this.unsubscribeTasks = unsubscribe;
+
       const capabilities = await this.deps.hermes.assertRunsSupported(this.abort.signal);
-      this.hermesApprovalResponseByIdSupported =
-        capabilities.features?.[HERMES_TARGETED_APPROVAL_FEATURE] === true;
       startupPhase = "realtime";
-      const pendingEvents: LiveModelEvent[] = [];
-      let pendingEventBytes = 0;
-      let providerOpen = false;
-      let readySent = false;
-      let providerStartupFailed = false;
-      let providerReadyTimedOut = false;
-      let providerReadyTimeout: ReturnType<typeof setTimeout> | undefined;
-      let resolveProviderReady!: () => void;
-      let rejectProviderReady!: (error: Error) => void;
-      const providerReady = new Promise<void>((resolve) => {
-        resolveProviderReady = resolve;
+      const providerEvents: LiveModelEvent[] = [];
+      let providerEventBytes = 0;
+      let providerOpened = false;
+      let resolveOpen!: () => void;
+      let rejectOpen!: (error: Error) => void;
+      const providerOpen = new Promise<void>((resolve, reject) => {
+        resolveOpen = resolve;
+        rejectOpen = reject;
       });
-      const providerReadyFailure = new Promise<never>((_, reject) => {
-        rejectProviderReady = reject;
-      });
-      const providerReadyDeadline = new Promise<never>((_, reject) => {
-        providerReadyTimeout = setTimeout(() => {
-          providerReadyTimedOut = true;
-          reject(new Error(`Realtime provider did not become ready within ${this.deps.config.server.providerReadyTimeoutMs}ms.`));
-        }, this.deps.config.server.providerReadyTimeoutMs);
-      });
-      clearProviderReadyTimeout = () => {
-        if (providerReadyTimeout) {
-          clearTimeout(providerReadyTimeout);
-          providerReadyTimeout = undefined;
-        }
-      };
-      const failProviderStartup = (error: unknown): boolean => {
-        if (readySent || this.closing) {
-          return false;
-        }
-        providerStartupFailed = true;
-        rejectProviderReady(error instanceof Error ? error : new Error(errorToMessage(error)));
-        return true;
-      };
-      const sendReady = () => {
-        if (
-          readySent ||
-          providerStartupFailed ||
-          providerReadyTimedOut ||
-          !providerOpen ||
-          !this.liveSession ||
-          this.closing
-        ) {
-          return;
-        }
-        clearProviderReadyTimeout();
-        const hermesInfo = publicHermesCapabilities(capabilities);
-        this.send({
-          type: "session.ready",
-          protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
-          sessionId: this.id,
-          model: this.deps.config.realtime.model,
-          hermes: hermesInfo,
-          realtime: realtimeClientCapabilities(this.deps.config),
-        });
-        readySent = true;
-        resolveProviderReady();
-        for (const event of pendingEvents.splice(0)) {
-          this.dispatchLiveModelEvent(event);
-        }
-        pendingEventBytes = 0;
-      };
+
       const connect = this.deps.liveModel.connect({
         sessionId: this.id,
-        systemInstruction: buildSystemInstruction(),
-        ...(this.sessionKey ? { safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey) } : {}),
+        systemInstruction: buildSystemInstruction(this.notificationToken),
+        safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey),
         callbacks: {
           onOpen: () => {
-            providerOpen = true;
-            sendReady();
+            providerOpened = true;
+            resolveOpen();
           },
           onClose: (event) => {
-            if (failProviderStartup(new Error("Realtime provider session closed before ready."))) {
+            if (!this.readySent) {
+              rejectOpen(new Error("Realtime provider session closed before ready."));
               return;
             }
             this.deps.logger.info("realtime provider session closed", {
@@ -308,45 +186,36 @@ export class LiveGatewaySession {
               ...providerCloseLogDetail(event),
             });
             if (this.closing) return;
-            const closeDetail = publicProviderCloseEvent(event);
-            this.send({
-              type: "log",
-              level: "info",
-              message: "Realtime provider session closed",
-              ...(closeDetail ? { data: closeDetail } : {}),
-            });
             this.fail("realtime_provider_closed", new Error("Realtime provider session closed."), true);
             void this.closeClientAfterCleanup(1011, "realtime provider closed");
           },
           onError: (error) => {
-            if (failProviderStartup(error)) {
+            if (!this.readySent) {
+              rejectOpen(new Error(publicRealtimeStartupError(error, this.deps.config.server.providerReadyTimeoutMs)));
               return;
             }
             this.deps.logger.warn("realtime provider reported an error", {
               sessionId: this.id,
               error: "realtime_provider_error",
             });
-            if (this.closing) return;
-            this.fail(
-              "realtime_provider_error",
-              new Error("Realtime provider reported an error. Check the gateway logs."),
-              true,
-            );
+            if (!this.closing) {
+              this.fail("realtime_provider_error", new Error("Realtime provider reported an error."), true);
+            }
           },
           onEvent: (event) => {
             if (this.closing) return;
-            if (!readySent) {
-              const eventBytes = safeJsonByteLength(event);
+            if (!this.readySent) {
+              const bytes = safeJsonByteLength(event);
               if (
-                pendingEvents.length >= MAX_PENDING_PROVIDER_EVENTS ||
-                !Number.isFinite(eventBytes) ||
-                eventBytes > MAX_PENDING_PROVIDER_EVENT_BYTES - pendingEventBytes
+                providerEvents.length >= MAX_PENDING_PROVIDER_EVENTS ||
+                !Number.isFinite(bytes) ||
+                bytes > MAX_PENDING_PROVIDER_EVENT_BYTES - providerEventBytes
               ) {
-                failProviderStartup(new Error("Realtime provider exceeded the safe pre-ready event queue limit."));
+                rejectOpen(new Error("Realtime provider exceeded the safe pre-ready event queue limit."));
                 return;
               }
-              pendingEvents.push(event);
-              pendingEventBytes += eventBytes;
+              providerEvents.push(event);
+              providerEventBytes += bytes;
               return;
             }
             this.dispatchLiveModelEvent(event);
@@ -354,61 +223,136 @@ export class LiveGatewaySession {
         },
       });
       this.pendingLiveConnect = connect;
-      void connect.catch(() => {
-        if (this.pendingLiveConnect === connect) this.pendingLiveConnect = undefined;
-      });
-      liveSession = await Promise.race([connect, providerReadyDeadline, providerReadyFailure]);
+      void connect.catch(() => undefined);
+      connected = await withDeadline(
+        connect,
+        this.deps.config.server.providerReadyTimeoutMs,
+        `Realtime provider did not connect within ${this.deps.config.server.providerReadyTimeoutMs}ms.`,
+      );
       if (this.pendingLiveConnect === connect) this.pendingLiveConnect = undefined;
+      this.liveSession = connected;
+      if (!providerOpened) {
+        await withDeadline(
+          providerOpen,
+          this.deps.config.server.providerReadyTimeoutMs,
+          `Realtime provider did not become ready within ${this.deps.config.server.providerReadyTimeoutMs}ms.`,
+        );
+      }
       if (this.closing) {
-        clearProviderReadyTimeout();
-        await this.closeProviderSessionWithinDeadline(liveSession, "session close during realtime startup");
+        await this.closeProvider(connected);
         return;
       }
-      this.liveSession = liveSession;
-      sendReady();
-      await Promise.race([providerReady, providerReadyDeadline, providerReadyFailure]);
-    } catch (error) {
-      clearProviderReadyTimeout();
-      const startupCleanupDeadlineMs = this.providerStartupCleanupDeadlineMs();
-      let providerCleanupConfirmed = liveSession
-        ? await this.closeProviderSessionWithinDeadline(
-            liveSession,
-            "realtime startup failure",
-            startupCleanupDeadlineMs,
-          )
-        : true;
-      const pendingConnect = this.pendingLiveConnect;
-      if (pendingConnect) {
-        providerCleanupConfirmed = (
-          await this.closePendingProviderConnectWithinDeadline(
-            pendingConnect,
-            "realtime startup failure",
-            startupCleanupDeadlineMs,
-          )
-        ) && providerCleanupConfirmed;
+
+      // Recent history is intentionally bounded for the public inbox, but
+      // active work and unread notifications are correctness-critical. Load
+      // those independently so neither can disappear behind newer terminal
+      // history, then de-duplicate and project the union in bounded frames.
+      const [recentWindow, activeTasks, unreadTasks] = await Promise.all([
+        this.deps.taskSupervisor.list(this.ownerId, MAX_PUBLIC_TASKS + 1),
+        this.deps.taskSupervisor.listActive(this.ownerId),
+        this.deps.taskSupervisor.listUnreadNotifications(this.ownerId),
+      ]);
+      const initialTasks = mergeTaskRecords([
+        ...activeTasks,
+        ...unreadTasks,
+        ...recentWindow.slice(0, MAX_PUBLIC_TASKS),
+      ]);
+      const projectedInitialTasks = projectTaskList(initialTasks);
+      const initialSnapshotTruncated = recentWindow.length > MAX_PUBLIC_TASKS
+        || projectedInitialTasks.length > MAX_PUBLIC_TASKS;
+      this.send({
+        type: "session.ready",
+        protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+        ...(message.id ? { requestId: message.id } : {}),
+        sessionId: this.id,
+        model: this.deps.config.realtime.model,
+        hermes: publicHermesCapabilities(capabilities),
+        realtime: realtimeClientCapabilities(this.deps.config),
+        tasks: {
+          scope: "owner",
+          sequence: "per_task",
+          reconnect: "snapshot",
+          durable: true,
+          parallel: this.deps.config.tasks.maxConcurrent > 1,
+          maxConcurrent: this.deps.config.tasks.maxConcurrent,
+          maxRetained: this.deps.config.tasks.historyLimit,
+          supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+        },
+      });
+      const initialSnapshotReason = initialTasks.length > 0 ? "reconnect" : "initial";
+      if (projectedInitialTasks.length === 0) {
+        this.send({
+          type: "task.snapshot",
+          reason: initialSnapshotReason,
+          tasks: [],
+          truncated: false,
+        });
+      } else {
+        for (let offset = 0; offset < projectedInitialTasks.length; offset += MAX_PUBLIC_TASKS) {
+          this.send({
+            type: "task.snapshot",
+            reason: initialSnapshotReason,
+            tasks: projectedInitialTasks.slice(offset, offset + MAX_PUBLIC_TASKS),
+            // `truncated` describes the bounded recent-history view, not a
+            // pagination cursor. Active and unread records are still emitted
+            // across every bounded reconnect frame.
+            truncated: initialSnapshotTruncated,
+          });
+        }
       }
-      if (liveSession && this.liveSession === liveSession) {
-        this.liveSession = undefined;
+      this.readySent = true;
+      const initialTaskSequences = new Map(initialTasks.map((record) => [record.taskId, record.sequence]));
+      for (const record of unreadTasks) {
+        const notification = projectTaskNotification(record);
+        if (!record.notification.unread || !notification) continue;
+        this.send({
+          type: "task.notification",
+          taskId: record.taskId,
+          sequence: record.sequence,
+          occurredAt: record.updatedAt,
+          notification,
+        });
+        // Client inbox delivery and provider speech have independent durable
+        // state. Re-project every unread item on reconnect, but never enqueue
+        // one that has already been announced for speech again.
+        if (record.notification.announcedAt === undefined) {
+          this.pendingNotifications.set(record.taskId, structuredClone(record));
+        }
+      }
+      for (const record of this.pendingTaskRecords.values()) {
+        if (record.sequence > (initialTaskSequences.get(record.taskId) ?? 0)) this.dispatchTaskRecord(record);
+      }
+      this.pendingTaskRecords.clear();
+      for (const event of providerEvents) this.dispatchLiveModelEvent(event);
+      this.scheduleNotificationFlush();
+    } catch (error) {
+      if (this.pendingLiveConnect) {
+        const lateConnect = this.pendingLiveConnect;
+        this.pendingLiveConnect = undefined;
+        void lateConnect.then((session) => this.closeProvider(session)).catch(() => undefined);
+      }
+      if (connected) await this.closeProvider(connected).catch(() => undefined);
+      if (this.liveSession === connected) this.liveSession = undefined;
+      if (unsubscribe && this.unsubscribeTasks === unsubscribe) {
+        unsubscribe();
+        this.unsubscribeTasks = undefined;
       }
       if (!this.closing) {
         this.deps.logger.warn("live session startup failed", {
           sessionId: this.id,
           phase: startupPhase,
-          error: startupPhase === "realtime" ? "realtime_provider_startup_failed" : errorToMessage(error),
+          error: "startup_failed",
         });
         this.fail(
           "session_start_failed",
           new Error(
             startupPhase === "hermes"
-              ? "Hermes API readiness check failed. Check the gateway logs."
+              ? "Hermes Agent is not ready for background tasks. Check the authenticated /ready endpoint and gateway logs."
               : publicRealtimeStartupError(error, this.deps.config.server.providerReadyTimeoutMs),
           ),
-          providerCleanupConfirmed,
+          true,
           message.id,
         );
-        if (!providerCleanupConfirmed) {
-          await this.closeClientAfterCleanup(1011, "realtime provider startup cleanup unconfirmed", message.id);
-        }
       }
     } finally {
       this.starting = false;
@@ -422,242 +366,54 @@ export class LiveGatewaySession {
     return this.closePromise;
   }
 
-  private closeClientAfterCleanup(code: number, reason: string, requestId?: string): Promise<void> {
-    const correlatedRequestId = requestId ?? this.requestedClientClose?.requestId;
-    const requested = { code, reason, ...(correlatedRequestId ? { requestId: correlatedRequestId } : {}) };
+  private enqueueClientFrame(frame: ClientInboundFrame): void {
+    if (this.closing || this.clientInputOverflowed) return;
+    const bytes = clientInboundFrameBytes(frame);
     if (
-      !this.requestedClientClose ||
-      clientCloseSeverity(requested.code) > clientCloseSeverity(this.requestedClientClose.code)
+      this.pendingClientMessages >= MAX_PENDING_CLIENT_MESSAGES ||
+      this.pendingClientBytes + bytes > MAX_PENDING_CLIENT_BYTES
     ) {
-      this.requestedClientClose = requested;
-    } else if (requestId && !this.requestedClientClose.requestId) {
-      this.requestedClientClose.requestId = requestId;
-    }
-    if (this.clientClosePromise) return this.clientClosePromise;
-    this.clientClosePromise = (async () => {
-      await this.close();
-      const outcome = this.requestedClientClose ?? requested;
-      if (this.sessionShutdownUnconfirmed) {
-        this.send({
-          type: "session.error",
-          code: "session_shutdown_unconfirmed",
-          message: "The gateway could not confirm complete session shutdown. Verify any active task state in Hermes.",
-          recoverable: false,
-          ...(outcome.requestId ? { requestId: outcome.requestId } : {}),
-        });
-        this.client.close(1011, "session shutdown unconfirmed");
-        return;
-      }
-      this.client.close(outcome.code, outcome.reason);
-    })();
-    return this.clientClosePromise;
-  }
-
-  private async performClose(): Promise<void> {
-    this.clearPendingApprovals();
-    this.deferredProviderTerminal = undefined;
-    this.providerToolOperations.length = 0;
-    if (this.approvalSubmissionInFlight) {
-      this.sessionShutdownUnconfirmed = true;
-      this.deps.logger.error("approval submission was still in flight while closing the voice session", {
-        sessionId: this.id,
-        runId: this.activeRunId,
-      });
-    }
-    const providerClose = this.closeProviderResourcesForSessionClose();
-    this.abort.abort();
-    const pendingStart = this.pendingRunStart;
-    let startedDuringCloseRunId: string | undefined;
-    if (pendingStart) {
-      let startRejected = false;
-      const observedStart = pendingStart.then(
-        (started) => {
-          startedDuringCloseRunId = started.runId;
-          return started;
-        },
-        (error) => {
-          startRejected = true;
-          throw error;
-        },
+      this.clientInputOverflowed = true;
+      this.fail(
+        "client_input_backpressure",
+        new Error("Client sent messages faster than the realtime session could process them."),
+        false,
       );
-      const settled = await settlesWithin(
-        observedStart,
-        Math.min(this.deps.config.hermes.timeoutMs, MAX_RUN_START_CLOSE_WAIT_MS),
-      );
-      if (!settled) {
-        this.sessionShutdownUnconfirmed = true;
-        this.deps.logger.error("Hermes run start did not settle before session close deadline", {
-          sessionId: this.id,
-        });
-        void pendingStart
-          .then((started) => this.stopLateStartedRun(started.runId))
-          .catch(() => undefined);
-        this.runStartController?.abort(new Error("Voice session closed before Hermes returned a run id."));
-      } else if (startRejected) {
-        this.sessionShutdownUnconfirmed = true;
-        this.deps.logger.error("Hermes run start rejected while session close was in progress", {
-          sessionId: this.id,
-        });
-      }
-    }
-    const ownedRunId = this.activeRunId ?? startedDuringCloseRunId;
-    if (ownedRunId && !this.stopRequestedRunIds.has(ownedRunId)) {
-      const runId = ownedRunId;
-      try {
-        await this.stopOwnedRunForClose(runId);
-      } catch (error) {
-        this.sessionShutdownUnconfirmed = true;
-        this.deps.logger.error("failed to stop owned Hermes run while closing", {
-          sessionId: this.id,
-          runId,
-          error: errorToMessage(error),
-        });
-      }
-    }
-    await providerClose;
-  }
-
-  private async closeProviderResourcesForSessionClose(): Promise<void> {
-    const operations: Promise<unknown>[] = [];
-    if (this.liveSession) {
-      operations.push(this.closeProviderSessionWithinDeadline(this.liveSession, "voice session close"));
+      void this.closeClientAfterCleanup(1009, "client input backpressure");
+      return;
     }
 
-    const pendingConnect = this.pendingLiveConnect;
-    if (pendingConnect) {
-      operations.push(this.closePendingProviderConnectWithinDeadline(
-        pendingConnect,
-        "voice session close",
-        this.providerStartupCleanupDeadlineMs(),
-      ));
-    }
-
-    await Promise.all(operations);
-  }
-
-  private closePendingProviderConnectWithinDeadline(
-    pendingConnect: Promise<LiveModelSession>,
-    context: string,
-    timeoutMs: number,
-  ): Promise<boolean> {
-    const existing = this.pendingProviderCleanupOperations.get(pendingConnect);
-    if (existing) return existing;
-    const lateCleanup = pendingConnect.then(
-      (session) => this.closeProviderSessionWithinDeadline(session, `late connection after ${context}`, timeoutMs),
-      () => true,
-    ).finally(() => {
-      if (this.pendingLiveConnect === pendingConnect) this.pendingLiveConnect = undefined;
-    });
-    const operation = withDeadline(
-      lateCleanup,
-      timeoutMs,
-      "Realtime provider connection and cleanup did not settle before the safety deadline.",
-    ).then(
-      (confirmed) => confirmed,
-      (error) => {
-        this.sessionShutdownUnconfirmed = true;
-        this.deps.logger.error("failed to confirm pending realtime provider connection cleanup", {
-          sessionId: this.id,
-          context,
-          error: "realtime_provider_cleanup_unconfirmed",
-        });
-        return false;
-      },
-    );
-    this.pendingProviderCleanupOperations.set(pendingConnect, operation);
-    return operation;
-  }
-
-  private closeProviderSessionWithinDeadline(
-    session: LiveModelSession,
-    context: string,
-    timeoutMs = MAX_RUN_START_CLOSE_WAIT_MS,
-  ): Promise<boolean> {
-    const existing = this.providerCloseOperations.get(session);
-    if (existing) return existing;
-    const operation = withDeadline(
-      Promise.resolve().then(() => session.close()),
-      timeoutMs,
-      "Realtime provider session close did not settle before the safety deadline.",
-    ).then(
-      () => true,
-      (error) => {
-        this.sessionShutdownUnconfirmed = true;
-        this.deps.logger.error("failed to confirm realtime provider session close", {
-          sessionId: this.id,
-          context,
-          error: "realtime_provider_close_unconfirmed",
-        });
-        return false;
-      },
-    );
-    this.providerCloseOperations.set(session, operation);
-    return operation;
-  }
-
-  private providerStartupCleanupDeadlineMs(): number {
-    return Math.max(
-      1,
-      Math.min(this.deps.config.server.providerReadyTimeoutMs, MAX_RUN_START_CLOSE_WAIT_MS),
-    );
-  }
-
-  private async stopOwnedRunForClose(runId: string): Promise<void> {
-    if (this.stopRequestedRunIds.has(runId)) return;
-    const pending = this.stopRunOperations.get(runId);
-    if (pending) {
-      const settled = await settlesWithin(
-        pending,
-        Math.max(1, Math.min(this.deps.config.hermes.timeoutMs, 5_000)),
-      );
-      if (settled) {
-        try {
-          await pending;
-          return;
-        } catch {
-          // Retry below with a detached deadline if the session-scoped request was aborted.
-        }
-      } else {
-        if (this.stopRunOperations.get(runId) === pending) {
-          this.stopRunOperations.delete(runId);
-        }
-        this.deps.logger.error("Hermes stop request did not settle before the session close deadline", {
-          sessionId: this.id,
-          runId,
-        });
-      }
-    }
-    if (this.stopRequestedRunIds.has(runId)) return;
-    const deadlineMs = Math.max(1, Math.min(this.deps.config.hermes.timeoutMs, 5_000));
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(new Error("Hermes stop deadline exceeded while closing the voice session.")),
-      deadlineMs,
-    );
-    timeout.unref?.();
+    let message: ClientMessage;
+    let requestId: string | undefined;
     try {
-      await withDeadline(
-        this.requestHermesStop(runId, {
-          signal: controller.signal,
-          ...this.hermesDetachedRequestOptions(),
-        }),
-        deadlineMs,
-        "Hermes stop request did not settle before the session close deadline.",
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async stopLateStartedRun(runId: string): Promise<void> {
-    try {
-      await this.stopOwnedRunForClose(runId);
+      const text = typeof frame === "string" ? frame : new TextDecoder().decode(frame);
+      const parsed = JSON.parse(text) as unknown;
+      requestId = requestIdFromUnknown(parsed);
+      message = parseClientMessage(parsed);
     } catch (error) {
-      this.deps.logger.error("failed to stop Hermes run that started after session close deadline", {
-        sessionId: this.id,
-        runId,
-        error: errorToMessage(error),
-      });
+      this.handleClientMessageFailure(error, requestId);
+      return;
+    }
+
+    this.pendingClientMessages += 1;
+    this.pendingClientBytes += bytes;
+    const processMessage = async () => {
+      try {
+        if (!this.closing && !this.clientInputOverflowed) {
+          await this.handleClientMessage(message);
+          this.clientMessageErrors = 0;
+        }
+      } catch (error) {
+        this.handleClientMessageFailure(error, message.id);
+      } finally {
+        this.pendingClientMessages -= 1;
+        this.pendingClientBytes -= bytes;
+      }
+    };
+    if (isPreemptiveClientControl(message, Boolean(this.liveSession))) {
+      void processMessage();
+    } else {
+      this.messageQueue = this.messageQueue.then(processMessage, processMessage);
     }
   }
 
@@ -667,82 +423,171 @@ export class LiveGatewaySession {
       return;
     }
     if (message.type === "session.close") {
-      await this.closeClientAfterCleanup(1000, "session closed", message.id);
+      await this.closeClientAfterCleanup(1000, "session detached");
       return;
     }
-    if (!this.liveSession) {
-      this.fail("session_not_started", new Error("Send session.start before streaming input."), true, message.id);
+    if (!this.liveSession || !this.ownerId || !this.sessionKey || !this.readySent) {
+      this.fail("session_not_started", new Error("Send session.start before using the live session."), true, message.id);
       return;
     }
+
     switch (message.type) {
       case "audio.input":
         validateAudioFrame(message.data, message.mimeType, this.deps.config.server.maxAudioBytes);
+        this.userSpeaking = true;
         await this.forwardRealtimeClientInput(
           "audio",
           () => this.liveSession!.sendRealtimeAudio({ data: message.data, mimeType: message.mimeType }),
         );
-        break;
+        return;
       case "audio.end":
-        await this.forwardRealtimeClientInput("audio turn", () => this.liveSession!.sendAudioStreamEnd());
-        break;
+        this.userSpeaking = false;
+        await this.forwardRealtimeClientInput("audio turn", () => this.liveSession!.sendAudioStreamEnd(), true);
+        return;
       case "text.input":
         validateText(message.text, this.deps.config.server.maxTextChars, "Text input");
-        await this.forwardRealtimeClientInput("text", () => this.liveSession!.sendText(message.text));
-        break;
+        this.userSpeaking = false;
+        await this.forwardRealtimeClientInput("text", () => this.liveSession!.sendText(message.text), true);
+        return;
       case "response.cancel":
         await this.cancelRealtimeResponse(message.reason, message.truncate);
-        break;
-      case "approval.respond":
-        await this.handleApprovalResponse(message);
-        break;
-      case "run.stop":
-        {
-          const stopOperation = this.stopRun(message.runId, message.reason);
-          void this.cancelRealtimeResponse(message.reason);
-          await stopOperation;
+        return;
+      case "task.list": {
+        const taskWindow = await this.runTaskOperation(
+          () => this.deps.taskSupervisor.list(this.ownerId!, message.limit + 1),
+          "Unable to read the background task inbox.",
+        );
+        const tasks = taskWindow.slice(0, message.limit);
+        this.send({
+          type: "task.snapshot",
+          reason: "list",
+          requestId: message.id,
+          tasks: projectTaskList(tasks),
+          truncated: taskWindow.length > message.limit,
+        });
+        return;
+      }
+      case "task.get": {
+        const task = await this.runTaskOperation(
+          () => this.deps.taskSupervisor.get(this.ownerId!, message.taskId),
+          "Unable to read that background task.",
+        );
+        this.send({
+          type: "task.snapshot",
+          reason: "get",
+          requestId: message.id,
+          tasks: task ? [projectTaskSnapshot(task, { includeOutput: true })] : [],
+          truncated: false,
+        });
+        return;
+      }
+      case "task.stop": {
+        const task = await this.runTaskOperation(
+          () => this.deps.taskSupervisor.stop(this.ownerId!, message.taskId, message.reason),
+          "Unable to stop that background task safely.",
+        );
+        this.send(projectTaskLifecycle(task, message.id));
+        return;
+      }
+      case "task.notification.ack": {
+        const current = await this.runTaskOperation(
+          () => this.deps.taskSupervisor.get(this.ownerId!, message.taskId),
+          "Unable to acknowledge that task notification.",
+        );
+        const currentNotification = current ? projectTaskNotification(current) : undefined;
+        if (
+          !current ||
+          !current.notification.unread ||
+          !currentNotification ||
+          currentNotification.notificationId !== message.notificationId
+        ) {
+          throw new Error("Notification acknowledgement does not match the current task notification.");
         }
-        break;
+        const task = await this.runTaskOperation(
+          () => this.deps.taskSupervisor.acknowledgeNotification(this.ownerId!, message.taskId),
+          "Unable to acknowledge that task notification.",
+        );
+        const notification = projectTaskNotification(task);
+        if (notification) {
+          this.send({
+            type: "task.notification",
+            taskId: task.taskId,
+            sequence: task.sequence,
+            occurredAt: task.updatedAt,
+            requestId: message.id,
+            notification,
+          });
+        }
+        return;
+      }
     }
   }
 
-  private async executeToolCall(
-    call: LiveToolCall,
-    record: ProviderToolCallRecord,
-  ): Promise<Record<string, unknown>> {
+  private executeToolCall(call: LiveToolCall): Promise<Record<string, unknown>> {
+    if (!this.ownerId || !this.sessionKey) throw new Error("session.start has not completed.");
     switch (call.name) {
-      case "start_hermes_run": {
+      case "start_background_task": {
         const message = stringArg(call, "message");
-        if (!message) {
-          throw new Error("start_hermes_run requires message.");
-        }
-        validateText(message, this.deps.config.server.maxTextChars, "Hermes run message");
-        const recentContext = stringArg(call, "recent_voice_context");
-        if (recentContext) {
-          validateText(recentContext, this.deps.config.server.maxTextChars, "Recent voice context");
-        }
-        return await this.startHermesRun(message, recentContext, record);
+        if (!message) throw new Error("start_background_task requires message.");
+        validateText(message, this.deps.config.server.maxTextChars, "Background task message");
+        const recentContext = optionalStringArg(call, "recent_voice_context");
+        if (recentContext) validateText(recentContext, this.deps.config.server.maxTextChars, "Recent voice context");
+        const title = optionalStringArg(call, "title");
+        if (title && title.length > 256) throw new Error("Background task title exceeds 256 characters.");
+        const executionMode = executionModeArg(call);
+        const resourceKeys = resourceKeysArg(call);
+        const input = recentContext ? `${message}\n\nRecent voice context:\n${recentContext}` : message;
+        return this.runTaskOperation(() => this.deps.taskSupervisor.submit({
+          ownerIdentity: this.sessionKey!,
+          sessionKey: this.sessionKey!,
+          input,
+          ...(title ? { title } : {}),
+          executionMode,
+          ...(resourceKeys ? { resourceKeys } : {}),
+        }), "Background task could not be accepted safely.").then((task) => ({
+          ok: true,
+          task_id: task.taskId,
+          status: task.status,
+          message: "Background task accepted. The user can keep talking or disconnect.",
+        }));
       }
-      case "get_hermes_run_status": {
-        const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
-        try {
-          const status = await this.deps.hermes.getRun(runId, this.hermesRequestOptions());
-          assertHermesResponseRunCorrelation(status, runId, "status");
-          return { ok: true, status: publicHermesRunStatus(status, runId) };
-        } catch (error) {
-          this.deps.logger.warn("failed to read Hermes run status", {
-            sessionId: this.id,
-            runId,
-            error: errorToMessage(error),
-          });
-          throw new Error("Hermes run status could not be read. Check the gateway logs.");
-        }
+      case "list_background_tasks": {
+        const includeCompleted = booleanArg(call, "include_completed", true);
+        return this.runTaskOperation(
+          () => this.deps.taskSupervisor.list(this.ownerId!, 25),
+          "Unable to read the background task inbox.",
+        ).then((records) => ({
+          ok: true,
+          tasks: records
+            .filter((record) => includeCompleted || !["completed", "failed", "cancelled"].includes(record.status))
+            .map((record) => projectTaskSnapshot(record)),
+        }));
       }
-      case "stop_hermes_run": {
-        const runId = stringArg(call, "run_id") || this.activeRunId;
-        return await this.stopRun(runId, stringArg(call, "reason"));
+      case "get_background_task": {
+        const taskId = stringArg(call, "task_id");
+        if (!taskId) throw new Error("get_background_task requires task_id.");
+        const includeOutput = booleanArg(call, "include_output", false);
+        return this.runTaskOperation(
+          () => this.deps.taskSupervisor.get(this.ownerId!, taskId),
+          "Unable to read that background task.",
+        ).then((task) => task
+          ? { ok: true, task: projectTaskSnapshot(task, { includeOutput }) }
+          : { ok: false, task_id: taskId, error: "Task not found." });
+      }
+      case "stop_background_task": {
+        const taskId = stringArg(call, "task_id");
+        if (!taskId) throw new Error("stop_background_task requires task_id.");
+        return this.runTaskOperation(
+          () => this.deps.taskSupervisor.stop(this.ownerId!, taskId, optionalStringArg(call, "reason")),
+          "Unable to stop that background task safely.",
+        ).then((task) => ({
+          ok: true,
+          task_id: task.taskId,
+          status: task.status,
+        }));
       }
       default:
-        return { ok: false, error: `Unknown hermes-live tool: ${call.name}` };
+        return Promise.resolve({ ok: false, error: `Unknown hermes-live tool: ${call.name}` });
     }
   }
 
@@ -761,42 +606,27 @@ export class LiveGatewaySession {
     const existing = this.providerToolCalls.get(id);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
-        this.fail(
-          "realtime_tool_call_conflict",
-          new Error("Realtime provider reused a tool-call id for different tool data."),
-          false,
-        );
+        this.fail("realtime_tool_call_conflict", new Error("Realtime provider reused a tool-call id."), false);
         void this.closeClientAfterCleanup(1011, "conflicting realtime tool call");
         return;
       }
-      if (existing.cancelled) return;
-      if (existing.state === "done" && !existing.response) {
-        this.fail(
-          "realtime_tool_replay_unavailable",
-          new Error("A duplicate realtime tool call could not be replayed safely."),
-          false,
-        );
-        void this.closeClientAfterCleanup(1011, "realtime tool replay unavailable");
+      if (existing.cancelled || existing.state !== "done") return;
+      if (!existing.response) {
+        this.failExpiredProviderToolCallReplay();
         return;
       }
-      if (existing.state === "done" && existing.response && !existing.replayPending) {
-        if (this.pendingProviderToolCalls >= MAX_PENDING_PROVIDER_TOOL_CALLS) {
-          this.failProviderToolQueueOverflow();
-          return;
-        }
-        existing.replayPending = true;
-        this.pendingProviderToolCalls += 1;
-        this.scheduleProviderToolOperation(async () => {
-          try {
-            if (!existing.cancelled) {
-              await this.deliverProviderToolResponse(call, existing.response!, existing);
-            }
-          } finally {
-            existing.replayPending = false;
-            this.pendingProviderToolCalls -= 1;
-          }
-        });
+      this.scheduleProviderToolOperation(() => this.deliverProviderToolResponse(call, existing.response!, existing));
+      return;
+    }
+
+    const tombstoneFingerprint = this.providerToolCallTombstones.get(providerToolCallIdDigest(id));
+    if (tombstoneFingerprint) {
+      if (tombstoneFingerprint !== fingerprint) {
+        this.fail("realtime_tool_call_conflict", new Error("Realtime provider reused a tool-call id."), false);
+        void this.closeClientAfterCleanup(1011, "conflicting realtime tool call");
+        return;
       }
+      this.failExpiredProviderToolCallReplay();
       return;
     }
 
@@ -804,58 +634,62 @@ export class LiveGatewaySession {
       this.failProviderToolQueueOverflow();
       return;
     }
-    if (this.providerToolCalls.size >= MAX_PROCESSED_PROVIDER_TOOL_CALLS) {
-      this.failProviderToolQueueOverflow();
+    if (this.providerToolCalls.size + this.providerToolCallTombstones.size >= MAX_SEEN_PROVIDER_TOOL_CALLS) {
+      this.failProviderToolReplayLedgerOverflow();
       return;
+    }
+    if (this.providerToolCalls.size >= MAX_PROCESSED_PROVIDER_TOOL_CALLS) {
+      const oldestDone = [...this.providerToolCalls].find(([, record]) => record.state === "done");
+      if (!oldestDone) {
+        this.failProviderToolQueueOverflow();
+        return;
+      }
+      this.cachedProviderToolResponseBytes = Math.max(
+        0,
+        this.cachedProviderToolResponseBytes - (oldestDone[1].responseBytes ?? 0),
+      );
+      this.providerToolCalls.delete(oldestDone[0]);
+      this.providerToolCallTombstones.set(providerToolCallIdDigest(oldestDone[0]), oldestDone[1].fingerprint);
     }
 
     const record: ProviderToolCallRecord = {
       fingerprint,
-      name: call.name,
       state: "pending",
+      cancelled: false,
       responseDelivery: "not_started",
-      ...(call.name === "start_hermes_run" ? { startMarkerActive: true } : {}),
     };
     this.providerToolCalls.set(id, record);
     this.pendingProviderToolCalls += 1;
-    if (call.name === "start_hermes_run") this.pendingStartToolCalls += 1;
     this.scheduleProviderToolOperation(async () => {
       try {
-        record.operationStarted = true;
-        if (record.cancelled) {
-          record.state = "done";
-          return;
-        }
+        if (record.cancelled) return;
         let response: Record<string, unknown>;
         try {
-          response = await this.executeToolCall(call, record);
+          response = await this.executeToolCall(call);
         } catch (error) {
-          const publicError = boundedText(errorToMessage(error), 2_000);
-          response = { ok: false, error: publicError };
+          const publicMessage = error instanceof PublicTaskOperationError
+            ? error.message
+            : "Background task request was rejected.";
+          const operationError = error instanceof PublicTaskOperationError ? error.operationCause : error;
+          response = { ok: false, error: publicMessage };
           if (!record.cancelled) {
-            this.fail("tool_call_failed", new Error(publicError), true);
+            this.failPublic("tool_call_failed", publicMessage, operationError, true);
           }
         }
         response = boundedProviderToolResponse(response);
-        if (!record.cancelled) {
-          const responseBytes = safeJsonByteLength(response);
-          if (responseBytes <= MAX_CACHED_PROVIDER_TOOL_RESPONSE_BYTES - this.cachedProviderToolResponseBytes) {
-            record.response = response;
-            record.responseBytes = responseBytes;
-            this.cachedProviderToolResponseBytes += responseBytes;
-          } else {
-            record.replayUnavailable = true;
-          }
-        }
         record.state = "done";
         if (!record.cancelled) {
+          const bytes = safeJsonByteLength(response);
+          if (bytes <= MAX_CACHED_PROVIDER_TOOL_RESPONSE_BYTES - this.cachedProviderToolResponseBytes) {
+            record.response = response;
+            record.responseBytes = bytes;
+            this.cachedProviderToolResponseBytes += bytes;
+          }
           await this.deliverProviderToolResponse(call, response, record);
         }
       } finally {
+        record.state = "done";
         this.pendingProviderToolCalls -= 1;
-        if (call.name === "start_hermes_run") {
-          this.releaseProviderStartMarker(record);
-        }
       }
     });
   }
@@ -864,937 +698,33 @@ export class LiveGatewaySession {
     if (callIds.length === 0 || callIds.length > MAX_PROCESSED_PROVIDER_TOOL_CALLS) {
       throw new Error("Realtime provider emitted an invalid tool-call cancellation batch.");
     }
-
-    const records: Array<{ id: string; record: ProviderToolCallRecord }> = [];
     for (const id of new Set(callIds.map(requireProviderToolCancellationId))) {
       const record = this.providerToolCalls.get(id);
       if (!record) {
-        this.fail(
-          "realtime_tool_cancellation_unknown",
-          new Error("Realtime provider cancelled a tool-call id that this session did not issue."),
-          false,
-        );
+        if (this.providerToolCallTombstones.has(providerToolCallIdDigest(id))) {
+          this.send({ type: "log", level: "info", message: "Realtime provider cancelled a completed tool call" });
+          continue;
+        }
+        this.fail("realtime_tool_cancellation_unknown", new Error("Realtime provider cancelled an unknown tool call."), false);
         void this.closeClientAfterCleanup(1011, "uncorrelated realtime tool cancellation");
         return;
       }
-      records.push({ id, record });
-    }
-
-    const newlyCancelled: Array<{ id: string; record: ProviderToolCallRecord }> = [];
-    for (const { id, record } of records) {
-      if (record.cancelled) continue;
-      record.cancelled = true;
-      newlyCancelled.push({ id, record });
-      if (record.responseBytes !== undefined) {
-        this.cachedProviderToolResponseBytes = Math.max(
-          0,
-          this.cachedProviderToolResponseBytes - record.responseBytes,
+      if (record.responseDelivery === "sending") {
+        this.fail(
+          "realtime_tool_cancellation_delivery_indeterminate",
+          new Error("The realtime provider cancelled a tool result while it was being delivered."),
+          false,
         );
+        void this.closeClientAfterCleanup(1011, "realtime tool delivery indeterminate");
+        return;
+      }
+      record.cancelled = true;
+      if (record.responseBytes) {
+        this.cachedProviderToolResponseBytes = Math.max(0, this.cachedProviderToolResponseBytes - record.responseBytes);
       }
       record.response = undefined;
       record.responseBytes = undefined;
-      record.replayUnavailable = true;
-      this.deps.logger.info("realtime provider cancelled tool call", {
-        sessionId: this.id,
-        state: record.state,
-      });
-      this.send({
-        type: "log",
-        level: "info",
-        message: "Realtime provider cancelled tool call",
-      });
-    }
-
-    for (const { id, record } of newlyCancelled) {
-      if (record.responseDelivery === "sending") {
-        void this.failClosedProviderToolCancellation(
-          "realtime_tool_cancellation_delivery_indeterminate",
-          "Realtime provider cancelled a tool call while its result was being delivered. The result cannot be recalled, so the session is closing for verification.",
-          "realtime tool result delivery indeterminate",
-        );
-        continue;
-      }
-      if (record.name === "start_hermes_run") {
-        this.containProviderCancelledStart(record);
-      }
-    }
-  }
-
-  private containProviderCancelledStart(record: ProviderToolCallRecord): void {
-    if (!record.operationStarted || record.cancellationOperation) return;
-    if (!record.runId) {
-      if (record.state === "done") return;
-      void this.failClosedProviderToolCancellation(
-        "hermes_run_start_cancellation_indeterminate",
-        "Realtime provider cancelled start_hermes_run before Hermes confirmed its run id. The session is closing to contain possible work.",
-        "Hermes run start cancellation indeterminate",
-      );
-      return;
-    }
-    if (
-      record.runTerminalStatus !== undefined ||
-      record.state === "done" ||
-      !this.hermesRunActive ||
-      this.activeRunId !== record.runId
-    ) {
-      void this.failClosedProviderToolCancellation(
-        "hermes_run_tool_cancellation_too_late",
-        "Realtime provider cancelled start_hermes_run after the owned Hermes run could no longer be stopped safely. Side effects may already have occurred; the session is closing for verification.",
-        "Hermes run tool cancellation arrived too late",
-      );
-      return;
-    }
-    const cancellation = this.stopProviderCancelledHermesRun(record);
-    record.cancellationOperation = cancellation;
-    void cancellation;
-  }
-
-  private failClosedProviderToolCancellation(
-    code: string,
-    message: string,
-    reason: string,
-  ): Promise<void> {
-    if (this.closing) return Promise.resolve();
-    this.fail(code, new Error(boundedText(message, 500)), false);
-    return this.closeClientAfterCleanup(1011, reason);
-  }
-
-  private async stopProviderCancelledHermesRun(record: ProviderToolCallRecord): Promise<void> {
-    const runId = record.runId;
-    if (!runId || this.closing) return;
-    if (!this.hermesRunActive || this.activeRunId !== runId) {
-      await this.failClosedProviderToolCancellation(
-        "hermes_run_tool_cancellation_too_late",
-        "Realtime provider cancelled start_hermes_run after the owned Hermes run could no longer be stopped safely. Side effects may already have occurred; the session is closing for verification.",
-        "Hermes run tool cancellation arrived too late",
-      );
-      return;
-    }
-    try {
-      const result = await this.stopRun(runId, "realtime provider cancelled tool call");
-      if (
-        result.status === "terminal" &&
-        record.runTerminalStatus !== "cancelled" &&
-        !this.closing
-      ) {
-        await this.failClosedProviderToolCancellation(
-          "hermes_run_tool_cancellation_too_late",
-          "Realtime provider cancelled start_hermes_run, but the owned Hermes run became terminal before its stop could be confirmed. Side effects may already have occurred; the session is closing for verification.",
-          "Hermes run tool cancellation arrived too late",
-        );
-      }
-    } catch (error) {
-      if (this.closing) return;
-      this.deps.logger.error("failed to contain provider-cancelled Hermes run", {
-        sessionId: this.id,
-        runId,
-        error: errorToMessage(error),
-      });
-      this.fail(
-        "realtime_tool_cancellation_failed",
-        new Error("The cancelled Hermes run could not be contained. The session is closing for verification."),
-        false,
-      );
-      await this.closeClientAfterCleanup(1011, "realtime tool cancellation failed");
-    }
-  }
-
-  private handleLiveModelEvent(event: LiveModelEvent): void {
-    if (event.type === "audio") {
-      validateAudioFrame(event.audio.data, event.audio.mimeType, this.deps.config.server.maxAudioBytes);
-      const itemId = publicProviderIdentifier(event.audio.itemId);
-      const contentIndex = publicContentIndex(event.audio.contentIndex);
-      this.send({
-        type: "audio.output",
-        data: event.audio.data,
-        mimeType: event.audio.mimeType,
-        ...(itemId ? { itemId } : {}),
-        ...(contentIndex === undefined ? {} : { contentIndex }),
-      });
-    } else if (event.type === "text") {
-      if (event.text.length > MAX_PROVIDER_TRANSCRIPT_CHARS) {
-        throw new Error(`Realtime provider transcript delta exceeds ${MAX_PROVIDER_TRANSCRIPT_CHARS} characters.`);
-      }
-      this.send({
-        type: "transcript.delta",
-        speaker: event.speaker ?? "assistant",
-        text: event.text,
-        ...(event.final === undefined ? {} : { final: event.final }),
-      });
-    } else if (event.type === "tool_call") {
-      this.enqueueProviderToolCall(event.call);
-    } else if (event.type === "tool_call_cancelled") {
-      this.handleProviderToolCallCancellation(event.callIds);
-    } else if (event.type === "input_speech_started") {
-      const itemId = publicProviderIdentifier(event.itemId);
-      const audioStartMs = publicAudioStartMs(event.audioStartMs);
-      this.send({
-        type: "input.speech_started",
-        provider: event.provider,
-        ...(itemId ? { itemId } : {}),
-        ...(audioStartMs === undefined ? {} : { audioStartMs }),
-      });
-    } else if (event.type === "response") {
-      if (
-        event.status !== "started" &&
-        (this.hermesRunActive || this.pendingStartToolCalls > 0) &&
-        !this.activeRunId
-      ) {
-        this.deferredProviderTerminal = event;
-        return;
-      }
-      if (event.status === "failed") {
-        this.deps.logger.warn("realtime provider response failed", {
-          sessionId: this.id,
-          error: "realtime_provider_response_failed",
-        });
-        const responseId = publicProviderIdentifier(event.responseId);
-        this.send({
-          type: "response.failed",
-          ...(responseId ? { responseId } : {}),
-          error: "Realtime provider response failed. Check the gateway logs.",
-        });
-      } else {
-        const boundedResponseId = publicProviderIdentifier(event.responseId);
-        const responseId = boundedResponseId ? { responseId: boundedResponseId } : {};
-        if (event.status === "started") this.send({ type: "response.started", ...responseId });
-        else if (event.status === "completed") this.send({ type: "response.completed", ...responseId });
-        else this.send({ type: "response.cancelled", ...responseId });
-      }
-    }
-  }
-
-  private dispatchLiveModelEvent(event: LiveModelEvent): void {
-    if (this.closing) return;
-    try {
-      this.handleLiveModelEvent(event);
-    } catch {
-      this.fail(
-        "realtime_provider_event_invalid",
-        new Error("Realtime provider emitted an invalid event."),
-        false,
-      );
-      void this.closeClientAfterCleanup(1011, "invalid realtime provider event");
-    }
-  }
-
-  private async startHermesRun(
-    message: string,
-    recentVoiceContext: string | undefined,
-    providerCall: ProviderToolCallRecord,
-  ): Promise<Record<string, unknown>> {
-    if (!this.sessionKey) {
-      throw new Error("session.start has not completed.");
-    }
-    if (this.hermesRunActive) {
-      return { ok: false, error: "A Hermes run is already active for this voice session." };
-    }
-    if (this.closing) {
-      return { ok: false, error: "The voice session is closing and cannot start another Hermes run." };
-    }
-
-    this.clearPendingApprovals();
-    this.hermesRunActive = true;
-    let runId: string | undefined;
-    const input = recentVoiceContext ? `${message}\n\nRecent voice context:\n${recentVoiceContext}` : message;
-    const runParams = {
-      input,
-      sessionId: this.id,
-      sessionKey: this.sessionKey,
-      ...(this.deps.config.hermes.instructions ? { instructions: this.deps.config.hermes.instructions } : {}),
-    };
-
-    try {
-      const runStartController = new AbortController();
-      this.runStartController = runStartController;
-      const pendingStart = this.deps.hermes.startRun(runParams, runStartController.signal).then((started) => {
-        if (!isRecordValue(started) || !isBoundedRunId(started.runId)) {
-          throw new Error("Hermes returned an invalid run start response.");
-        }
-        const normalized = {
-          runId: started.runId,
-          status: typeof started.status === "string" && started.status.length <= 128
-            ? started.status
-            : "started",
-        };
-        this.activeRunId = normalized.runId;
-        providerCall.runId = normalized.runId;
-        return normalized;
-      });
-      this.pendingRunStart = pendingStart;
-      let started: Awaited<typeof pendingStart>;
-      try {
-        started = await pendingStart;
-      } finally {
-        if (this.pendingRunStart === pendingStart) this.pendingRunStart = undefined;
-        if (this.runStartController === runStartController) this.runStartController = undefined;
-      }
-      runId = started.runId;
-      if (this.closing) {
-        return { ok: false, run_id: runId, status: "cancelled" };
-      }
-      this.send({ type: "run.started", runId, sessionId: this.id });
-      this.releaseOldestProviderStartMarker();
-
-      let transcript = "";
-      let finalOutput = "";
-      let usage: Record<string, unknown> | undefined;
-
-      for await (const event of this.deps.hermes.streamRunEvents(runId, this.hermesRequestOptions())) {
-        assertHermesRunEventCorrelation(event, runId);
-        await this.forwardRunEvent(runId, event);
-        if (this.closing || this.abort.signal.aborted) {
-          return { ok: false, run_id: runId, status: "cancelled", output: transcript };
-        }
-        if (event.event === "message.delta" && typeof event.delta === "string") {
-          transcript = appendBoundedText(transcript, event.delta, MAX_HERMES_OUTPUT_CHARS);
-        } else if (event.event === "run.completed") {
-          providerCall.runTerminalStatus = "completed";
-          this.clearPendingApprovals(runId);
-          finalOutput = boundedText(
-            typeof event.output === "string" ? event.output : transcript,
-            MAX_HERMES_OUTPUT_CHARS,
-          );
-          usage = boundedUsage(event.usage);
-          this.send({
-            type: "run.completed",
-            runId,
-            output: finalOutput || transcript,
-            ...(usage ? { usage } : {}),
-          });
-          if (providerCall.cancelled) {
-            await this.failClosedProviderToolCancellation(
-              "hermes_run_tool_cancellation_too_late",
-              "The owned Hermes run completed after its provider tool call was cancelled. Side effects may already have occurred; the session is closing for verification.",
-              "Hermes run completed after tool cancellation",
-            );
-          }
-          return { ok: true, run_id: runId, output: finalOutput || transcript, usage };
-        } else if (event.event === "run.failed") {
-          providerCall.runTerminalStatus = "failed";
-          this.clearPendingApprovals(runId);
-          this.deps.logger.warn("Hermes run reported failure", {
-            sessionId: this.id,
-            runId,
-            error: "hermes_run_failed",
-          });
-          if (providerCall.cancelled) {
-            await this.failClosedProviderToolCancellation(
-              "hermes_run_tool_cancellation_too_late",
-              "The owned Hermes run failed after its provider tool call was cancelled, so its side-effect outcome is uncertain. The session is closing for verification.",
-              "Hermes run failed after tool cancellation",
-            );
-          }
-          return {
-            ok: false,
-            run_id: runId,
-            status: "failed",
-            output: transcript,
-            error: "Hermes run failed. Check the gateway logs for details.",
-          };
-        } else if (event.event === "run.cancelled") {
-          providerCall.runTerminalStatus = "cancelled";
-          this.clearPendingApprovals(runId);
-          return { ok: false, run_id: runId, status: "cancelled" };
-        }
-      }
-
-      const output = transcript;
-      const error = "Hermes run event stream ended before a terminal event.";
-      if (this.closing) {
-        return { ok: false, run_id: runId, status: "cancelled", output };
-      }
-      await this.containBrokenRun(runId, error);
-      return { ok: false, run_id: runId, status: "indeterminate", output, error };
-    } catch (error) {
-      if (!runId) this.sessionShutdownUnconfirmed = true;
-      if (this.abort.signal.aborted || this.closing) {
-        return {
-          ok: false,
-          ...(runId ? { run_id: runId } : {}),
-          status: "cancelled",
-        };
-      }
-      if (!runId) {
-        this.deferredProviderTerminal = undefined;
-        this.deps.logger.warn("Hermes run failed to start", {
-          sessionId: this.id,
-          error: errorToMessage(error),
-        });
-        this.fail(
-          "hermes_run_start_outcome_indeterminate",
-          new Error("Hermes did not confirm whether the run started. Verify task state in Hermes before retrying."),
-          false,
-        );
-        await this.closeClientAfterCleanup(1011, "Hermes run start outcome indeterminate");
-        return { ok: false, status: "indeterminate", error: "Hermes run start outcome could not be confirmed." };
-      }
-      this.deps.logger.warn("Hermes run bridge failed", { sessionId: this.id, runId, error: errorToMessage(error) });
-      const publicMessage = "Hermes run failed. Check the gateway logs for details.";
-      await this.containBrokenRun(runId, error);
-      return { ok: false, run_id: runId, status: "indeterminate", error: publicMessage };
-    } finally {
-      if (runId) {
-        this.clearPendingApprovals(runId);
-        this.clearProcessedApprovalSources(runId);
-      }
-      this.hermesRunActive = false;
-      if (runId && this.activeRunId === runId) {
-        this.activeRunId = undefined;
-      }
-      if (runId && !this.closing) {
-        this.stopRequestedRunIds.delete(runId);
-        this.stopNotificationRunIds.delete(runId);
-        this.stopIntentRunIds.delete(runId);
-      }
-    }
-  }
-
-  private containBrokenRun(runId: string, cause: unknown): Promise<void> {
-    const existing = this.runContainmentOperations.get(runId);
-    if (existing) return existing;
-    const operation = this.performBrokenRunContainment(runId, cause);
-    this.runContainmentOperations.set(runId, operation);
-    return operation;
-  }
-
-  private async performBrokenRunContainment(runId: string, cause: unknown): Promise<void> {
-    let stopRequested = false;
-    try {
-      await this.stopOwnedRunForClose(runId);
-      stopRequested = true;
-      this.clearPendingApprovals(runId);
-    } catch (stopError) {
-      this.deps.logger.error("Hermes run ownership became indeterminate", {
-        sessionId: this.id,
-        runId,
-        cause: errorToMessage(cause),
-        stopError: errorToMessage(stopError),
-      });
-    }
-    this.fail(
-      "hermes_run_outcome_indeterminate",
-      new Error(
-        stopRequested
-          ? "Hermes run events ended unexpectedly. A stop was requested, and the session is closing until terminal state can be confirmed."
-          : "Hermes run status could not be confirmed. The session is closing to prevent further work.",
-      ),
-      false,
-    );
-    await this.closeClientAfterCleanup(1011, "Hermes run outcome indeterminate");
-  }
-
-  private flushDeferredProviderTerminal(): void {
-    const deferred = this.deferredProviderTerminal;
-    if (!deferred) return;
-    this.deferredProviderTerminal = undefined;
-    if (this.closing) return;
-    this.handleLiveModelEvent(deferred);
-  }
-
-  private async forwardRunEvent(runId: string, event: HermesRunEvent): Promise<void> {
-    if (
-      event.event === "approval.request" &&
-      (
-        this.stopIntentRunIds.has(runId) ||
-        this.stopRequestedRunIds.has(runId) ||
-        this.stopRunOperations.has(runId)
-      )
-    ) {
-      return;
-    }
-    const publicEvent = publicHermesRunEvent(event, this.deps.config.server.runEventDetail);
-    if (publicEvent) {
-      this.send({ type: "run.event", runId, event: publicEvent });
-    }
-    if (event.event === "approval.request") {
-      if (
-        !this.hermesApprovalResponseByIdSupported ||
-        !approvalSourceId(event.approval_id)
-      ) {
-        await this.denyUncorrelatedHermesApprovals(runId);
-        return;
-      }
-      const envelope = this.trackPendingApproval(
-        runId,
-        event,
-        publicEvent ?? publicHermesRunEvent(event, "summary")!,
-      );
-      if (envelope) this.send(envelope);
-    } else if (event.event === "run.failed") {
-      this.send({ type: "run.failed", runId, error: "Hermes run failed. Check the gateway logs for details." });
-    } else if (event.event === "run.cancelled") {
-      this.send({ type: "run.stopped", runId, status: "cancelled" });
-    }
-  }
-
-  private async denyUncorrelatedHermesApprovals(runId: string): Promise<void> {
-    // Crossing this boundary makes every outstanding approval for the run
-    // unsafe to answer. Quarantine synchronously, before the first await, so a
-    // client response cannot race the legacy deny-all request.
-    this.stopIntentRunIds.add(runId);
-    this.clearPendingApprovals(runId);
-    let denialConfirmed = false;
-    try {
-      const result = await withAbortAndDeadline(
-        this.deps.hermes.submitApproval(runId, "deny", {
-          resolveAll: true,
-          ...this.hermesRequestOptions(),
-        }),
-        this.abort.signal,
-        this.deps.config.hermes.timeoutMs,
-        "Hermes legacy approval denial did not settle before the safety deadline.",
-      );
-      if (!isRecordValue(result)) {
-        throw new Error("Hermes did not confirm fail-closed denial of its uncorrelated approval queue.");
-      }
-      if (
-        typeof result.resolved !== "number" ||
-        !Number.isInteger(result.resolved) ||
-        result.resolved < 1 ||
-        result.resolved > MAX_LEGACY_APPROVALS_RESOLVED ||
-        result.run_id !== runId ||
-        (result.runId !== undefined && result.runId !== runId) ||
-        result.choice !== "deny"
-      ) {
-        throw new Error("Hermes did not confirm fail-closed denial of its uncorrelated approval queue.");
-      }
-      denialConfirmed = true;
-      this.deps.logger.warn("denied uncorrelated Hermes approval request", {
-        sessionId: this.id,
-        runId,
-        resolved: result.resolved,
-      });
-    } catch (error) {
-      if (this.closing || this.abort.signal.aborted) return;
-      this.deps.logger.error("failed to confirm denial of uncorrelated Hermes approval request", {
-        sessionId: this.id,
-        runId,
-        error: errorToMessage(error),
-      });
-    }
-
-    if (this.closing || this.abort.signal.aborted) return;
-    this.fail(
-      "hermes_approval_identity_unsupported",
-      new Error(
-        denialConfirmed
-          ? "Interactive approval is unavailable because this Hermes version cannot correlate requests safely. The pending queue was denied, the run is being stopped, and the voice session is closing. Verify the run in Hermes before retrying."
-          : "Interactive approval is unavailable because this Hermes version cannot correlate requests safely, and denial could not be confirmed. The run is being stopped and the voice session is closing. Verify the run in Hermes before retrying.",
-      ),
-      false,
-    );
-    if (!denialConfirmed) this.sessionShutdownUnconfirmed = true;
-    try {
-      await this.stopOwnedRunForClose(runId);
-    } catch (error) {
-      this.sessionShutdownUnconfirmed = true;
-      this.deps.logger.error("failed to stop run after uncorrelated Hermes approval request", {
-        sessionId: this.id,
-        runId,
-        error: errorToMessage(error),
-      });
-    }
-    await this.closeClientAfterCleanup(1011, "Hermes approval identity unsupported");
-  }
-
-  private async handleApprovalResponse(message: Extract<ClientMessage, { type: "approval.respond" }>): Promise<void> {
-    if (message.resolveAll === true) {
-      throw new Error("Bulk approval resolution is not supported; answer each approval in FIFO order.");
-    }
-
-    const fingerprint = approvalResponseFingerprint(message);
-    const processed = this.processedApprovalResponses.get(message.id);
-    if (processed) {
-      if (processed.fingerprint !== fingerprint) {
-        throw new Error("Approval response request id was already used for different approval data.");
-      }
-      if (this.approvalResponsesBlocked(processed.response.runId)) {
-        throw new Error("The Hermes run is stopping and no longer accepts approval responses.");
-      }
-      this.send(processed.response);
-      return;
-    }
-    const runId = this.resolveActiveRunId(message.runId);
-    if (this.approvalResponsesBlocked(runId)) {
-      throw new Error("The Hermes run is stopping and no longer accepts approval responses.");
-    }
-    if (this.approvalSubmissionInFlight) {
-      throw new Error("An approval response is already being submitted; wait for its result.");
-    }
-
-    const pending = this.pendingApprovals[0];
-    if (!pending || pending.runId !== runId) {
-      throw new Error("No pending approval is available for the active Hermes run.");
-    }
-    if (pending.approval.approvalId !== message.approvalId) {
-      throw new Error("Approval response does not match the oldest pending request.");
-    }
-    if (
-      message.choice === "always" &&
-      (!pending.approval.choices.includes("always") || !canApprovePermanently(pending.approval))
-    ) {
-      throw new Error("Permanent approval requires an inspectable permission pattern.");
-    }
-    if (!pending.approval.choices.includes(message.choice)) {
-      throw new Error(`Approval choice ${message.choice} was not offered for the pending request.`);
-    }
-
-    this.approvalSubmissionInFlight = true;
-    let result: Awaited<ReturnType<HermesRunsPort["submitApproval"]>>;
-    try {
-      result = await withAbortAndDeadline(
-        this.deps.hermes.submitApproval(runId, message.choice, {
-          approvalId: pending.sourceApprovalId,
-          ...this.hermesRequestOptions(),
-        }),
-        this.abort.signal,
-        this.deps.config.hermes.timeoutMs,
-        "Hermes approval submission did not settle before the safety deadline.",
-      );
-    } catch (error) {
-      if (this.approvalResponsesBlocked(runId)) {
-        this.clearPendingApprovals(runId);
-        return;
-      }
-      await this.failClosedApprovalSubmission(message, error);
-      return;
-    } finally {
-      this.approvalSubmissionInFlight = false;
-    }
-
-    // A stop or uncorrelated approval may have quarantined the run while the
-    // targeted mutation was in flight. The upstream result may be real, but it
-    // must not be surfaced or cached as a positive acknowledgement after that
-    // safety boundary.
-    if (this.approvalResponsesBlocked(runId)) {
-      this.clearPendingApprovals(runId);
-      return;
-    }
-
-    if (!isRecordValue(result)) {
-      await this.failClosedApprovalSubmission(
-        message,
-        new Error("Hermes returned a malformed approval response."),
-      );
-      return;
-    }
-    if (result.resolved !== 1) {
-      await this.failClosedApprovalSubmission(
-        message,
-        new Error(`Hermes returned an invalid approval resolution count: ${String(result.resolved)}.`),
-      );
-      return;
-    }
-    if (
-      !isBoundedRunId(result.run_id) ||
-      result.run_id !== runId ||
-      (result.runId !== undefined && (!isBoundedRunId(result.runId) || result.runId !== runId)) ||
-      !approvalSourceKey(result.approval_id ?? result.approvalId) ||
-      (result.approval_id !== undefined && result.approvalId !== undefined && result.approval_id !== result.approvalId) ||
-      (result.approval_id ?? result.approvalId) !== pending.sourceApprovalId ||
-      result.choice !== message.choice
-    ) {
-      await this.failClosedApprovalSubmission(
-        message,
-        new Error("Hermes returned approval correlation data that did not match the submitted response."),
-      );
-      return;
-    }
-
-    const current = this.pendingApprovals[0];
-    if (
-      current &&
-      (current.runId !== runId || current.approval.approvalId !== message.approvalId)
-    ) {
-      await this.failClosedApprovalSubmission(
-        message,
-        new Error("Pending approval state changed while Hermes was processing the response."),
-      );
-      return;
-    }
-    if (current) {
-      try {
-        this.rememberProcessedApprovalSource(current);
-      } catch (error) {
-        await this.failClosedApprovalSubmission(message, error);
-        return;
-      }
-      this.pendingApprovals.shift();
-    }
-
-    const response: Extract<ServerMessage, { type: "approval.responded" }> = {
-      type: "approval.responded",
-      requestId: message.id,
-      runId,
-      approvalId: message.approvalId,
-      choice: message.choice,
-      resolved: 1,
-    };
-    this.rememberApprovalResponse(message.id, fingerprint, response);
-    this.send(response);
-  }
-
-  private approvalResponsesBlocked(runId: string): boolean {
-    return this.closing ||
-      this.abort.signal.aborted ||
-      this.stopIntentRunIds.has(runId) ||
-      this.stopRequestedRunIds.has(runId) ||
-      this.stopRunOperations.has(runId);
-  }
-
-  private async failClosedApprovalSubmission(
-    message: Extract<ClientMessage, { type: "approval.respond" }>,
-    error: unknown,
-  ): Promise<void> {
-    this.deps.logger.error("approval outcome became indeterminate", {
-      sessionId: this.id,
-      runId: message.runId,
-      approvalId: message.approvalId,
-      error: errorToMessage(error),
-    });
-    this.clearPendingApprovals(message.runId);
-    this.fail(
-      "approval_outcome_indeterminate",
-      new Error("Hermes approval outcome could not be confirmed. The run is being stopped and this session is closing."),
-      false,
-      message.id,
-    );
-    await this.closeClientAfterCleanup(1011, "approval outcome indeterminate");
-  }
-
-  private rememberApprovalResponse(
-    requestId: string,
-    fingerprint: string,
-    response: Extract<ServerMessage, { type: "approval.responded" }>,
-  ): void {
-    if (this.processedApprovalResponses.size >= MAX_PROCESSED_APPROVAL_RESPONSES) {
-      const oldest = this.processedApprovalResponses.keys().next().value;
-      if (oldest) this.processedApprovalResponses.delete(oldest);
-    }
-    this.processedApprovalResponses.set(requestId, { fingerprint, response });
-  }
-
-  private async stopRun(runId: string | undefined, reason?: string): Promise<Record<string, unknown>> {
-    const target = this.resolveActiveRunId(runId);
-    this.stopIntentRunIds.add(target);
-    this.clearPendingApprovals(target);
-    let result: Awaited<ReturnType<HermesRunsPort["stopRun"]>>;
-    try {
-      result = await this.requestHermesStop(target, this.hermesRequestOptions());
-    } catch (error) {
-      if (this.activeRunId !== target || !this.hermesRunActive) {
-        this.stopRequestedRunIds.delete(target);
-        this.stopNotificationRunIds.delete(target);
-        return { ok: true, run_id: target, status: "terminal" };
-      }
-      this.deps.logger.warn("Hermes run stop request failed", {
-        sessionId: this.id,
-        runId: target,
-        error: errorToMessage(error),
-      });
-      await this.containBrokenRun(target, error);
-      return { ok: false, run_id: target, status: "indeterminate" };
-    }
-    if (this.activeRunId !== target || !this.hermesRunActive) {
-      this.stopRequestedRunIds.delete(target);
-      this.stopNotificationRunIds.delete(target);
-      return { ok: true, run_id: target, status: "terminal" };
-    }
-    if (!this.stopNotificationRunIds.has(target)) {
-      this.stopNotificationRunIds.add(target);
-      this.send({ type: "run.stopping", runId: target, status: publicRunStatus(result.status) });
-      this.send({ type: "log", level: "info", message: "Hermes run stop requested", data: { runId: target, reason } });
-    }
-    return { ok: true, run_id: target, status: publicRunStatus(result.status) };
-  }
-
-  private requestHermesStop(
-    runId: string,
-    options: { signal?: AbortSignal; sessionKey?: string },
-  ): Promise<Awaited<ReturnType<HermesRunsPort["stopRun"]>>> {
-    if (this.stopRequestedRunIds.has(runId)) {
-      return Promise.resolve({ run_id: runId, status: "stopping" });
-    }
-    const existing = this.stopRunOperations.get(runId);
-    if (existing) return existing;
-
-    let operation!: Promise<Awaited<ReturnType<HermesRunsPort["stopRun"]>>>;
-    operation = (async () => {
-      try {
-        const rawResult: unknown = await this.deps.hermes.stopRun(runId, options);
-        if (!isRecordValue(rawResult)) {
-          throw new Error("Hermes returned a malformed stop response.");
-        }
-        if (
-          rawResult.run_id !== runId ||
-          rawResult.status !== "stopping" ||
-          (rawResult.runId !== undefined && rawResult.runId !== runId)
-        ) {
-          throw new Error("Hermes returned an invalid stop confirmation.");
-        }
-        const result = { run_id: runId, status: "stopping" as const };
-        this.stopRequestedRunIds.add(runId);
-        return result;
-      } finally {
-        if (this.stopRunOperations.get(runId) === operation) {
-          this.stopRunOperations.delete(runId);
-        }
-      }
-    })();
-    this.stopRunOperations.set(runId, operation);
-    return operation;
-  }
-
-  private hermesRequestOptions(): { signal: AbortSignal; sessionKey?: string } {
-    return { signal: this.abort.signal, ...(this.sessionKey ? { sessionKey: this.sessionKey } : {}) };
-  }
-
-  private hermesDetachedRequestOptions(): { sessionKey?: string } {
-    return this.sessionKey ? { sessionKey: this.sessionKey } : {};
-  }
-
-  private resolveActiveRunId(requestedRunId: string | undefined): string {
-    if (!this.activeRunId) {
-      throw new Error("No active Hermes run.");
-    }
-    if (requestedRunId && requestedRunId !== this.activeRunId) {
-      throw new Error("Requested Hermes run is not active in this voice session.");
-    }
-    return this.activeRunId;
-  }
-
-  private trackPendingApproval(
-    runId: string,
-    event: HermesRunEvent,
-    publicEvent: HermesRunEvent,
-  ): Extract<ServerMessage, { type: "approval.request" }> | undefined {
-    const sourceApprovalId = approvalSourceId(event.approval_id);
-    if (!sourceApprovalId) {
-      throw new Error("Hermes approval request did not include a bounded approval_id.");
-    }
-    const sourceKey = approvalSourceKey(sourceApprovalId);
-    if (!sourceKey) {
-      throw new Error("Hermes approval request did not include a valid approval_id.");
-    }
-    const projectedApproval = publicApprovalDetails(event, "pending");
-    const semanticFingerprint = approvalSemanticFingerprint(projectedApproval);
-    const processedKey = `${runId}:${sourceKey}`;
-    const processedFingerprint = this.processedApprovalSources.get(processedKey);
-    if (processedFingerprint) {
-      if (processedFingerprint !== semanticFingerprint) {
-        throw new Error("Hermes reused a resolved approval id for different approval semantics.");
-      }
-      return undefined;
-    }
-    const existingIndex = this.pendingApprovals.findIndex(
-      (pending) => pending.runId === runId && pending.sourceKey === sourceKey,
-    );
-    const existing = existingIndex >= 0 ? this.pendingApprovals[existingIndex] : undefined;
-    if (existing && existing.semanticFingerprint !== semanticFingerprint) {
-      throw new Error("Hermes reused an approval id for different approval semantics.");
-    }
-    if (existing) return undefined;
-    if (
-      this.processedApprovalSources.size + this.pendingApprovals.length >=
-      MAX_PROCESSED_APPROVAL_RESPONSES
-    ) {
-      throw new Error("Hermes exceeded the safe resolved approval correlation limit.");
-    }
-    const approvalId = `approval_${randomUUID().replaceAll("-", "")}`;
-    const approval = { ...projectedApproval, approvalId };
-    const envelope: Extract<ServerMessage, { type: "approval.request" }> = {
-      type: "approval.request",
-      runId,
-      event: publicEvent,
-      approval,
-    };
-    const pending: PendingApprovalEnvelope = {
-      runId,
-      approval,
-      sourceApprovalId,
-      sourceKey,
-      semanticFingerprint,
-    };
-    if (this.pendingApprovals.length >= MAX_PENDING_APPROVALS) {
-      throw new Error("Hermes exceeded the safe pending approval queue limit.");
-    }
-    this.pendingApprovals.push(pending);
-    return envelope;
-  }
-
-  private clearPendingApprovals(runId?: string): void {
-    if (!runId) {
-      this.pendingApprovals = [];
-      return;
-    }
-    this.pendingApprovals = this.pendingApprovals.filter((pending) => pending.runId !== runId);
-  }
-
-  private rememberProcessedApprovalSource(pending: PendingApprovalEnvelope): void {
-    const key = `${pending.runId}:${pending.sourceKey}`;
-    const existing = this.processedApprovalSources.get(key);
-    if (existing && existing !== pending.semanticFingerprint) {
-      throw new Error("Resolved approval correlation changed unexpectedly.");
-    }
-    if (!existing && this.processedApprovalSources.size >= MAX_PROCESSED_APPROVAL_RESPONSES) {
-      throw new Error("Hermes exceeded the safe resolved approval correlation limit.");
-    }
-    this.processedApprovalSources.set(key, pending.semanticFingerprint);
-  }
-
-  private clearProcessedApprovalSources(runId: string): void {
-    const prefix = `${runId}:`;
-    for (const key of this.processedApprovalSources.keys()) {
-      if (key.startsWith(prefix)) this.processedApprovalSources.delete(key);
-    }
-  }
-
-  private async cancelRealtimeResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<void> {
-    try {
-      const cancelled = (await withDeadline(
-        Promise.resolve(this.liveSession?.cancelResponse(reason, truncate) ?? false),
-        MAX_PROVIDER_CANCEL_WAIT_MS,
-        "Realtime provider cancellation did not settle before the safety deadline.",
-      )) ?? false;
-      if (this.closing) return;
-      this.send({
-        type: "log",
-        level: cancelled ? "info" : "debug",
-        message: cancelled ? "Realtime response cancellation requested" : "No active realtime response to cancel",
-        data: { reason, truncate },
-      });
-    } catch (error) {
-      this.deps.logger.warn("failed to cancel realtime response", {
-        sessionId: this.id,
-        error: "realtime_provider_cancel_failed",
-      });
-      if (this.closing) return;
-      this.send({ type: "log", level: "warn", message: "Realtime response cancellation failed", data: { reason } });
-    }
-  }
-
-  private async forwardRealtimeClientInput(label: string, operation: () => Promise<void>): Promise<void> {
-    try {
-      await withAbortAndDeadline(
-        operation(),
-        this.abort.signal,
-        MAX_PROVIDER_IO_WAIT_MS,
-        `Realtime provider ${label} input did not settle before the safety deadline.`,
-      );
-    } catch (error) {
-      if (this.closing || this.abort.signal.aborted) return;
-      this.deps.logger.warn("realtime provider rejected client input", {
-        sessionId: this.id,
-        input: label,
-        error: "realtime_provider_input_failed",
-      });
-      this.fail(
-        "realtime_provider_input_failed",
-        new Error(`Realtime provider could not safely confirm ${label} input. Check the gateway logs.`),
-        false,
-      );
-      await this.closeClientAfterCleanup(1011, "realtime provider input failed");
+      this.send({ type: "log", level: "info", message: "Realtime provider cancelled a tool call" });
     }
   }
 
@@ -1803,55 +733,24 @@ export class LiveGatewaySession {
     response: Record<string, unknown>,
     record: ProviderToolCallRecord,
   ): Promise<void> {
-    if (this.closing || record.cancelled) return;
+    if (record.cancelled || this.closing || !this.liveSession) return;
     record.responseDelivery = "sending";
-    const delivered = await this.sendProviderToolResponse(call, response);
-    if (delivered && !record.cancelled) {
-      record.responseDelivery = "sent";
-    }
-  }
-
-  private async sendProviderToolResponse(
-    call: LiveToolCall,
-    response: Record<string, unknown>,
-  ): Promise<boolean> {
-    if (this.closing) return false;
     try {
-      if (!this.liveSession) throw new Error("Realtime provider session is unavailable.");
       await withAbortAndDeadline(
         this.liveSession.sendToolResponse(call, response),
         this.abort.signal,
         MAX_PROVIDER_IO_WAIT_MS,
         "Realtime provider tool response did not settle before the safety deadline.",
       );
-      return true;
+      if (!record.cancelled) record.responseDelivery = "sent";
     } catch (error) {
-      if (this.closing) return false;
+      if (this.closing) return;
       this.deps.logger.warn("failed to send realtime tool response", {
         sessionId: this.id,
         error: "realtime_provider_tool_response_failed",
       });
-      this.fail(
-        "realtime_tool_response_failed",
-        new Error("Realtime provider could not accept the Hermes tool result. Check the gateway logs."),
-        false,
-      );
+      this.fail("realtime_tool_response_failed", new Error("Realtime provider could not accept the task receipt."), false);
       await this.closeClientAfterCleanup(1011, "realtime tool response failed");
-      return false;
-    }
-  }
-
-  private releaseOldestProviderStartMarker(): void {
-    const record = [...this.providerToolCalls.values()].find((candidate) => candidate.startMarkerActive);
-    if (record) this.releaseProviderStartMarker(record);
-  }
-
-  private releaseProviderStartMarker(record: ProviderToolCallRecord): void {
-    if (!record.startMarkerActive) return;
-    record.startMarkerActive = false;
-    this.pendingStartToolCalls = Math.max(0, this.pendingStartToolCalls - 1);
-    if (this.activeRunId || this.pendingStartToolCalls === 0) {
-      this.flushDeferredProviderTerminal();
     }
   }
 
@@ -1868,10 +767,10 @@ export class LiveGatewaySession {
     ) {
       const operation = this.providerToolOperations.shift()!;
       this.activeProviderToolOperations += 1;
-      void operation().catch(() => {
+      void operation().catch((error) => {
         this.deps.logger.error("unexpected realtime tool operation failure", {
           sessionId: this.id,
-          error: "realtime_tool_operation_failed",
+          error: errorToMessage(error),
         });
       }).finally(() => {
         this.activeProviderToolOperations -= 1;
@@ -1881,100 +780,462 @@ export class LiveGatewaySession {
   }
 
   private failProviderToolQueueOverflow(): void {
-    if (this.closing) return;
-    this.fail(
-      "realtime_tool_queue_overflow",
-      new Error("Realtime provider exceeded the safe pending tool-call limit."),
-      false,
-    );
+    this.fail("realtime_tool_queue_overflow", new Error("Realtime provider exceeded the safe tool-call limit."), false);
     void this.closeClientAfterCleanup(1011, "realtime tool queue overflow");
   }
 
+  private failExpiredProviderToolCallReplay(): void {
+    this.fail(
+      "realtime_tool_call_replay_expired",
+      new Error("Realtime provider replayed a completed tool call after its response cache expired."),
+      false,
+    );
+    void this.closeClientAfterCleanup(1011, "realtime tool replay expired");
+  }
+
+  private failProviderToolReplayLedgerOverflow(): void {
+    this.fail(
+      "realtime_tool_replay_ledger_overflow",
+      new Error("Realtime provider exceeded the safe lifetime tool-call limit."),
+      false,
+    );
+    void this.closeClientAfterCleanup(1011, "realtime tool replay ledger overflow");
+  }
+
+  private dispatchLiveModelEvent(event: LiveModelEvent): void {
+    if (this.closing) return;
+    try {
+      this.handleLiveModelEvent(event);
+    } catch (error) {
+      this.deps.logger.warn("invalid realtime provider event", { sessionId: this.id, error: errorToMessage(error) });
+      this.fail("realtime_provider_event_invalid", new Error("Realtime provider emitted an invalid event."), false);
+      void this.closeClientAfterCleanup(1011, "invalid realtime provider event");
+    }
+  }
+
+  private handleLiveModelEvent(event: LiveModelEvent): void {
+    if (event.type === "audio") {
+      validateAudioFrame(event.audio.data, event.audio.mimeType, this.deps.config.server.maxAudioBytes);
+      const itemId = publicProviderIdentifier(event.audio.itemId);
+      const contentIndex = publicContentIndex(event.audio.contentIndex);
+      this.send({
+        type: "audio.output",
+        data: event.audio.data,
+        mimeType: event.audio.mimeType,
+        ...(itemId ? { itemId } : {}),
+        ...(contentIndex === undefined ? {} : { contentIndex }),
+      });
+      return;
+    }
+    if (event.type === "text") {
+      if (!event.text || event.text.length > MAX_PROVIDER_TRANSCRIPT_CHARS) {
+        throw new Error("Realtime provider transcript is empty or exceeds its limit.");
+      }
+      if ((event.speaker ?? "assistant") === "user" && event.final) {
+        this.userSpeaking = false;
+      }
+      this.send({
+        type: "transcript.delta",
+        speaker: event.speaker ?? "assistant",
+        text: event.text,
+        ...(event.final === undefined ? {} : { final: event.final }),
+      });
+      return;
+    }
+    if (event.type === "tool_call") {
+      this.enqueueProviderToolCall(event.call);
+      return;
+    }
+    if (event.type === "tool_call_cancelled") {
+      this.handleProviderToolCallCancellation(event.callIds);
+      return;
+    }
+    if (event.type === "input_speech_started") {
+      this.userSpeaking = true;
+      const itemId = publicProviderIdentifier(event.itemId);
+      const audioStartMs = publicAudioStartMs(event.audioStartMs);
+      this.send({
+        type: "input.speech_started",
+        provider: event.provider,
+        ...(itemId ? { itemId } : {}),
+        ...(audioStartMs === undefined ? {} : { audioStartMs }),
+      });
+      return;
+    }
+    if (event.status === "started") {
+      this.providerResponseActive = true;
+      const responseId = publicProviderIdentifier(event.responseId);
+      this.send({ type: "response.started", ...(responseId ? { responseId } : {}) });
+      return;
+    }
+
+    this.providerResponseActive = false;
+    this.clearNotificationResponsePending();
+    const responseId = publicProviderIdentifier(event.responseId);
+    if (event.status === "failed") {
+      this.send({
+        type: "response.failed",
+        ...(responseId ? { responseId } : {}),
+        error: "Realtime provider response failed. Check the gateway logs.",
+      });
+    } else if (event.status === "completed") {
+      this.send({ type: "response.completed", ...(responseId ? { responseId } : {}) });
+    } else {
+      this.send({ type: "response.cancelled", ...(responseId ? { responseId } : {}) });
+    }
+    this.scheduleNotificationFlush();
+  }
+
+  private receiveTaskRecord(record: TaskRecord): void {
+    if (this.closing) return;
+    if (!this.readySent) {
+      this.pendingTaskRecords.set(record.taskId, structuredClone(record));
+      return;
+    }
+    this.dispatchTaskRecord(record);
+  }
+
+  private dispatchTaskRecord(record: TaskRecord): void {
+    const latestType = record.events.at(-1)?.type;
+    const notificationMetadataOnly = latestType === "notification.announced"
+      || latestType === "notification.acknowledged";
+    if (!notificationMetadataOnly) {
+      this.send(projectTaskLifecycle(record));
+    }
+    const notification = projectTaskNotification(record)
+      ?? projectSupersededTaskNotification(record);
+    // Announcement ownership is internal metadata. Acknowledgements, however,
+    // must be broadcast so every connected client clears the same durable
+    // unread item rather than only the client that sent the request.
+    if (notification && latestType !== "notification.announced") {
+      this.send({
+        type: "task.notification",
+        taskId: record.taskId,
+        sequence: record.sequence,
+        occurredAt: record.updatedAt,
+        notification,
+      });
+    }
+    if (record.notification.unread && record.notification.announcedAt === undefined && notification) {
+      this.pendingNotifications.set(record.taskId, structuredClone(record));
+    } else {
+      this.pendingNotifications.delete(record.taskId);
+    }
+    this.scheduleNotificationFlush();
+  }
+
+  private scheduleNotificationFlush(): void {
+    if (
+      this.closing ||
+      !this.readySent ||
+      this.notificationFlushRunning ||
+      this.notificationResponsePending ||
+      this.providerResponseActive ||
+      this.userSpeaking ||
+      this.pendingNotifications.size === 0
+    ) {
+      return;
+    }
+    queueMicrotask(() => {
+      void this.flushNotifications();
+    });
+  }
+
+  private async flushNotifications(): Promise<void> {
+    if (
+      this.closing ||
+      this.notificationFlushRunning ||
+      this.notificationResponsePending ||
+      this.providerResponseActive ||
+      this.userSpeaking ||
+      !this.liveSession?.sendTaskNotification ||
+      !this.ownerId
+    ) {
+      return;
+    }
+    const candidates = [...this.pendingNotifications.values()];
+    if (candidates.length === 0) return;
+    this.notificationFlushRunning = true;
+    try {
+      const records: TaskRecord[] = [];
+      for (const candidate of candidates) {
+        try {
+          const claim = await this.deps.taskSupervisor.claimNotificationAnnouncement(
+            this.ownerId,
+            candidate.taskId,
+          );
+          this.pendingNotifications.delete(candidate.taskId);
+          if (claim.claimed) records.push(claim.task);
+        } catch (error) {
+          this.deps.logger.warn("failed to claim task notification announcement", {
+            sessionId: this.id,
+            taskId: candidate.taskId,
+            error: errorToMessage(error),
+          });
+        }
+      }
+      if (records.length === 0) return;
+
+      this.notificationResponsePending = true;
+      const announcement = notificationDigest(records);
+      const context = `[HERMES_LIVE_TASK_EVENT_V1:${this.notificationToken}] ${JSON.stringify({ announcement })}`;
+      await withAbortAndDeadline(
+        this.liveSession.sendTaskNotification({ context, announcement }),
+        this.abort.signal,
+        MAX_PROVIDER_IO_WAIT_MS,
+        "Realtime provider task notification did not settle before the safety deadline.",
+      );
+      this.armNotificationResponseWatchdog();
+    } catch (error) {
+      this.notificationResponsePending = false;
+      if (!this.closing) {
+        this.deps.logger.warn("task notification speech delivery failed", {
+          sessionId: this.id,
+          error: errorToMessage(error),
+        });
+      }
+    } finally {
+      this.notificationFlushRunning = false;
+    }
+  }
+
+  private async forwardRealtimeClientInput(
+    label: string,
+    operation: () => Promise<void>,
+    beginsResponse = false,
+  ): Promise<void> {
+    if (beginsResponse) this.providerResponseActive = true;
+    try {
+      await withAbortAndDeadline(
+        operation(),
+        this.abort.signal,
+        MAX_PROVIDER_IO_WAIT_MS,
+        `Realtime provider ${label} input did not settle before the safety deadline.`,
+      );
+    } catch (error) {
+      if (beginsResponse) this.providerResponseActive = false;
+      if (this.closing) return;
+      this.deps.logger.warn("realtime provider rejected client input", {
+        sessionId: this.id,
+        input: label,
+        error: errorToMessage(error),
+      });
+      this.fail("realtime_provider_input_failed", new Error(`Realtime provider could not confirm ${label} input.`), false);
+      await this.closeClientAfterCleanup(1011, "realtime provider input failed");
+    }
+  }
+
+  private async cancelRealtimeResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<void> {
+    try {
+      const cancelled = await withDeadline(
+        Promise.resolve(this.liveSession?.cancelResponse(reason, truncate) ?? false),
+        MAX_PROVIDER_CANCEL_WAIT_MS,
+        "Realtime response cancellation did not settle before the safety deadline.",
+      );
+      if (!this.closing) {
+        this.send({
+          type: "log",
+          level: cancelled ? "info" : "debug",
+          message: cancelled ? "Realtime response cancellation requested" : "No active realtime response to cancel",
+        });
+      }
+    } catch (error) {
+      if (!this.closing) {
+        this.deps.logger.warn("failed to cancel realtime response", {
+          sessionId: this.id,
+          error: errorToMessage(error),
+        });
+        this.send({ type: "log", level: "warn", message: "Realtime response cancellation failed" });
+      }
+    }
+  }
+
+  private async performClose(): Promise<void> {
+    this.unsubscribeTasks?.();
+    this.unsubscribeTasks = undefined;
+    this.pendingTaskRecords.clear();
+    this.pendingNotifications.clear();
+    this.clearNotificationResponsePending();
+    this.providerToolOperations.length = 0;
+    this.abort.abort(new Error("Voice session detached."));
+
+    const operations: Promise<unknown>[] = [];
+    if (this.liveSession) operations.push(this.closeProvider(this.liveSession));
+    if (this.pendingLiveConnect) {
+      const connect = this.pendingLiveConnect;
+      this.pendingLiveConnect = undefined;
+      operations.push(connect.then((session) => this.closeProvider(session)).catch(() => undefined));
+    }
+    await Promise.allSettled(operations);
+  }
+
+  private async closeProvider(session: LiveModelSession): Promise<void> {
+    await withDeadline(
+      Promise.resolve().then(() => session.close()),
+      MAX_PROVIDER_CLOSE_WAIT_MS,
+      "Realtime provider did not confirm closure before the safety deadline.",
+    ).catch((error) => {
+      this.deps.logger.error("failed to confirm realtime provider closure", {
+        sessionId: this.id,
+        error: errorToMessage(error),
+      });
+    });
+  }
+
+  private async closeClientAfterCleanup(code: number, reason: string): Promise<void> {
+    await this.close();
+    this.client.close(code, reason);
+  }
+
   private send(message: ServerMessage): void {
+    if (this.closing && message.type !== "session.error") return;
     this.client.sendText(serverMessage(message));
   }
 
   private handleClientMessageFailure(error: unknown, requestId?: string): void {
     if (this.closing) return;
     this.clientMessageErrors += 1;
-    this.fail("client_message_failed", error, false, requestId);
+    if (error instanceof PublicTaskOperationError) {
+      this.failPublic("client_message_failed", error.message, error.operationCause, false, requestId);
+    } else {
+      this.fail("client_message_failed", error, false, requestId);
+    }
     if (this.clientMessageErrors >= MAX_CLIENT_MESSAGE_ERRORS) {
       void this.closeClientAfterCleanup(1008, "too many invalid client messages");
     }
   }
 
   private fail(code: string, error: unknown, recoverable = false, requestId?: string): void {
-    const message = errorToMessage(error);
+    const message = boundedText(errorToMessage(error), 2_000);
+    const safeRequestId = validatedRequestId(requestId);
     this.deps.logger.warn("live session error", { sessionId: this.id, code, message });
-    this.send({ type: "session.error", code, message, recoverable, ...(requestId ? { requestId } : {}) });
+    this.send({
+      type: "session.error",
+      code,
+      message,
+      recoverable,
+      ...(safeRequestId ? { requestId: safeRequestId } : {}),
+    });
   }
-}
 
-function validateAudioFrame(data: string, mimeType: string, maxBytes: number): void {
-  if (typeof mimeType !== "string" || mimeType.length === 0 || mimeType.length > 128) {
-    throw new Error("Audio frame MIME type is invalid.");
+  private failPublic(
+    code: string,
+    publicMessage: string,
+    operationError: unknown,
+    recoverable = false,
+    requestId?: string,
+  ): void {
+    const message = boundedText(publicMessage, 500);
+    const safeRequestId = validatedRequestId(requestId);
+    this.deps.logger.warn("live session operation failed", {
+      sessionId: this.id,
+      code,
+      error: errorToMessage(operationError),
+    });
+    this.send({
+      type: "session.error",
+      code,
+      message,
+      recoverable,
+      ...(safeRequestId ? { requestId: safeRequestId } : {}),
+    });
   }
-  const decoded = decodeBase64Audio(data, maxBytes);
-  if (decoded.length > maxBytes) {
-    throw new Error("Audio frame exceeds HERMES_LIVE_MAX_AUDIO_BYTES.");
+
+  private runTaskOperation<T>(operation: () => Promise<T>, fallbackMessage: string): Promise<T> {
+    return Promise.resolve().then(operation).catch((error) => {
+      throw new PublicTaskOperationError(publicTaskOperationMessage(error, fallbackMessage), error);
+    });
   }
-  if (isPcmMimeType(mimeType)) {
-    requirePcmSampleRate(mimeType);
-    if (decoded.length % 2 !== 0) {
-      throw new Error("PCM16 audio frames must contain an even number of bytes.");
+
+  private armNotificationResponseWatchdog(): void {
+    if (this.notificationResponseTimer) clearTimeout(this.notificationResponseTimer);
+    this.notificationResponseTimer = setTimeout(() => {
+      this.notificationResponseTimer = undefined;
+      this.notificationResponsePending = false;
+      this.scheduleNotificationFlush();
+    }, MAX_PROVIDER_NOTIFICATION_RESPONSE_WAIT_MS);
+    this.notificationResponseTimer.unref?.();
+  }
+
+  private clearNotificationResponsePending(): void {
+    this.notificationResponsePending = false;
+    if (this.notificationResponseTimer) {
+      clearTimeout(this.notificationResponseTimer);
+      this.notificationResponseTimer = undefined;
     }
   }
 }
 
-function clientInboundFrameBytes(frame: ClientInboundFrame): number {
-  return typeof frame === "string" ? Buffer.byteLength(frame, "utf8") : frame.byteLength;
-}
+class PublicTaskOperationError extends Error {
+  readonly operationCause: unknown;
 
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isBoundedRunId(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value);
-}
-
-function clientCloseSeverity(code: number): number {
-  if (code === 1000) return 0;
-  if (code === 1008 || code === 1009) return 1;
-  return 2;
-}
-
-function assertHermesRunEventCorrelation(event: HermesRunEvent, runId: string): void {
-  if (event.run_id === undefined) return;
-  if (!isBoundedRunId(event.run_id) || event.run_id !== runId) {
-    throw new Error("Hermes emitted an event that did not match the active run stream.");
+  constructor(publicMessage: string, operationCause: unknown) {
+    super(publicMessage);
+    this.name = "PublicTaskOperationError";
+    this.operationCause = operationCause;
   }
 }
 
-function assertHermesResponseRunCorrelation(
-  value: Record<string, unknown>,
-  runId: string,
-  label: string,
-): void {
-  if (value.run_id !== undefined && (!isBoundedRunId(value.run_id) || value.run_id !== runId)) {
-    throw new Error(`Hermes ${label} response did not match the active run.`);
+function publicTaskOperationMessage(error: unknown, fallback: string): string {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "TaskNotFoundError") return "Task not found.";
+  if (name === "TaskQueueFullError" || name === "TaskStoreCapacityError") {
+    return "The background task queue is full. Wait for retained work to finish or expire.";
   }
-  if (value.runId !== undefined && (!isBoundedRunId(value.runId) || value.runId !== runId)) {
-    throw new Error(`Hermes ${label} response alias did not match the active run.`);
-  }
+  if (name === "TaskSupervisorClosedError") return "The background task supervisor is unavailable.";
+  return fallback;
 }
 
-function isPreemptiveClientControl(message: ClientMessage, sessionReady: boolean): boolean {
-  if (message.type === "session.close") return true;
-  return sessionReady && (
-    message.type === "response.cancel" ||
-    message.type === "run.stop" ||
-    message.type === "approval.respond"
+function projectTaskList(records: TaskRecord[]): PublicTaskSnapshot[] {
+  const queuePositions = new Map(
+    records
+      .filter((record) => record.status === "queued")
+      .sort((left, right) => left.createdAt - right.createdAt || left.taskId.localeCompare(right.taskId))
+      .map((record, index) => [record.taskId, index + 1]),
+  );
+  return records.map((record) => projectTaskSnapshot(record, {
+    ...(queuePositions.has(record.taskId) ? { queuePosition: queuePositions.get(record.taskId) } : {}),
+  }));
+}
+
+function mergeTaskRecords(records: TaskRecord[]): TaskRecord[] {
+  const newestByTaskId = new Map<string, TaskRecord>();
+  for (const record of records) {
+    const existing = newestByTaskId.get(record.taskId);
+    if (!existing || record.sequence > existing.sequence) newestByTaskId.set(record.taskId, record);
+  }
+  return [...newestByTaskId.values()].sort(
+    (left, right) => right.updatedAt - left.updatedAt || left.taskId.localeCompare(right.taskId),
   );
 }
 
+function notificationDigest(records: TaskRecord[]): string {
+  const completed = records.filter((record) => record.status === "completed").length;
+  const attention = records.length - completed;
+  if (records.length === 1 && completed === 1) {
+    return "Your background task is finished. The result is ready in the task inbox.";
+  }
+  if (records.length === 1) {
+    return "A background task needs your attention. Open the task inbox for the exact status.";
+  }
+  if (attention === 0) {
+    return `${records.length} background tasks are finished. Their results are ready in the task inbox.`;
+  }
+  return `${records.length} background tasks have updates: ${completed} finished and ${attention} need attention. Open the task inbox for details.`;
+}
+
+function validateAudioFrame(data: string, mimeType: string, maxBytes: number): void {
+  if (!mimeType || mimeType.length > 128) throw new Error("Audio frame MIME type is invalid.");
+  const decoded = decodeBase64Audio(data, maxBytes);
+  if (decoded.length > maxBytes) throw new Error("Audio frame exceeds HERMES_LIVE_MAX_AUDIO_BYTES.");
+  if (isPcmMimeType(mimeType)) {
+    requirePcmSampleRate(mimeType);
+    if (decoded.length % 2 !== 0) throw new Error("PCM16 audio frames must contain an even number of bytes.");
+  }
+}
+
 function decodeBase64Audio(data: string, maxBytes: number): Buffer {
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data) || data.length % 4 === 1) {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(data) || data.length % 4 === 1) {
     throw new Error("Audio frame data must be base64 encoded.");
   }
   if (data.length > Math.ceil((maxBytes * 4) / 3) + 4) {
@@ -1984,17 +1245,26 @@ function decodeBase64Audio(data: string, maxBytes: number): Buffer {
 }
 
 function validateText(value: string, maxChars: number, label: string): void {
-  if (value.length > maxChars) {
-    throw new Error(`${label} exceeds HERMES_LIVE_MAX_TEXT_CHARS.`);
-  }
+  if (value.length > maxChars) throw new Error(`${label} exceeds HERMES_LIVE_MAX_TEXT_CHARS.`);
+}
+
+function clientInboundFrameBytes(frame: ClientInboundFrame): number {
+  return typeof frame === "string" ? Buffer.byteLength(frame, "utf8") : frame.byteLength;
 }
 
 function requestIdFromUnknown(value: unknown): string | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const id = (value as { id?: unknown }).id;
-  return typeof id === "string" && id.length > 0 && id.length <= 128 ? id : undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return validatedRequestId((value as { id?: unknown }).id);
+}
+
+function validatedRequestId(value: unknown): string | undefined {
+  const parsed = RequestIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function isPreemptiveClientControl(message: ClientMessage, sessionReady: boolean): boolean {
+  if (message.type === "session.close") return true;
+  return sessionReady && ["response.cancel", "task.stop"].includes(message.type);
 }
 
 function safetyIdentifierForSessionKey(sessionKey: string): string {
@@ -2003,36 +1273,57 @@ function safetyIdentifierForSessionKey(sessionKey: string): string {
 
 function stringArg(call: LiveToolCall, name: string): string {
   const value = call.args[name];
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function optionalStringArg(call: LiveToolCall, name: string): string | undefined {
+  const value = stringArg(call, name);
+  return value || undefined;
+}
+
+function booleanArg(call: LiveToolCall, name: string, fallback: boolean): boolean {
+  const value = call.args[name];
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") throw new Error(`${name} must be a boolean.`);
+  return value;
+}
+
+function executionModeArg(call: LiveToolCall): TaskExecutionMode {
+  const value = call.args.execution_mode;
+  if (value === undefined) return "exclusive";
+  if (value !== "exclusive" && value !== "parallel_read_only") {
+    throw new Error("execution_mode must be exclusive or parallel_read_only.");
+  }
+  return value;
+}
+
+function resourceKeysArg(call: LiveToolCall): string[] | undefined {
+  const value = call.args.resource_keys;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_TOOL_RESOURCE_KEYS) {
+    throw new Error(`resource_keys must contain between 1 and ${MAX_TOOL_RESOURCE_KEYS} strings.`);
+  }
+  const keys = value.map((item) => {
+    if (typeof item !== "string" || !item.trim() || item.length > 256 || /[\u0000-\u001f\u007f]/u.test(item)) {
+      throw new Error("resource_keys contains an invalid value.");
+    }
+    return item.trim();
+  });
+  return [...new Set(keys)];
 }
 
 function requireProviderToolCallId(call: LiveToolCall): string {
-  if (
-    typeof call.name !== "string" ||
-    call.name.length === 0 ||
-    call.name.length > 128 ||
-    !/^[A-Za-z0-9_.:-]+$/u.test(call.name)
-  ) {
+  if (!call.name || call.name.length > 128 || !/^[A-Za-z0-9_.:-]+$/u.test(call.name)) {
     throw new Error("Realtime provider emitted a tool call with an invalid name.");
   }
-  if (
-    typeof call.id !== "string" ||
-    call.id.length === 0 ||
-    call.id.length > 256 ||
-    /[\u0000-\u001f\u007f]/u.test(call.id)
-  ) {
+  if (!call.id || call.id.length > 256 || /[\u0000-\u001f\u007f]/u.test(call.id)) {
     throw new Error("Realtime provider emitted a tool call without a bounded id.");
   }
   return call.id;
 }
 
 function requireProviderToolCancellationId(value: string): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > 256 ||
-    /[\u0000-\u001f\u007f]/u.test(value)
-  ) {
+  if (!value || value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value)) {
     throw new Error("Realtime provider emitted a tool cancellation without a bounded id.");
   }
   return value;
@@ -2051,295 +1342,69 @@ function providerToolCallFingerprint(call: LiveToolCall): string {
   return createHash("sha256").update(call.name).update("\0").update(args).digest("hex");
 }
 
+function providerToolCallIdDigest(id: string): string {
+  return createHash("sha256").update(id).digest("hex");
+}
+
 function boundedProviderToolResponse(response: Record<string, unknown>): Record<string, unknown> {
   return safeJsonByteLength(response) <= MAX_PROVIDER_TOOL_RESPONSE_BYTES
     ? response
-    : { ok: false, error: "Hermes tool result exceeded the safe provider response limit." };
-}
-
-function publicHermesRunStatus(value: Record<string, unknown>, runId: string): Record<string, unknown> {
-  return { run_id: runId, status: publicRunStatus(value.status, "unknown") };
-}
-
-function publicRunStatus(value: unknown, fallback = "stopping"): string {
-  if (typeof value !== "string") return fallback;
-  const normalized = value.trim().toLowerCase();
-  return [
-    "queued",
-    "started",
-    "in_progress",
-    "running",
-    "requires_action",
-    "stopping",
-    "cancelled",
-    "canceled",
-    "completed",
-    "failed",
-  ].includes(normalized)
-    ? normalized
-    : fallback;
+    : { ok: false, error: "Task result exceeded the safe provider response limit." };
 }
 
 function publicHermesCapabilities(
   capabilities: Awaited<ReturnType<HermesRunsPort["capabilities"]>>,
 ): { model?: string; capabilities?: Record<string, unknown> } {
   const model = boundedDisplayText(capabilities.model, 256);
-  const source = capabilities.features;
   const projected: Record<string, unknown> = {};
-  if (source && typeof source === "object" && !Array.isArray(source)) {
-    for (const key of ["run_submission", "run_events_sse", "run_stop", "run_approval_response"]) {
-      if (typeof source[key] === "boolean") projected[key] = source[key];
+  const features = capabilities.features;
+  if (features && typeof features === "object" && !Array.isArray(features)) {
+    for (const key of [
+      "run_submission",
+      "run_status",
+      "run_events_sse",
+      "run_stop",
+      "run_approval_response",
+      "run_approval_response_by_id",
+    ]) {
+      if (typeof features[key] === "boolean") projected[key] = features[key];
     }
-    projected[HERMES_TARGETED_APPROVAL_FEATURE] = source[HERMES_TARGETED_APPROVAL_FEATURE] === true;
   }
   return {
     ...(model ? { model } : {}),
-    ...(Object.keys(projected).length > 0 ? { capabilities: projected } : {}),
+    ...(Object.keys(projected).length ? { capabilities: projected } : {}),
   };
 }
 
 function publicRealtimeStartupError(error: unknown, readyTimeoutMs: number): string {
   const message = errorToMessage(error);
   if (
-    message === `Realtime provider did not become ready within ${readyTimeoutMs}ms.` ||
+    message.includes("Realtime provider did not") ||
     message === "Realtime provider session closed before ready." ||
     message === "Realtime provider exceeded the safe pre-ready event queue limit."
   ) {
     return boundedText(message, 500);
   }
-  return "Realtime provider session failed to start. Check the gateway logs.";
-}
-
-function publicHermesRunEvent(
-  event: HermesRunEvent,
-  detail: AppConfig["server"]["runEventDetail"],
-): HermesRunEvent | undefined {
-  if (detail === "raw") {
-    const serialized = safeJsonByteLength(event);
-    if (serialized <= MAX_PUBLIC_RUN_EVENT_BYTES) return event;
-    return {
-      ...summarizeHermesRunEvent(event),
-      truncated: true,
-      original_bytes: serialized,
-    };
-  }
-  if (detail === "none") {
-    return undefined;
-  }
-
-  return summarizeHermesRunEvent(event);
-}
-
-function summarizeHermesRunEvent(event: HermesRunEvent): HermesRunEvent {
-  const summary: Record<string, unknown> = {};
-  for (const key of ["event", "run_id", "timestamp", "status"] as const) {
-    const value = event[key];
-    if (typeof value === "string") {
-      summary[key] = boundedText(value, 512);
-    } else if (typeof value === "number" || typeof value === "boolean") {
-      summary[key] = value;
-    }
-  }
-  return summary as HermesRunEvent;
-}
-
-function publicApprovalDetails(event: HermesRunEvent, approvalId: string): HermesApprovalDetails {
-  const commandProjection = exactApprovalDisplayText(event.command, 4_000);
-  const descriptionProjection = exactApprovalDisplayText(event.description, 2_000);
-  const command = commandProjection.value;
-  const description = descriptionProjection.value;
-  const displayComplete = commandProjection.exact && descriptionProjection.exact && Boolean(command || description);
-  const patterns = exactApprovalPatterns(event);
-  const patternKey = displayComplete ? patterns.values[0] : undefined;
-  const patternKeys = displayComplete && patterns.values.length > 1 ? patterns.values.slice(1) : undefined;
-  const hasInspectablePermanentPattern = displayComplete && patterns.exact && patterns.values.length > 0;
-  const fallbackChoices: Array<"once" | "session" | "always" | "deny"> = ["deny"];
-  const allowedChoices = ["once", "session", "always", "deny"] as const;
-  const suppliedChoices: Array<typeof allowedChoices[number]> = event.choices === undefined
-    ? fallbackChoices
-    : Array.isArray(event.choices) &&
-        event.choices.length > 0 &&
-        event.choices.every((choice) =>
-          typeof choice === "string" && allowedChoices.includes(choice as typeof allowedChoices[number]),
-        )
-      ? event.choices as Array<typeof allowedChoices[number]>
-      : ["deny"];
-  const choices: Array<"once" | "session" | "always" | "deny"> = (
-    suppliedChoices
-  )
-    .filter(
-      (choice) =>
-        (displayComplete || choice === "deny") &&
-        ((choice !== "session" && choice !== "always") || hasInspectablePermanentPattern) &&
-        (choice !== "always" || (hasInspectablePermanentPattern && event.allow_permanent === true)),
-    )
-    .filter((choice, index, all) => all.indexOf(choice) === index);
-  if (!choices.includes("deny")) {
-    choices.push("deny");
-  }
-  return {
-    approvalId,
-    ...(command ? { command } : {}),
-    ...(description ? { description } : {}),
-    ...(patternKey ? { patternKey } : {}),
-    ...(patternKeys && patternKeys.length > 0 ? { patternKeys } : {}),
-    choices,
-    allowPermanent: hasInspectablePermanentPattern && event.allow_permanent === true && choices.includes("always"),
-  };
-}
-
-function exactApprovalDisplayText(value: unknown, maximum: number): { value?: string; exact: boolean } {
-  if (value === undefined || value === null || value === "") return { exact: true };
-  if (typeof value !== "string" || /[\r\n\t]/u.test(value)) return { exact: false };
-  const projected = boundedDisplayText(value, maximum);
-  return projected && projected === value && /[\p{L}\p{N}\p{P}\p{S}]/u.test(projected)
-    ? { value: projected, exact: true }
-    : { exact: false };
-}
-
-function exactApprovalPatterns(event: HermesRunEvent): { values: string[]; exact: boolean } {
-  const rawValues: unknown[] = [];
-  if (event.pattern_key !== undefined && event.pattern_key !== null && event.pattern_key !== "") {
-    rawValues.push(event.pattern_key);
-  }
-  if (event.pattern_keys !== undefined && event.pattern_keys !== null) {
-    if (!Array.isArray(event.pattern_keys) || event.pattern_keys.length > 32) return { values: [], exact: false };
-    rawValues.push(...event.pattern_keys);
-  }
-  if (rawValues.length > 32) return { values: [], exact: false };
-
-  const values: string[] = [];
-  for (const raw of rawValues) {
-    const projected = boundedInspectablePattern(raw, 256);
-    if (typeof raw !== "string" || !projected || projected !== raw) return { values: [], exact: false };
-    if (!values.includes(projected)) values.push(projected);
-  }
-  return { values, exact: true };
-}
-
-function boundedDisplayText(value: unknown, maximum: number): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const boundedInput = value.slice(0, maximum * 4 + 4_096);
-  const withoutTerminalSequences = boundedInput
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\|$)/g, "")
-    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\u001b[@-_]/g, "")
-    .replace(/\r\n?/g, "\n");
-  const printable = Array.from(withoutTerminalSequences.normalize("NFC"))
-    .filter(
-      (character) =>
-        character === "\n" ||
-        character === "\t" ||
-        !/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}]/u.test(character),
-    )
-    .slice(0, maximum)
-    .join("")
-    .trim();
-  return printable || undefined;
-}
-
-function boundedInspectablePattern(value: unknown, maximum: number): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const boundedInput = value.slice(0, maximum * 4 + 4_096);
-  const withoutTerminalSequences = boundedInput
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\|$)/g, "")
-    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\u001b[@-_]/g, "");
-  const printable = Array.from(withoutTerminalSequences.normalize("NFC"))
-    .filter((character) => !/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}]/u.test(character))
-    .join("")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const bounded = Array.from(printable).slice(0, maximum).join("");
-  return /[\p{L}\p{N}\p{P}\p{S}]/u.test(bounded) ? bounded : undefined;
-}
-
-function canApprovePermanently(approval: HermesApprovalDetails): boolean {
-  return approval.allowPermanent && Boolean(approval.patternKey || approval.patternKeys?.length);
-}
-
-function approvalSourceKey(value: unknown): string | undefined {
-  const sourceId = approvalSourceId(value);
-  return sourceId ? createHash("sha256").update(sourceId).digest("hex") : undefined;
-}
-
-function approvalSourceId(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value)
-    ? value
-    : undefined;
-}
-
-function approvalResponseFingerprint(
-  message: Extract<ClientMessage, { type: "approval.respond" }>,
-): string {
-  return createHash("sha256")
-    .update(message.runId)
-    .update("\0")
-    .update(message.approvalId)
-    .update("\0")
-    .update(message.choice)
-    .digest("hex");
-}
-
-function approvalSemanticFingerprint(approval: HermesApprovalDetails): string {
-  return createHash("sha256")
-    .update(JSON.stringify({
-      command: approval.command ?? null,
-      description: approval.description ?? null,
-      patternKey: approval.patternKey ?? null,
-      patternKeys: approval.patternKeys ?? [],
-      choices: approval.choices,
-      allowPermanent: approval.allowPermanent,
-    }))
-    .digest("hex");
-}
-
-function appendBoundedText(current: string, addition: string, maximum: number): string {
-  if (current.length >= maximum || addition.length === 0) return current;
-  return `${current}${addition.slice(0, maximum - current.length)}`;
-}
-
-function boundedText(value: string, maximum: number): string {
-  return value.length <= maximum ? value : value.slice(0, maximum);
-}
-
-function boundedUsage(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return safeJsonByteLength(value) <= MAX_PUBLIC_USAGE_BYTES
-    ? value as Record<string, unknown>
-    : { truncated: true };
-}
-
-function publicProviderCloseEvent(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const code = safeProviderCloseCode((value as Record<string, unknown>).code);
-  return code === undefined ? undefined : { code };
+  return `Realtime provider session failed to start within ${readyTimeoutMs}ms. Check the gateway logs.`;
 }
 
 function providerCloseLogDetail(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const code = safeProviderCloseCode((value as Record<string, unknown>).code);
-  return code === undefined ? {} : { providerCode: code };
-}
-
-function safeProviderCloseCode(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1_000 && value <= 4_999
-    ? value
-    : undefined;
+  const code = (value as Record<string, unknown>).code;
+  return typeof code === "number" && Number.isInteger(code) && code >= 1_000 && code <= 4_999
+    ? { providerCode: code }
+    : {};
 }
 
 function publicProviderIdentifier(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length === 0 || value.length > 256 || /[\r\n\t]/u.test(value)) {
+  if (typeof value !== "string" || !value || value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value)) {
     return undefined;
   }
-  const projected = boundedDisplayText(value, 256);
-  return projected === value && /[\p{L}\p{N}\p{P}\p{S}]/u.test(value) ? value : undefined;
+  return value;
 }
 
 function publicContentIndex(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100 ? value : undefined;
 }
 
 function publicAudioStartMs(value: unknown): number | undefined {
@@ -2348,29 +1413,21 @@ function publicAudioStartMs(value: unknown): number | undefined {
     : undefined;
 }
 
+function boundedDisplayText(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const printable = value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+  return printable ? printable.slice(0, maximum) : undefined;
+}
+
+function boundedText(value: string, maximum: number): string {
+  return value.length <= maximum ? value : value.slice(0, maximum);
+}
+
 function safeJsonByteLength(value: unknown): number {
   try {
     return Buffer.byteLength(JSON.stringify(value), "utf8");
   } catch {
     return Number.POSITIVE_INFINITY;
-  }
-}
-
-async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise.then(
-        () => true,
-        () => true,
-      ),
-      new Promise<boolean>((resolve) => {
-        timeout = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
-        timeout.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -2397,13 +1454,11 @@ async function withAbortAndDeadline<T>(
 ): Promise<T> {
   if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  let rejectAbort: ((reason?: unknown) => void) | undefined;
+  let rejectAbort!: (reason?: unknown) => void;
   const aborted = new Promise<never>((_, reject) => {
     rejectAbort = reject;
   });
-  const onAbort = (): void => {
-    rejectAbort?.(signal.reason ?? new DOMException("Aborted", "AbortError"));
-  };
+  const onAbort = () => rejectAbort(signal.reason ?? new DOMException("Aborted", "AbortError"));
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     return await Promise.race([

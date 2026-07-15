@@ -70,6 +70,31 @@ assert.match(
   /\[ "\$registry_tag" != "\$PACKAGE_VERSION" \]; then/,
   "Registry verification must fail when the expected npm dist-tag drifts.",
 );
+assert.match(
+  releaseWorkflow,
+  /\*-\*\) prerelease=true ;;/,
+  "Hyphenated semantic versions must create GitHub prereleases.",
+);
+assert.match(
+  releaseWorkflow,
+  /\*-\*\) npm_tag=next ;;/,
+  "Hyphenated semantic versions must publish to the npm next dist-tag.",
+);
+assert.match(
+  releaseWorkflow,
+  /\*\) npm_tag=latest ;;/,
+  "Stable semantic versions must publish to the npm latest dist-tag.",
+);
+assert.match(
+  releaseWorkflow,
+  /-f make_latest=false/,
+  "GitHub prereleases must not replace the latest stable release.",
+);
+assert.match(
+  releaseWorkflow,
+  /--tag "\$NPM_TAG"/,
+  "npm publication must use the dist-tag selected from the package version.",
+);
 
 const workDir = mkdtempSync(join(tmpdir(), "hermes-live-release-notes-"));
 try {

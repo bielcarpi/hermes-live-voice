@@ -7,13 +7,15 @@ import {
   type AppConfig,
 } from "../../../config.js";
 import { HERMES_LIVE_TOOL_DECLARATIONS } from "../../../application/live-gateway/tool-definitions.js";
-import type {
-  LiveModelAdapter,
-  LiveModelAudio,
-  LiveModelConnectParams,
-  LiveModelEvent,
-  LiveModelSession,
-  LiveToolCall,
+import {
+  requireLiveTaskNotification,
+  type LiveModelAdapter,
+  type LiveModelAudio,
+  type LiveModelConnectParams,
+  type LiveModelEvent,
+  type LiveModelSession,
+  type LiveTaskNotification,
+  type LiveToolCall,
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 
 const DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS = 4_000;
@@ -179,6 +181,20 @@ export class GeminiLiveSession implements LiveModelSession {
     await this.session.sendToolResponse(buildGeminiToolResponse(call, response));
   }
 
+  async sendTaskNotification(notification: LiveTaskNotification): Promise<void> {
+    const input = buildGeminiTaskNotificationInput(notification);
+    if (typeof this.session.sendRealtimeInput !== "function") {
+      throw new Error("Gemini Live session does not support realtime text input for task notifications.");
+    }
+    // Gemini Live has no response-scoped, out-of-band trusted instruction
+    // equivalent to OpenAI Realtime's conversation="none". Gemini 3.1 also
+    // reserves sendClientContent for initial history; mid-session text must use
+    // sendRealtimeInput. Delivery is therefore best-effort and not a durable or
+    // deterministically ordered completed turn. The session instruction accepts
+    // only this gateway-authenticated nonce marker as a task notification.
+    await this.session.sendRealtimeInput(input);
+  }
+
   close(): Promise<void> {
     if (this.closeConfirmation.isClosed()) return Promise.resolve();
     if (this.closeOperation) return this.closeOperation;
@@ -250,6 +266,13 @@ export function buildGeminiTextTurn(text: string): { turns: Array<{ role: "user"
     turns: [{ role: "user", parts: [{ text }] }],
     turnComplete: true,
   };
+}
+
+export function buildGeminiTaskNotificationInput(
+  notification: LiveTaskNotification,
+): ReturnType<typeof buildGeminiRealtimeTextInput> {
+  const { context } = requireLiveTaskNotification(notification);
+  return buildGeminiRealtimeTextInput(context);
 }
 
 export function buildGeminiToolResponse(

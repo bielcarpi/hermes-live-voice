@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AppConfig } from "../src/config.js";
 import type { HermesRunsPort } from "../src/application/live-gateway/ports/hermes-runs.port.js";
 import type { Logger } from "../src/logger.js";
@@ -7,9 +10,14 @@ import { MockLiveAdapter } from "../src/adapters/outbound/realtime/mock-live.ada
 import { startServer } from "../src/adapters/inbound/http/server.js";
 
 const openServers: Array<{ close(): Promise<void> }> = [];
+const taskStateDirectory = realpathSync(tmpdir());
+const taskStateDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(openServers.splice(0).map((server) => server.close()));
+  for (const directory of taskStateDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 describe("HTTP server", () => {
@@ -28,7 +36,7 @@ describe("HTTP server", () => {
     });
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       object: "hermes_live.capabilities",
-      protocolVersion: 2,
+      protocolVersion: 3,
       realtime: {
         provider: "openai",
         model: "gpt-realtime-2.1",
@@ -40,18 +48,34 @@ describe("HTTP server", () => {
       },
       hermes: {
         approvals: {
-          uiSupported: true,
+          uiSupported: false,
           interactive: false,
           fallback: "deny_all_then_stop",
           requiredFeature: "run_approval_response_by_id",
           negotiated: true,
         },
       },
+      tasks: {
+        scope: "owner",
+        durable: true,
+        persistence: "local_file",
+        disconnectContinuation: true,
+        gatewayRestartRecovery: "reconcile_by_upstream_run_id",
+        hermesRestartRecovery: false,
+        ambiguousDispatch: "fenced_no_automatic_retry",
+        maxConcurrent: 3,
+        maxQueued: 32,
+        maxRetained: 200,
+      },
       features: {
-        hermes_runs: true,
+        background_tasks: true,
+        durable_task_state: true,
+        task_reconnect_snapshot: true,
+        exact_task_stop: true,
+        task_notifications: true,
         openai_realtime: true,
         hermes_approval: false,
-        hermes_approval_ui: true,
+        hermes_approval_ui: false,
         hermes_approval_fallback_deny_all: true,
         hermes_approval_fallback_stops_run: true,
         hermes_approval_requires_targeted_response: true,
@@ -59,7 +83,7 @@ describe("HTTP server", () => {
     });
   });
 
-  it("advertises interactive approval only after targeted Hermes negotiation", async () => {
+  it("keeps approvals fail-closed even when Hermes advertises targeted responses", async () => {
     const server = await startServer({
       config: testConfig(),
       hermes: fakeHermes({ run_approval_response_by_id: true }),
@@ -71,18 +95,19 @@ describe("HTTP server", () => {
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       hermes: {
         approvals: {
-          uiSupported: true,
-          interactive: true,
+          uiSupported: false,
+          interactive: false,
+          upstreamTargetedResponseAdvertised: true,
           fallback: "deny_all_then_stop",
           requiredFeature: "run_approval_response_by_id",
           negotiated: true,
         },
       },
-      features: { hermes_approval: true, hermes_approval_ui: true },
+      features: { hermes_approval: false, hermes_approval_ui: false },
     });
   });
 
-  it("keeps UI capability available while marking failed approval negotiation unavailable", async () => {
+  it("marks approval negotiation unavailable without inventing an approval UI", async () => {
     const hermes = fakeHermes();
     vi.mocked(hermes.capabilities).mockRejectedValueOnce(new Error("Hermes unavailable"));
     const server = await startServer({
@@ -98,14 +123,14 @@ describe("HTTP server", () => {
     await expect(response.json()).resolves.toMatchObject({
       hermes: {
         approvals: {
-          uiSupported: true,
+          uiSupported: false,
           interactive: false,
           fallback: "deny_all_then_stop",
           requiredFeature: "run_approval_response_by_id",
           negotiated: false,
         },
       },
-      features: { hermes_approval: false, hermes_approval_ui: true },
+      features: { hermes_approval: false, hermes_approval_ui: false },
     });
   });
 
@@ -466,7 +491,6 @@ function testConfig(
       defaultProfileId: "default",
       defaultUserLabel: "voice",
       trustClientIdentity: false,
-      runEventDetail: "summary",
       maxSessions: 8,
       maxAudioBytes: 2_000_000,
       maxTextChars: 20_000,
@@ -482,6 +506,14 @@ function testConfig(
       streamIdleTimeoutMs: 120_000,
       ...overrides.hermes,
     },
+    tasks: {
+      stateFile: createTaskStateFile("hermes-live-http-test-"),
+      maxConcurrent: 3,
+      maxQueued: 32,
+      historyLimit: 200,
+      retentionMs: 7 * 24 * 60 * 60 * 1_000,
+      pollIntervalMs: 25,
+    },
     realtime: { provider: "openai", model: "gpt-realtime-2.1", ...overrides.realtime },
     gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1", ...overrides.gemini },
     openai: {
@@ -496,6 +528,12 @@ function testConfig(
       ...overrides.openai,
     },
   };
+}
+
+function createTaskStateFile(prefix: string): string {
+  const directory = mkdtempSync(join(taskStateDirectory, prefix));
+  taskStateDirectories.push(directory);
+  return join(directory, "tasks-v1.json");
 }
 
 function fakeLogger(): Logger {

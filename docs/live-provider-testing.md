@@ -1,27 +1,27 @@
 # Live Provider Testing
 
-Default CI uses fake Hermes clients and the mock realtime provider. That keeps pull requests deterministic, but it does not prove your Gemini Live or OpenAI Realtime credentials, model access, audio path, or Hermes API Server are working together.
+CI uses fake Hermes clients and the mock realtime provider. That proves deterministic contracts, not your credentials, provider model access, microphone/playback path, notification behavior, or the complete Hermes integration.
 
-Use this page before claiming a hosted gateway is ready.
+Use this checklist before describing a deployment—or a release whose provider adapter changed—as ready.
 
-Commands below assume the globally installed package. From a source checkout, use `npm run check`, `npm run check:live-provider`, and `npm run dev` in place of `hermes-live check`, `hermes-live provider-smoke`, and `hermes-live serve`.
+Commands assume the installed package. From source, use `npm run check`, `npm run check:live-provider`, and `npm run dev` instead of `hermes-live check`, `hermes-live provider-smoke`, and `hermes-live serve`.
 
 ## Prerequisites
 
-- Hermes API Server running with run endpoints enabled.
-- `HERMES_AGENT_API_SERVER_KEY` set to Hermes Agent's `API_SERVER_KEY`.
-- A realtime provider key or authenticated Vertex/Gemini environment.
-- `HERMES_LIVE_AUTH_TOKEN` set for any non-local gateway.
-- `HERMES_LIVE_ALLOW_ORIGIN` set to your app origin for browser clients.
-- TLS in front of the gateway for non-local clients.
+- Hermes API Server running with its Runs API enabled;
+- `HERMES_AGENT_API_SERVER_KEY` set to Hermes `API_SERVER_KEY`;
+- a Gemini/OpenAI key or authenticated Vertex environment;
+- a persistent private `HERMES_LIVE_TASK_STATE_FILE`;
+- `HERMES_LIVE_AUTH_TOKEN` for non-loopback binds;
+- exact browser origin and TLS for non-local clients.
 
-## Step 1: Check Hermes And Provider Config
+## 1. Check Configuration And Hermes
 
 ```sh
 hermes-live check
 ```
 
-Expected:
+Expected shape:
 
 ```json
 {
@@ -31,7 +31,12 @@ Expected:
     "host": "127.0.0.1",
     "port": 8788,
     "authRequired": false,
-    "demoEnabled": true
+    "tasks": {
+      "durable": true,
+      "maxConcurrent": 3,
+      "maxQueued": 32,
+      "maxRetained": 200
+    }
   },
   "hermes": {
     "ok": true,
@@ -43,22 +48,23 @@ Expected:
     "configured": true,
     "provider": "openai",
     "model": "gpt-realtime-2.1",
-    "sessionChecked": false,
-    "baseUrl": "wss://api.openai.com/[redacted-path]",
-    "voice": "marin",
-    "reasoningEffort": "low",
-    "turnDetection": "disabled",
-    "inputAudioFormat": "pcm16",
-    "outputAudioFormat": "pcm16"
+    "sessionChecked": false
   }
 }
 ```
 
-The exact Hermes capability fields can vary by Hermes version. This proves gateway exposure configuration, provider credential configuration, and Hermes API capabilities. `sessionChecked: false` is intentional: this step does not open a realtime provider session.
+Exact Hermes fields vary by version. Verify `run_submission`, `run_status`, `run_events_sse`, `run_stop`, and `run_approval_response` are true. `sessionChecked: false` is intentional: this check does not open a billable provider session.
 
-## Step 2: Open A Real Provider Session
+Also inspect the authenticated capabilities endpoint:
 
-After setting `HERMES_LIVE_PROVIDER` and the provider credentials, run:
+```sh
+curl -H "Authorization: Bearer $HERMES_LIVE_AUTH_TOKEN" \
+  http://127.0.0.1:8788/v1/capabilities
+```
+
+Confirm `protocolVersion: 3`, `background_tasks`, durable local persistence, exact stop, reconnect snapshots, notification support, configured task bounds, gateway-restart reconciliation, `hermesRestartRecovery: false`, and fenced ambiguous dispatch.
+
+## 2. Open And Close A Real Provider Session
 
 ```sh
 hermes-live provider-smoke
@@ -75,18 +81,17 @@ Expected:
 }
 ```
 
-This command opens and closes a Gemini Live or OpenAI Realtime session with the same adapter the gateway uses. It does not require Hermes to be running, does not send user audio/text, and does not start a Hermes run. Success means both the connection and the provider's close event were confirmed. Set `HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS` if your provider or network needs a longer startup bound.
+This uses the same adapter as the gateway, waits for provider readiness, then confirms provider closure. It does not require Hermes, send audio/text, or start a task. Set `HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS` only when a trusted slower network needs a larger bound.
 
-Provider-controlled error text and close reasons are intentionally suppressed from this diagnostic; only generic failure context and a bounded numeric close code are retained. Check the provider's own authenticated console for deeper request diagnostics instead of weakening gateway log redaction.
+Provider-controlled error text and close reasons are intentionally suppressed. Use the provider's authenticated console for deeper diagnostics rather than weakening redaction.
 
-## Step 3: Start The Gateway
+## 3. Start The Integrated Gateway
 
 Gemini Live:
 
 ```sh
 HERMES_LIVE_PROVIDER=gemini \
 GEMINI_API_KEY=... \
-HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 hermes-live serve
@@ -99,13 +104,10 @@ HERMES_LIVE_PROVIDER=gemini \
 GOOGLE_GENAI_USE_ENTERPRISE=true \
 GOOGLE_CLOUD_PROJECT=... \
 GOOGLE_CLOUD_LOCATION=us-central1 \
-HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 hermes-live serve
 ```
-
-The gateway validates the project, location, and optional API-version token, then pins `@google/genai` to the corresponding official Vertex endpoint. Ambient Google SDK base-URL and cloud-mode overrides are intentionally ignored.
 
 OpenAI Realtime:
 
@@ -114,73 +116,129 @@ HERMES_LIVE_PROVIDER=openai \
 OPENAI_API_KEY=... \
 OPENAI_REALTIME_MODEL=gpt-realtime-2.1 \
 OPENAI_REALTIME_TURN_DETECTION=disabled \
-HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 hermes-live serve
 ```
 
-Override `OPENAI_REALTIME_MODEL` only when intentionally validating another documented Realtime-compatible model.
+Use an isolated test identity and workspace. A live smoke can execute real Hermes tools and incur both Hermes model and realtime-provider usage.
 
-For OpenAI-managed turn detection:
+## 4. Prove Background Delegation
 
-```sh
-OPENAI_REALTIME_TURN_DETECTION=semantic_vad
-```
+Open the Dashboard or demo and send text before enabling the microphone. Ask for a concrete task that requires Hermes, such as inspecting a disposable repository and running read-only checks.
 
-The included web demo defaults to a push-to-talk style mic toggle, so `disabled` is the simplest first smoke test.
+Required evidence:
 
-## Step 4: Use The Web Demo
+1. `session.ready` negotiates protocol v3 and a `task.snapshot` follows.
+2. The task receives a stable `task_<id>` and `task.accepted` quickly, before Hermes completes.
+3. The provider conversation remains responsive while the task is active.
+4. Lifecycle advances through `task.started`/bounded progress to a truthful terminal state.
+5. The durable inbox shows the same task once; upstream run ids and raw Hermes events are absent.
+6. `task.get` returns the exact retained result; list/reconnect snapshots remain summary-only.
 
-Open:
+Then exercise supervision:
 
-```txt
-http://127.0.0.1:8788
-```
+- submit two provably read-only tasks with disjoint resource keys and confirm they can overlap;
+- submit work sharing a resource key and confirm it serializes;
+- submit an exclusive task and confirm it runs alone;
+- stop one exact task while another continues;
+- interrupt provider speech and confirm background tasks do not stop;
+- close the tab/terminal and confirm tasks continue.
 
-Enter the token, connect, and send a text message first. Then test microphone input.
+Do not use destructive targets to test these rules.
 
-Expected evidence:
+## 5. Prove Reconnect And Recovery
 
-- `session.ready` appears.
-- A text input starts a Hermes run.
-- `run.started` appears.
-- `run.event` messages stream from Hermes.
-- `run.completed` appears.
-- Assistant audio plays for live provider responses.
-- Starting a new text/mic turn cancels queued provider speech.
-- OpenAI interruptions include `conversation.item.truncate` when the client has audio item metadata and playback duration, including `0` ms for queued/unheard audio.
-- With OpenAI VAD enabled, provider speech-start events reach the client as `input.speech_started`, and the client cancels provider output while stopping/truncating queued assistant playback.
-- When Hermes advertises targeted approval responses, approval requests render decision buttons. A legacy uncorrelated request produces no controls: verify attempted denial, run stop, fatal compatibility warning, voice-session closure, and retained operator guidance.
-- Stop sends `run.stop`; an accepted request emits `run.stopping`, and the client remains in that state until Hermes confirms `run.stopped`, `run.completed`, or `run.failed`.
+### Client reconnect
 
-## Step 5: Test Negative Cases
+Disconnect during a long task, reconnect with the same owner scope, and verify:
 
-Auth:
+- the initial `task.snapshot` restores the task;
+- no duplicate task is created;
+- newer lifecycle events win by `(taskId, sequence)`;
+- a terminal notification appears if completion happened while disconnected;
+- exact acknowledgement persists across another reconnect.
+
+### Gateway restart
+
+With Hermes Agent still running:
+
+1. start a long task and record its public task id;
+2. stop only the Hermes Live gateway;
+3. restart it with the same state file/volume and configuration;
+4. reconnect the same owner;
+5. confirm the supervisor reconciles the persisted upstream run and reaches the true outcome.
+
+This is the gateway-restart durability claim.
+
+### Hermes restart limitation
+
+Only in a disposable environment, restart Hermes Agent during work. Reconnect/restart the gateway and verify a confirmed missing upstream run becomes `task.unknown` and releases capacity. Do not expect completion recovery: current Hermes run state is process-local.
+
+Audit any external effects before retrying. `unknown` is intentionally neither failed nor completed.
+
+### Ambiguous dispatch
+
+Use a fault-injection fixture, not a real mutation, to drop the run-creation response after Hermes may have accepted it. Verify the task becomes `task.unknown`, is not automatically retried, and fences later admission according to the scheduler rules. Follow [operator recovery](background-tasks.md#ambiguous-dispatch-fence); never edit the state to queued.
+
+## 6. Prove Notifications
+
+Complete tasks while the conversation is idle and while the user/provider is speaking.
+
+Common requirements:
+
+- `task.notification` is durable and owner-scoped;
+- speech waits until idle and never replaces the inbox;
+- announcement text is generic and does not inject task output into a new provider turn;
+- exact task details are fetched only when requested;
+- `task.notification.ack` acknowledges only the matching task/notification id.
+
+Provider-specific evidence:
+
+- **OpenAI:** verify completion requests an audio-only response with `conversation: "none"`, empty input, no tools, and does not append a conversational item. The user should hear one short announcement.
+- **Gemini:** verify the authenticated task marker uses realtime text input. Speech is best-effort; absence or reordering of a spoken notice must not lose the durable UI notification.
+
+## 7. Prove Approval Containment
+
+In a safe fixture, make Hermes request approval. Verify:
+
+- no approval message, button, choice, or terminal command appears;
+- the gateway attempts deny-all;
+- the exact task moves to stopping and is stopped/contained;
+- other tasks are not stopped by inference;
+- the provider explains only that approval is unavailable in this release.
+
+Do not advertise interactive approvals in v0.5 even if the Hermes capability object includes targeted approval support.
+
+## 8. Prove Audio And Interruption
+
+After text/task flow passes:
+
+- grant and deny microphone permission;
+- verify the negotiated PCM sample rates and actual capture MIME type;
+- verify provider audio playback and autoplay recovery;
+- interrupt before playback, during playback, and after playback;
+- verify `response.cancel` never maps to task stop;
+- with OpenAI VAD, verify `input.speech_started` stops local playback and sends cancellation/truncation;
+- verify OpenAI truncation includes `0` ms for queued-but-unheard audio when appropriate;
+- test reconnect after network loss and provider close.
+
+The browser helper supports PCM16 and intentionally rejects G.711 output.
+
+## 9. Negative HTTP/Auth Cases
+
+With gateway auth configured, unauthenticated capabilities should return 401:
 
 ```sh
 curl -i http://127.0.0.1:8788/v1/capabilities
 ```
 
-Expected when `HERMES_LIVE_AUTH_TOKEN` is set:
-
-```txt
-HTTP/1.1 401 Unauthorized
-```
-
-Readiness with auth:
+Authenticated readiness should return 200 when healthy:
 
 ```sh
-curl -i -H "Authorization: Bearer local-test-token" http://127.0.0.1:8788/ready
+curl -i -H "Authorization: Bearer local-test-token" \
+  http://127.0.0.1:8788/ready
 ```
-
-Expected:
-
-```txt
-HTTP/1.1 200 OK
-```
-
-The JSON body should include `checks.gateway`, `checks.hermes`, and `checks.realtime`, each with `ok: true`.
 
 Health remains public:
 
@@ -188,51 +246,29 @@ Health remains public:
 curl -i http://127.0.0.1:8788/health
 ```
 
-Expected:
-
-```txt
-HTTP/1.1 200 OK
-```
-
-## What This Still Does Not Prove
-
-- Multi-tenant hosted auth.
-- Edge rate limiting.
-- Long-duration session behavior beyond your manual test window.
-- Provider-side quota, latency, and regional availability under production load.
+Also verify wrong origin, wrong token, oversized messages, malformed known events, unsupported protocol v2, provider startup timeout, Hermes SSE idle timeout, and state-file permission/corruption failures all fail visibly without exposing secrets.
 
 ## Provider Notes
 
-OpenAI documents WebSockets as appropriate for server-to-server Realtime integrations and recommends WebRTC for browser/mobile clients that connect directly to OpenAI. `hermes-live` keeps provider credentials server-side, so its provider connection is a server-side WebSocket pipeline.
+OpenAI's server-side Realtime WebSocket fits this gateway because provider credentials remain on the server. `OPENAI_REALTIME_TURN_DETECTION=disabled` uses client `audio.end`; `semantic_vad` and `server_vad` delegate boundaries to OpenAI. The gateway does not implicitly enable OpenAI's separately billed spoken-input transcription model.
 
-The currently documented OpenAI voice-agent model is `gpt-realtime-2.1`. Treat model-name overrides as compatibility work: run this complete checklist before advertising another model as supported.
+Gemini Live expects raw PCM and returns raw PCM. The gateway normalizes sample rates, but clients must report their true capture rate. Gemini 3.1 mid-session text uses realtime input; `sendClientContent` remains an SDK compatibility fallback for initial history behavior.
 
-OpenAI Realtime can run with VAD or push-to-talk. In this repo, `OPENAI_REALTIME_TURN_DETECTION=disabled` means the client sends `audio.end`; `semantic_vad` and `server_vad` delegate turn boundaries to OpenAI.
+The Gemini adapter is a single-connection preview path without context-window compression, session resumption, or `GoAway` migration. A durable Hermes task can outlive that provider connection, but the Gemini conversation itself is not indefinite. Test the session duration required by your deployment.
 
-The gateway surfaces assistant audio transcripts emitted by the voice-agent session. It does not currently enable OpenAI's separate spoken-input transcription model, so do not expect user-audio transcript lines in OpenAI mode. OpenAI documents input transcription as an optional, separately billed model; adding it should make the model and cost visible in configuration rather than enabling it implicitly.
+## What This Does Not Prove
 
-For Realtime 2 models, `OPENAI_REALTIME_REASONING_EFFORT` accepts `minimal`, `low`, `medium`, `high`, or `xhigh`. Keep `low` until live testing proves the workflow needs deeper reasoning.
-
-Clients can send `response.cancel` before a barge-in or new turn. The OpenAI adapter maps that to OpenAI Realtime's `response.cancel` event when a response is pending or active.
-
-When OpenAI VAD reports speech start, the gateway emits `input.speech_started`. Browser and mobile clients should stop local assistant playback immediately and send `response.cancel`; include `truncate` when they have audio item metadata for queued or partially heard assistant audio.
-
-Gemini Live expects raw PCM input and returns raw PCM output. The gateway normalizes PCM sample rates for the provider adapters, so clients should report the true capture sample rate in the audio MIME type.
-
-The default `GEMINI_MODEL` is the Gemini API Live preview model used by this repo. Gemini Enterprise / Vertex deployments can expose a narrower supported-model list, so override `GEMINI_MODEL` to an Enterprise-supported Live model if `session.start` returns a provider model error.
-
-For Gemini 3.1 Live, text updates during an active conversation go through `sendRealtimeInput({ text })`. `sendClientContent` is kept only as an SDK compatibility fallback because current Gemini 3.1 Live guidance limits client content to initial context history seeding.
-
-The current Gemini adapter is a single-connection preview path: it does not yet configure context-window compression or implement session resumption and `GoAway` migration. Google documents finite audio-only session and underlying connection lifetimes, so do not claim indefinite or durable Gemini sessions. Complete a long-session test appropriate to your deployment window; reconnect/resumption support is tracked in the roadmap.
+- multi-tenant authorization or per-user quotas;
+- multi-node gateway failover or shared durable storage;
+- provider quota, latency, regional availability, or long-session behavior beyond the test window;
+- recovery of in-progress work across a Hermes Agent restart;
+- microphone/audio behavior on browsers and devices not manually tested;
+- reversibility of Hermes side effects.
 
 References:
 
-- OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime
-- OpenAI Realtime WebSocket guide: https://developers.openai.com/api/docs/guides/realtime-websocket
-- OpenAI Realtime conversations: https://developers.openai.com/api/docs/guides/realtime-conversations
-- OpenAI Realtime input-transcription costs: https://developers.openai.com/api/docs/guides/realtime-costs#input-transcription-costs
-- OpenAI input-audio transcription event: https://developers.openai.com/api/reference/resources/realtime/server-events#conversation.item.input_audio_transcription.completed
-- OpenAI GPT-Realtime-2.1 model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1
-- Gemini Live API: https://ai.google.dev/gemini-api/docs/live-api
-- Gemini Live session management: https://ai.google.dev/gemini-api/docs/live-api/session-management
-- Gemini Enterprise Live API reference: https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/multimodal-live
+- [OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime)
+- [OpenAI Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations)
+- [OpenAI Realtime WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket)
+- [Gemini Live API](https://ai.google.dev/gemini-api/docs/live-api)
+- [Gemini Live session management](https://ai.google.dev/gemini-api/docs/live-api/session-management)

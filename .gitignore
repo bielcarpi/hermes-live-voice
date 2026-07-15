@@ -21,6 +21,10 @@ id_rsa*
 id_ed25519*
 **/id_ed25519*
 *.tgz
+tasks-v1.json
+**/tasks-v1.json
+.tasks-v1.json.*.tmp
+**/.tasks-v1.json.*.tmp
 coverage/
 release/
 .npm/

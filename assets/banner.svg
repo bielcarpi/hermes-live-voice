@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 260" role="img" aria-labelledby="title desc">
   <title id="title">Hermes Live Voice</title>
-  <desc id="desc">Retro pixel-style banner reading Hermes Live Voice with the tagline Talk to Hermes like a live call.</desc>
+  <desc id="desc">Retro pixel-style banner reading Hermes Live Voice with the tagline Keep talking. Hermes keeps working.</desc>
   <defs>
     <clipPath id="lowerStripe">
       <rect x="0" y="145" width="1280" height="74" />
@@ -23,7 +23,7 @@
     <g clip-path="url(#lowerStripe)">
       <text x="66" y="154" font-size="80" fill="#d57921">HERMES LIVE VOICE</text>
     </g>
-    <text x="70" y="194" font-size="22" fill="#e7edf7" letter-spacing="5">TALK TO HERMES LIKE A LIVE CALL</text>
+    <text x="70" y="194" font-size="22" fill="#e7edf7" letter-spacing="5">KEEP TALKING. HERMES KEEPS WORKING.</text>
   </g>
 
   <g fill="#ffd21a" opacity="0.9">

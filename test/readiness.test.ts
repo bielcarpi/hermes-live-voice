@@ -13,12 +13,16 @@ describe("readiness", () => {
     );
 
     expect(report.ok).toBe(false);
-    expect(report.gateway).toMatchObject({ ok: true, host: "127.0.0.1" });
+    expect(report.gateway).toMatchObject({
+      ok: true,
+      host: "127.0.0.1",
+      tasks: { durable: true, maxConcurrent: 3, maxQueued: 32, maxRetained: 200 },
+    });
     expect(report.hermes).toMatchObject({
       ok: false,
       baseUrl: "http://127.0.0.1:9",
       approvals: {
-        uiSupported: true,
+        uiSupported: false,
         interactive: false,
         fallback: "deny_all_then_stop",
         requiredFeature: "run_approval_response_by_id",
@@ -65,7 +69,7 @@ describe("readiness", () => {
       baseUrl: "http://injected-hermes.local",
       model: "hermes-agent",
       approvals: {
-        uiSupported: true,
+        uiSupported: false,
         interactive: false,
         fallback: "deny_all_then_stop",
         requiredFeature: "run_approval_response_by_id",
@@ -91,7 +95,7 @@ describe("readiness", () => {
     expect(JSON.stringify(report)).not.toContain("api-version");
   });
 
-  it("reports interactive approvals only when Hermes advertises targeted responses", async () => {
+  it("records upstream targeting but keeps v0.5 approvals fail-closed", async () => {
     const hermes = {
       baseUrl: "http://targeted-hermes.local",
       assertRunsSupported: vi.fn(async () => ({
@@ -115,8 +119,9 @@ describe("readiness", () => {
     expect(report.hermes).toMatchObject({
       ok: true,
       approvals: {
-        uiSupported: true,
-        interactive: true,
+        uiSupported: false,
+        interactive: false,
+        upstreamTargetedResponseAdvertised: true,
         fallback: "deny_all_then_stop",
         requiredFeature: "run_approval_response_by_id",
         negotiated: true,

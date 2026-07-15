@@ -32,10 +32,11 @@ describe("Hermes Agent v0.18.2 API fixtures", () => {
     });
     expect(capabilities.features).not.toHaveProperty("run_approval_response_by_id");
     expect(hermesApprovalCompatibility(capabilities)).toEqual({
-      uiSupported: true,
+      uiSupported: false,
       interactive: false,
       fallback: "deny_all_then_stop",
       requiredFeature: "run_approval_response_by_id",
+      upstreamTargetedResponseAdvertised: false,
       negotiated: true,
     });
   });

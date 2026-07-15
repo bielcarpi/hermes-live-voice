@@ -1,12 +1,10 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, cp, lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { stdin as input, stderr as approvalOutput } from "node:process";
-import { createInterface } from "node:readline/promises";
+import { stdin as input } from "node:process";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { assertRuntimeConfig, loadConfig, publicBaseUrl } from "./config.js";
@@ -17,13 +15,16 @@ import { buildReadinessReport } from "./readiness.js";
 import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
-import { promptForOneShotApproval } from "./cli/one-shot-approval.js";
 import { normalizeGatewayWebSocketUrl, runInteractiveTerminal, sanitizeTerminalText } from "./cli/terminal-session.js";
+import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
+import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
 const packageRequire = createRequire(import.meta.url);
 const PACKAGE_VERSION = (packageRequire("../package.json") as { version: string }).version;
 const DEFAULT_TEXT_CLIENT_READY_TIMEOUT_MS = 10_000;
+const DEFAULT_TEXT_CLIENT_RESULT_TIMEOUT_MS = 60 * 60 * 1_000;
+const DIRECT_RESPONSE_SETTLE_MS = 100;
 const MIN_TEXT_CLIENT_SERVER_MESSAGE_BYTES = 2_000_000;
 const MAX_TEXT_CLIENT_OUTPUT_CHARS = 200_000;
 const MAX_TEXT_CLIENT_ID_CHARS = 256;
@@ -151,8 +152,8 @@ Usage:
   hermes-live --version     Print the installed package version
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
-  hermes-live client "..."  Send one text prompt through a running gateway
-  hermes-live terminal      Open the interactive text-control gateway console
+  hermes-live client "..."  Send one prompt; wait for its exact task result
+  hermes-live terminal      Open the interactive conversation and task inbox
   hermes-live chat          Alias for terminal
   hermes-live check         Check Hermes capabilities and realtime provider config
   hermes-live provider-smoke Open and close a real Gemini/OpenAI provider session
@@ -174,20 +175,22 @@ Optional:
   HERMES_LIVE_ALLOW_UNAUTHENTICATED  Unsafe opt-out for network-accessible binds
   HERMES_LIVE_MAX_TEXT_CHARS Text/tool-call character limit, default 20000
   HERMES_LIVE_MAX_SESSIONS Concurrent WebSocket session limit, default 8
-  HERMES_LIVE_RUN_EVENT_DETAIL summary, raw, or none; default summary
   HERMES_LIVE_TRUST_CLIENT_IDENTITY Allow profileId/userLabel from clients; default false
   HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS  Hermes run SSE idle timeout, default 120000
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
   HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
   HERMES_LIVE_CLIENT_READY_TIMEOUT_MS  One-shot client handshake timeout, default 10000
+  HERMES_LIVE_CLIENT_RESULT_TIMEOUT_MS One-shot response/task timeout, default 3600000
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2.1
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
 
 Terminal voice:
   The terminal console controls a remote Hermes Live session without native
-  audio dependencies. For local microphone use, run Hermes and press Ctrl+B
-  for official Hermes Voice Mode. Use the Dashboard/browser UI for gateway audio.
+  audio dependencies. Use /tasks, /status <taskId>, /result <taskId>, and
+  /stop <taskId>. Quitting only detaches; server-owned tasks keep running.
+  For local microphone use, run Hermes and press Ctrl+B for official Hermes
+  Voice Mode. Use the Dashboard/browser UI for gateway audio.
 
 Plugin options:
   --dir <path>              Hermes plugins directory, default ~/.hermes/plugins
@@ -339,6 +342,10 @@ async function runTextClient(config: AppConfig, text: string): Promise<void> {
     process.env.HERMES_LIVE_CLIENT_READY_TIMEOUT_MS,
     DEFAULT_TEXT_CLIENT_READY_TIMEOUT_MS,
   );
+  const resultTimeoutMs = positiveInt(
+    process.env.HERMES_LIVE_CLIENT_RESULT_TIMEOUT_MS,
+    DEFAULT_TEXT_CLIENT_RESULT_TIMEOUT_MS,
+  );
   const ws = new WebSocket(url, {
     ...(headers ? { headers } : {}),
     handshakeTimeout: readyTimeoutMs,
@@ -346,87 +353,104 @@ async function runTextClient(config: AppConfig, text: string): Promise<void> {
     maxPayload: textClientServerMessageBytes(config),
     perMessageDeflate: false,
   });
-  const approvalReader = createInterface({ input, output: approvalOutput });
   const state: TextClientState = {
     directTranscript: [],
     directTranscriptChars: 0,
-    hermesRunStarted: false,
+    knownTaskIds: new Set(),
     sessionReady: false,
     finished: false,
   };
 
-  try {
-    await new Promise<void>((resolve, reject) => {
-      let inboundQueue = Promise.resolve();
-      let readyTimeout: NodeJS.Timeout | undefined;
-      const clearReadyTimeout = (): void => {
-        if (!readyTimeout) return;
-        clearTimeout(readyTimeout);
-        readyTimeout = undefined;
-      };
-      const finish = (error?: Error, terminate = false) => {
-        if (state.finished) {
-          return;
-        }
-        state.finished = true;
-        clearReadyTimeout();
-        if (terminate && ws.readyState !== WebSocket.CLOSED) {
-          ws.terminate();
-        } else if (ws.readyState === WebSocket.OPEN) {
-          ws.close(1000, "client complete");
-        }
-        error ? reject(error) : resolve();
-      };
-      const markSessionReady = (): void => {
-        clearReadyTimeout();
-      };
-
-      readyTimeout = setTimeout(() => {
-        finish(
-          new Error(`Gateway did not complete the WebSocket/session.ready handshake within ${readyTimeoutMs}ms.`),
-          true,
-        );
-      }, readyTimeoutMs);
-      readyTimeout.unref?.();
-
-      ws.once("open", () => {
-        if (state.finished) return;
+  await new Promise<void>((resolve, reject) => {
+    let inboundQueue = Promise.resolve();
+    let readyTimeout: NodeJS.Timeout | undefined;
+    let resultTimeout: NodeJS.Timeout | undefined;
+    const clearTimers = (): void => {
+      if (readyTimeout) clearTimeout(readyTimeout);
+      if (resultTimeout) clearTimeout(resultTimeout);
+      if (state.directCompletionTimer) clearTimeout(state.directCompletionTimer);
+      readyTimeout = undefined;
+      resultTimeout = undefined;
+      state.directCompletionTimer = undefined;
+    };
+    const finish = (error?: Error, terminate = false): void => {
+      if (state.finished) return;
+      state.finished = true;
+      clearTimers();
+      if (terminate && ws.readyState !== WebSocket.CLOSED) {
+        ws.terminate();
+      } else if (ws.readyState === WebSocket.OPEN) {
         try {
-          sendTextClientMessage(ws, {
-            type: "session.start",
-            protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
-            profileId: "terminal",
-            userLabel: process.env.USER ?? "terminal",
-          });
-        } catch (error) {
-          finish(error instanceof Error ? error : new Error(String(error)), true);
+          sendTextClientMessage(ws, { type: "session.close", id: "client_close", detach: true });
+        } finally {
+          ws.close(1000, "client detached");
         }
-      });
-      ws.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error)), true));
-      ws.once("close", (code, reason) => {
-        if (!state.finished) {
-          finish(new Error(`Gateway WebSocket closed before completing the request: ${code} ${reason.toString("utf8")}`));
-        }
-      });
-      ws.on("message", (raw) => {
-        if (state.finished) return;
-        inboundQueue = inboundQueue
-          .then(() => handleClientServerMessage(ws, raw, text, approvalReader, state, markSessionReady, finish))
-          .catch((error) => finish(error instanceof Error ? error : new Error(String(error)), true));
-      });
+      }
+      error ? reject(error) : resolve();
+    };
+    const markSessionReady = (): void => {
+      if (readyTimeout) clearTimeout(readyTimeout);
+      readyTimeout = undefined;
+      resultTimeout = setTimeout(() => {
+        const message = state.boundTaskId
+          ? `Timed out waiting for Hermes task ${state.boundTaskId}; the one-shot client detached and the server-owned task may still be running.`
+          : "Timed out waiting for the realtime response; the one-shot client detached.";
+        finish(new Error(message));
+      }, resultTimeoutMs);
+      resultTimeout.unref?.();
+    };
+    const scheduleDirectCompletion = (): void => {
+      if (state.directCompletionTimer || state.boundTaskId) return;
+      state.directCompletionTimer = setTimeout(() => {
+        state.directCompletionTimer = undefined;
+        if (!state.boundTaskId) finishDirectResponse(state, finish);
+      }, DIRECT_RESPONSE_SETTLE_MS);
+      state.directCompletionTimer.unref?.();
+    };
+
+    readyTimeout = setTimeout(() => {
+      finish(
+        new Error(`Gateway did not complete the WebSocket/session.ready handshake within ${readyTimeoutMs}ms.`),
+        true,
+      );
+    }, readyTimeoutMs);
+    readyTimeout.unref?.();
+
+    ws.once("open", () => {
+      if (state.finished) return;
+      try {
+        sendTextClientMessage(ws, {
+          type: "session.start",
+          protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+          profileId: "terminal",
+          userLabel: process.env.USER ?? "terminal",
+        });
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)), true);
+      }
     });
-  } finally {
-    approvalReader.close();
-  }
+    ws.once("error", (error) => finish(error instanceof Error ? error : new Error(String(error)), true));
+    ws.once("close", (code, reason) => {
+      if (!state.finished) {
+        finish(new Error(`Gateway WebSocket closed before completing the request: ${code} ${reason.toString("utf8")}`));
+      }
+    });
+    ws.on("message", (raw) => {
+      if (state.finished) return;
+      inboundQueue = inboundQueue
+        .then(() => handleClientServerMessage(ws, raw, text, state, markSessionReady, scheduleDirectCompletion, finish))
+        .catch((error) => finish(error instanceof Error ? error : new Error(String(error)), true));
+    });
+  });
 }
 
 async function handleClientServerMessage(
   ws: WebSocket,
   raw: WebSocket.RawData,
   text: string,
-  approvalReader: ReturnType<typeof createInterface>,
   state: TextClientState,
   markSessionReady: () => void,
+  scheduleDirectCompletion: () => void,
   finish: (error?: Error) => void,
 ): Promise<void> {
   if (state.finished) return;
@@ -446,24 +470,28 @@ async function handleClientServerMessage(
       requiredString(message, "sessionId", "session.ready", MAX_TEXT_CLIENT_ID_CHARS);
       state.sessionReady = true;
       markSessionReady();
-      sendTextClientMessage(ws, { type: "text.input", text });
+      sendTextClientMessage(ws, { type: "text.input", id: "client_input", text });
       break;
     }
-    case "run.started": {
-      const runId = requiredString(message, "runId", "run.started", MAX_TEXT_CLIENT_ID_CHARS);
-      if (state.hermesRunStarted) throw new Error("Gateway sent duplicate run.started messages.");
-      state.hermesRunStarted = true;
-      state.activeRunId = runId;
-      console.error(`Hermes run started: ${sanitizeTerminalText(runId, MAX_TEXT_CLIENT_ID_CHARS)}`);
+    case "task.accepted": {
+      const taskId = message.taskId;
+      if (!state.boundTaskId && state.knownTaskIds.has(taskId)) break;
+      if (!state.boundTaskId) {
+        state.boundTaskId = taskId;
+        state.knownTaskIds.add(taskId);
+        if (state.directCompletionTimer) clearTimeout(state.directCompletionTimer);
+        state.directCompletionTimer = undefined;
+        console.error(`Hermes task accepted: ${sanitizeTerminalText(taskId, MAX_TEXT_CLIENT_ID_CHARS)}`);
+      } else if (state.boundTaskId !== taskId) {
+        console.error(
+          `Additional Hermes task accepted: ${sanitizeTerminalText(taskId, MAX_TEXT_CLIENT_ID_CHARS)}; waiting for ${sanitizeTerminalText(state.boundTaskId, MAX_TEXT_CLIENT_ID_CHARS)}.`,
+        );
+      }
       break;
     }
     case "transcript.delta": {
-      const speaker = requiredString(message, "speaker", "transcript.delta", 16);
-      if (!(["user", "assistant", "system"] as string[]).includes(speaker)) {
-        throw new Error("Gateway transcript.delta speaker is invalid.");
-      }
-      const delta = requiredString(message, "text", "transcript.delta", MAX_TEXT_CLIENT_OUTPUT_CHARS, true);
-      if (!state.hermesRunStarted && speaker === "assistant") {
+      if (!state.boundTaskId && message.speaker === "assistant") {
+        const delta = message.text;
         state.directTranscriptChars += delta.length;
         if (state.directTranscriptChars > MAX_TEXT_CLIENT_OUTPUT_CHARS) {
           throw new Error("Gateway direct transcript exceeded the one-shot client output limit.");
@@ -473,43 +501,61 @@ async function handleClientServerMessage(
       break;
     }
     case "response.completed":
-      if (!state.hermesRunStarted) finishDirectResponse(state, finish);
+      if (!state.boundTaskId) scheduleDirectCompletion();
       break;
     case "response.failed":
-      if (!state.hermesRunStarted) {
-        finish(new Error(requiredString(message, "error", "response.failed", 2_000)));
-      }
+      if (!state.boundTaskId) finish(new Error(message.error));
       break;
     case "response.cancelled":
-      if (!state.hermesRunStarted) finish(new Error("Realtime provider response was cancelled."));
+      if (!state.boundTaskId) finish(new Error("Realtime provider response was cancelled."));
       break;
-    case "approval.request": {
-      const runId = requiredString(message, "runId", "approval.request", MAX_TEXT_CLIENT_ID_CHARS);
-      if (state.activeRunId && runId !== state.activeRunId) {
-        throw new Error("Gateway approval.request did not match the active Hermes run.");
+    case "task.started":
+      if (message.taskId === state.boundTaskId) {
+        console.error(`Hermes task started: ${sanitizeTerminalText(message.taskId, MAX_TEXT_CLIENT_ID_CHARS)}`);
       }
-      const approval = recordValue(message.approval) ?? recordValue(message.event);
-      if (!approval) throw new Error("Gateway approval.request did not include approval details.");
-      await respondToApproval(ws, approvalReader, runId, approval);
+      break;
+    case "task.completed": {
+      if (message.taskId !== state.boundTaskId) break;
+      const output = message.result.output;
+      if (output !== undefined) {
+        printOneShotOutput(output);
+        finish();
+      } else {
+        state.resultRequestId = "client_task_result";
+        sendTextClientMessage(ws, {
+          type: "task.get",
+          id: state.resultRequestId,
+          taskId: state.boundTaskId,
+        });
+      }
       break;
     }
-    case "run.completed": {
-      assertActiveRunMessage(message, state, "run.completed");
-      const output = requiredString(message, "output", "run.completed", MAX_TEXT_CLIENT_OUTPUT_CHARS, true);
-      console.log(sanitizeTerminalText(output, MAX_TEXT_CLIENT_OUTPUT_CHARS));
-      finish();
+    case "task.snapshot": {
+      if (message.reason === "initial" || message.reason === "reconnect") {
+        for (const task of message.tasks) state.knownTaskIds.add(task.taskId);
+        break;
+      }
+      if (!state.resultRequestId || message.requestId !== state.resultRequestId) break;
+      if (message.reason !== "get") throw new Error("Gateway task snapshot did not answer the one-shot task.get request.");
+      if (message.tasks.length !== 1 || message.tasks[0]?.taskId !== state.boundTaskId) {
+        throw new Error("Gateway task.get snapshot did not match the accepted Hermes task.");
+      }
+      finishFromTaskSnapshot(message.tasks[0], finish);
       break;
     }
-    case "run.failed":
-      assertActiveRunMessage(message, state, "run.failed");
-      finish(new Error(requiredString(message, "error", "run.failed", 2_000)));
+    case "task.failed":
+      if (message.taskId === state.boundTaskId) finish(new Error(`Hermes task failed: ${message.error.message}`));
       break;
-    case "run.stopped":
-      assertActiveRunMessage(message, state, "run.stopped");
-      finish(new Error(`Hermes run stopped: ${requiredString(message, "status", "run.stopped", 256)}`));
+    case "task.cancelled":
+      if (message.taskId === state.boundTaskId) {
+        finish(new Error(`Hermes task was cancelled${message.reason ? `: ${message.reason}` : "."}`));
+      }
+      break;
+    case "task.unknown":
+      if (message.taskId === state.boundTaskId) finish(new Error(`Hermes task outcome is unknown: ${message.error.message}`));
       break;
     case "session.error":
-      finish(new Error(requiredString(message, "message", "session.error", 2_000)));
+      finish(new Error(message.message));
       break;
   }
 }
@@ -527,13 +573,15 @@ function finishDirectResponse(state: TextClientState, finish: (error?: Error) =>
 interface TextClientState {
   directTranscript: string[];
   directTranscriptChars: number;
-  hermesRunStarted: boolean;
+  knownTaskIds: Set<string>;
   sessionReady: boolean;
   finished: boolean;
-  activeRunId?: string;
+  boundTaskId?: string;
+  resultRequestId?: string;
+  directCompletionTimer?: NodeJS.Timeout;
 }
 
-function parseTextClientServerMessage(raw: WebSocket.RawData): Record<string, unknown> & { type: string } {
+function parseTextClientServerMessage(raw: WebSocket.RawData): ServerMessage {
   let value: unknown;
   try {
     value = JSON.parse(raw.toString("utf8")) as unknown;
@@ -544,7 +592,16 @@ function parseTextClientServerMessage(raw: WebSocket.RawData): Record<string, un
   if (!message || typeof message.type !== "string" || !message.type || message.type.length > 128) {
     throw new Error("Gateway sent an invalid protocol message.");
   }
-  return message as Record<string, unknown> & { type: string };
+  if (message.type === "session.ready" && message.protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
+    throw new Error(
+      `Gateway protocol mismatch: expected v${HERMES_LIVE_PROTOCOL_VERSION}, received ${String(message.protocolVersion)}.`,
+    );
+  }
+  try {
+    return parseProtocolServerMessage(value);
+  } catch {
+    throw new Error(`Gateway ${message.type} did not match the bounded protocol-v${HERMES_LIVE_PROTOCOL_VERSION} schema.`);
+  }
 }
 
 function requiredString(
@@ -573,13 +630,6 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function assertActiveRunMessage(message: Record<string, unknown>, state: TextClientState, type: string): void {
-  const runId = requiredString(message, "runId", type, MAX_TEXT_CLIENT_ID_CHARS);
-  if (!state.activeRunId || runId !== state.activeRunId) {
-    throw new Error(`Gateway ${type} did not match the active Hermes run.`);
-  }
-}
-
 function sendTextClientMessage(ws: WebSocket, message: Record<string, unknown>): void {
   if (ws.readyState !== WebSocket.OPEN) throw new Error("Gateway WebSocket is not open.");
   ws.send(JSON.stringify(message));
@@ -590,30 +640,25 @@ function textClientServerMessageBytes(config: AppConfig): number {
   return Math.max(MIN_TEXT_CLIENT_SERVER_MESSAGE_BYTES, base64AudioBytes);
 }
 
-async function respondToApproval(
-  ws: WebSocket,
-  approvalReader: ReturnType<typeof createInterface>,
-  runId: string,
-  event: unknown,
-): Promise<void> {
-  const approvalId = typeof (event as { approvalId?: unknown })?.approvalId === "string"
-    ? (event as { approvalId: string }).approvalId
-    : "";
-  if (!approvalId || approvalId.length > 256) {
-    throw new Error("Gateway approval request did not include a valid approval id.");
+function printOneShotOutput(output: string): void {
+  console.log(sanitizeTerminalText(output, MAX_TEXT_CLIENT_OUTPUT_CHARS));
+}
+
+function finishFromTaskSnapshot(task: PublicTaskSnapshot, finish: (error?: Error) => void): void {
+  if (task.state === "completed") {
+    printOneShotOutput(task.result?.output ?? task.result?.summary ?? "");
+    finish();
+    return;
   }
-  console.error(`Approval requested for ${sanitizeTerminalText(runId, MAX_TEXT_CLIENT_ID_CHARS)}:`);
-  const choice = await promptForOneShotApproval(approvalReader, event, {
-    interactive: input.isTTY === true,
-    writeLine: (line) => console.error(line),
-  });
-  sendTextClientMessage(ws, {
-    type: "approval.respond",
-    id: `client_approval_${randomUUID().replaceAll("-", "")}`,
-    runId,
-    approvalId,
-    choice,
-  });
+  if (task.state === "failed" || task.state === "unknown") {
+    finish(new Error(`Hermes task ${task.state}: ${task.error?.message ?? "No result is available."}`));
+    return;
+  }
+  if (task.state === "cancelled") {
+    finish(new Error("Hermes task was cancelled."));
+    return;
+  }
+  finish(new Error(`Hermes task.get returned ${task.state} instead of a completed result.`));
 }
 
 function defaultGatewayWebSocketUrl(config: AppConfig): string {

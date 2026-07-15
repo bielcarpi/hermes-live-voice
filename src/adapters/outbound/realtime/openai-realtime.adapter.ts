@@ -2,8 +2,10 @@ import WebSocket from "ws";
 import { normalizePcm16Audio } from "../../../domain/audio/pcm.js";
 import type { AppConfig } from "../../../config.js";
 import {
+  requireLiveTaskNotification,
   type LiveModelAudio,
   type LiveModelEvent,
+  type LiveTaskNotification,
   type LiveToolCall,
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 import type { RealtimeResponseTruncation } from "../../../domain/protocol/client-protocol.js";
@@ -23,7 +25,14 @@ const DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS = 4_000;
 const OPENAI_MAX_EVENT_BYTES = 16 * 1024 * 1024;
 const OPENAI_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
-const OPENAI_MAX_HANDLED_TOOL_CALLS = 4_096;
+export const OPENAI_MAX_HANDLED_TOOL_CALLS = 4_096;
+export const OPENAI_MAX_QUEUED_RESPONSE_REQUESTS = 32;
+const OPENAI_MAX_TERMINAL_RESPONSE_IDS = 256;
+
+interface OpenAIResponseRequest {
+  kind: "default" | "task_notification";
+  response?: Record<string, unknown>;
+}
 
 export class OpenAIRealtimeAdapter implements LiveModelAdapter {
   constructor(
@@ -121,12 +130,15 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
 
 class OpenAIRealtimeSession implements LiveModelSession {
   private readonly handledToolCalls = new Map<string, string>();
+  private readonly terminalResponseIds = new Set<string>();
+  private readonly queuedResponses: OpenAIResponseRequest[] = [];
   private responseActive = false;
   private responsePending = false;
-  private responseCreateQueued = false;
+  private activeResponseId?: string;
   private cancellationPending = false;
   private cancelAckTimeout?: ReturnType<typeof setTimeout>;
   private closeOperation?: Promise<void>;
+  private closing = false;
   private ready = false;
 
   constructor(
@@ -137,7 +149,8 @@ class OpenAIRealtimeSession implements LiveModelSession {
   ) {
     this.ws.on("message", (raw) => this.handleMessage(raw));
     this.ws.on("close", (code, reason) => {
-      this.clearCancelAckTimeout();
+      this.closing = true;
+      this.resetResponseState();
       callbacks.onClose?.({ code, reason: reason.toString("utf8") });
     });
     this.ws.on("error", (error) => callbacks.onError?.(error));
@@ -156,19 +169,23 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   async sendText(text: string): Promise<void> {
+    const responseRequest: OpenAIResponseRequest = { kind: "default" };
+    this.assertResponseCanBeRequested(responseRequest);
     this.sendJson({
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
     });
-    this.requestResponse();
+    this.requestResponse(responseRequest);
   }
 
   async sendAudioStreamEnd(): Promise<void> {
     if (this.config.turnDetection !== "disabled") {
       return;
     }
+    const responseRequest: OpenAIResponseRequest = { kind: "default" };
+    this.assertResponseCanBeRequested(responseRequest);
     this.sendJson({ type: "input_audio_buffer.commit" });
-    this.requestResponse();
+    this.requestResponse(responseRequest);
   }
 
   async cancelResponse(_reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean> {
@@ -189,19 +206,32 @@ class OpenAIRealtimeSession implements LiveModelSession {
     if (!call.id) {
       throw new Error(`OpenAI function call ${call.name} did not include a call_id.`);
     }
+    const responseRequest: OpenAIResponseRequest = { kind: "default" };
+    this.assertResponseCanBeRequested(responseRequest);
     this.sendJson({
       type: "conversation.item.create",
       item: { type: "function_call_output", call_id: call.id, output: JSON.stringify(response) },
     });
-    this.requestResponse();
+    this.requestResponse(responseRequest);
+  }
+
+  async sendTaskNotification(notification: LiveTaskNotification): Promise<void> {
+    this.requestResponse({
+      kind: "task_notification",
+      response: buildOpenAITaskNotificationResponse(notification),
+    });
   }
 
   close(): Promise<void> {
-    if (this.ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+    if (this.ws.readyState === WebSocket.CLOSED) {
+      this.closing = true;
+      this.resetResponseState();
+      return Promise.resolve();
+    }
     if (this.closeOperation) return this.closeOperation;
 
-    this.clearCancelAckTimeout();
-    this.responseCreateQueued = false;
+    this.closing = true;
+    this.resetResponseState();
     const operation = closeWebSocketAndWait(
       this.ws,
       1000,
@@ -216,6 +246,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   private handleMessage(raw: WebSocket.RawData): void {
+    if (this.closing) return;
     const event = parseOpenAIEvent(raw);
     if (!event) {
       this.handleProviderError(new Error("OpenAI Realtime event was not valid JSON."), true);
@@ -242,8 +273,12 @@ class OpenAIRealtimeSession implements LiveModelSession {
           continue;
         }
         if (this.handledToolCalls.size >= OPENAI_MAX_HANDLED_TOOL_CALLS) {
-          const oldest = this.handledToolCalls.keys().next().value;
-          if (oldest) this.handledToolCalls.delete(oldest);
+          this.handleProviderError(
+            new Error(
+              `OpenAI Realtime exceeded the safe lifetime limit of ${OPENAI_MAX_HANDLED_TOOL_CALLS} tool calls.`,
+            ),
+          );
+          return;
         }
         this.handledToolCalls.set(key, fingerprint);
       }
@@ -255,8 +290,12 @@ class OpenAIRealtimeSession implements LiveModelSession {
       );
       return;
     }
-    this.trackResponseState(event, deliverableEvents.some((modelEvent) => modelEvent.type === "tool_call"));
+    const lifecycleAccepted = this.trackResponseState(
+      event,
+      deliverableEvents.some((modelEvent) => modelEvent.type === "tool_call"),
+    );
     for (const modelEvent of deliverableEvents) {
+      if (lifecycleAccepted === false && modelEvent.type === "response") continue;
       this.callbacks.onEvent(modelEvent);
     }
   }
@@ -274,10 +313,16 @@ class OpenAIRealtimeSession implements LiveModelSession {
     this.ws.send(serialized);
   }
 
-  private trackResponseState(event: any, deferQueuedResponse = false): void {
+  private trackResponseState(event: any, deferQueuedResponse = false): boolean | undefined {
     if (event?.type === "response.created") {
+      const responseId = openAIResponseId(event);
+      if (responseId && this.terminalResponseIds.has(responseId)) return false;
+      if (this.responseActive) return false;
+      if (responseId && this.activeResponseId && responseId !== this.activeResponseId) return false;
       this.responsePending = false;
       this.responseActive = true;
+      this.activeResponseId = responseId;
+      return true;
     } else if (
       event?.type === "response.done" ||
       event?.type === "response.cancelled" ||
@@ -286,59 +331,129 @@ class OpenAIRealtimeSession implements LiveModelSession {
       event?.response?.status === "cancelled" ||
       event?.response?.status === "failed"
     ) {
+      const responseId = openAIResponseId(event);
+      if (responseId && this.terminalResponseIds.has(responseId)) return false;
+      if (responseId && this.activeResponseId && responseId !== this.activeResponseId) return false;
+      // `response.created` precedes every terminal response on the Realtime
+      // protocol. Requiring an active response also makes an anonymous duplicate
+      // terminal event unable to release another queued request.
+      if (!this.responseActive) return false;
+      if (responseId) this.rememberTerminalResponseId(responseId);
       this.responsePending = false;
       this.responseActive = false;
+      this.activeResponseId = undefined;
       this.cancellationPending = false;
       this.clearCancelAckTimeout();
       if (!deferQueuedResponse) this.flushQueuedResponse();
+      return true;
     }
+    return undefined;
   }
 
-  private requestResponse(): void {
-    if (this.responsePending || this.responseActive || this.cancellationPending) {
-      this.responseCreateQueued = true;
+  private requestResponse(request: OpenAIResponseRequest): void {
+    if (this.closing) {
+      throw new Error("OpenAI Realtime session is closing.");
+    }
+    if (
+      this.responsePending ||
+      this.responseActive ||
+      this.cancellationPending ||
+      this.queuedResponses.length > 0
+    ) {
+      this.enqueueResponse(request);
+      this.flushQueuedResponse();
       return;
     }
-    this.responseCreateQueued = false;
-    this.createResponse();
+    this.createResponse(request);
   }
 
   private handleProviderError(error: unknown, closeBeforeReady = false): void {
     this.callbacks.onError?.(error);
     if (!this.ready && !closeBeforeReady) return;
-    this.responsePending = false;
-    this.responseActive = false;
-    this.responseCreateQueued = false;
-    this.cancellationPending = false;
-    this.clearCancelAckTimeout();
+    this.closing = true;
+    this.resetResponseState();
     closeWebSocket(this.ws, 1011, "OpenAI Realtime provider error");
   }
 
   private flushQueuedResponse(): void {
     if (
-      !this.responseCreateQueued ||
+      this.closing ||
+      this.queuedResponses.length === 0 ||
       this.responsePending ||
       this.responseActive ||
       this.cancellationPending
     ) {
       return;
     }
-    this.responseCreateQueued = false;
+    const request = this.queuedResponses.shift()!;
     try {
-      this.createResponse();
+      this.createResponse(request);
     } catch (error) {
-      this.callbacks.onError?.(error);
+      this.handleProviderError(error);
     }
   }
 
-  private createResponse(): void {
+  private createResponse(request: OpenAIResponseRequest): void {
     this.responsePending = true;
     try {
-      this.sendJson({ type: "response.create" });
+      this.sendJson({
+        type: "response.create",
+        ...(request.response ? { response: request.response } : {}),
+      });
     } catch (error) {
       this.responsePending = false;
       throw error;
     }
+  }
+
+  private enqueueResponse(request: OpenAIResponseRequest): void {
+    const tail = this.queuedResponses[this.queuedResponses.length - 1];
+    if (request.kind === "default" && tail?.kind === "default") {
+      return;
+    }
+    if (this.queuedResponses.length >= OPENAI_MAX_QUEUED_RESPONSE_REQUESTS) {
+      throw new Error(
+        `OpenAI Realtime response queue exceeded ${OPENAI_MAX_QUEUED_RESPONSE_REQUESTS} pending requests.`,
+      );
+    }
+    this.queuedResponses.push(request);
+  }
+
+  private assertResponseCanBeRequested(request: OpenAIResponseRequest): void {
+    if (this.closing) {
+      throw new Error("OpenAI Realtime session is closing.");
+    }
+    const wouldQueue = this.responsePending ||
+      this.responseActive ||
+      this.cancellationPending ||
+      this.queuedResponses.length > 0;
+    if (!wouldQueue) return;
+    const tail = this.queuedResponses[this.queuedResponses.length - 1];
+    if (request.kind === "default" && tail?.kind === "default") return;
+    if (this.queuedResponses.length >= OPENAI_MAX_QUEUED_RESPONSE_REQUESTS) {
+      throw new Error(
+        `OpenAI Realtime response queue exceeded ${OPENAI_MAX_QUEUED_RESPONSE_REQUESTS} pending requests.`,
+      );
+    }
+  }
+
+  private rememberTerminalResponseId(responseId: string): void {
+    if (this.terminalResponseIds.size >= OPENAI_MAX_TERMINAL_RESPONSE_IDS) {
+      const oldest = this.terminalResponseIds.values().next().value;
+      if (oldest) this.terminalResponseIds.delete(oldest);
+    }
+    this.terminalResponseIds.add(responseId);
+  }
+
+  private resetResponseState(): void {
+    this.responsePending = false;
+    this.responseActive = false;
+    this.activeResponseId = undefined;
+    this.cancellationPending = false;
+    this.queuedResponses.length = 0;
+    this.terminalResponseIds.clear();
+    this.handledToolCalls.clear();
+    this.clearCancelAckTimeout();
   }
 
   private beginCancellation(): void {
@@ -350,6 +465,8 @@ class OpenAIRealtimeSession implements LiveModelSession {
         `OpenAI Realtime did not confirm response cancellation within ${OPENAI_CANCEL_ACK_TIMEOUT_MS}ms.`,
       );
       this.callbacks.onError?.(error);
+      this.closing = true;
+      this.resetResponseState();
       closeWebSocket(this.ws, 1011, "OpenAI Realtime cancel timeout");
     }, OPENAI_CANCEL_ACK_TIMEOUT_MS);
     this.cancelAckTimeout.unref?.();
@@ -368,6 +485,29 @@ class OpenAIRealtimeSession implements LiveModelSession {
       this.cancelAckTimeout = undefined;
     }
   }
+}
+
+export function buildOpenAITaskNotificationResponse(
+  notification: LiveTaskNotification,
+): Record<string, unknown> {
+  const { announcement } = requireLiveTaskNotification(notification);
+  return {
+    conversation: "none",
+    input: [],
+    instructions: `Say exactly this one short task-status sentence and nothing else: ${JSON.stringify(announcement)}`,
+    output_modalities: ["audio"],
+    tools: [],
+    tool_choice: "none",
+    metadata: { hermes_live_purpose: "task_notification" },
+  };
+}
+
+function openAIResponseId(event: any): string | undefined {
+  return typeof event?.response?.id === "string"
+    ? event.response.id
+    : typeof event?.response_id === "string"
+      ? event.response_id
+      : undefined;
 }
 
 function closeWebSocket(ws: WebSocket, code: number, reason: string): void {

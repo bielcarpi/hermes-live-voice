@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type {
-  LiveModelAdapter,
-  LiveModelAudio,
-  LiveModelCallbacks,
-  LiveModelConnectParams,
-  LiveModelSession,
-  LiveToolCall,
+import {
+  requireLiveTaskNotification,
+  type LiveModelAdapter,
+  type LiveModelAudio,
+  type LiveModelCallbacks,
+  type LiveModelConnectParams,
+  type LiveModelSession,
+  type LiveTaskNotification,
+  type LiveToolCall,
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 
 export class MockLiveAdapter implements LiveModelAdapter {
@@ -37,8 +39,13 @@ class MockLiveSession implements LiveModelSession {
       type: "tool_call",
       call: {
         id: `mock_${randomUUID()}`,
-        name: "start_hermes_run",
-        args: { message: text },
+        name: "start_background_task",
+        args: {
+          message: text,
+          title: text.replace(/\s+/gu, " ").trim().slice(0, 120),
+          execution_mode: "exclusive",
+          resource_keys: ["workspace:default"],
+        },
       },
     });
   }
@@ -50,8 +57,19 @@ class MockLiveSession implements LiveModelSession {
   }
 
   async sendToolResponse(_call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
-    const output = typeof response.output === "string" ? response.output : JSON.stringify(response);
+    const output = typeof response.message === "string"
+      ? response.message
+      : typeof response.output === "string"
+        ? response.output
+        : "Hermes Live updated the background task.";
     this.callbacks.onEvent({ type: "text", text: output });
+    this.callbacks.onEvent({ type: "response", status: "completed" });
+  }
+
+  async sendTaskNotification(notification: LiveTaskNotification): Promise<void> {
+    const { announcement } = requireLiveTaskNotification(notification);
+    this.callbacks.onEvent({ type: "response", status: "started" });
+    this.callbacks.onEvent({ type: "text", text: announcement, speaker: "assistant", final: true });
     this.callbacks.onEvent({ type: "response", status: "completed" });
   }
 

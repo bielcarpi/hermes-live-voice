@@ -1,203 +1,115 @@
 # Client Protocol
 
-The public client protocol is JSON over WebSocket.
+Hermes Live protocol v3 is strict JSON over WebSocket:
 
 ```txt
 ws://127.0.0.1:8788/v1/live
 ```
 
-Use `wss://` behind TLS in production.
+Use `wss://` behind TLS for non-local clients. Protocol v3 is a breaking replacement for the old synchronous run lifecycle: every client must send `protocolVersion: 3`, and the gateway exposes stable server-owned tasks rather than upstream Hermes run ids.
 
-For a one-shot terminal smoke test, use:
-
-```sh
-hermes-live client "What is the current status?"
-```
-
-For a persistent text-control session, use `hermes-live terminal`. It exercises this same protocol while exposing task progress, provider interruption, Hermes task stop, and targeted approvals as terminal commands. Approval commands are enabled only when Hermes advertises `run_approval_response_by_id` and supplies a stable ID for the request. With a legacy uncorrelated approval contract, the terminal shows no actionable approval prompt; the gateway attempts to deny the pending queue, stops the Hermes run, and closes the voice session for operator verification. The terminal intentionally has no native audio dependency: use official Hermes Voice Mode (Ctrl+B) for a local microphone, or the Dashboard/browser client for remote gateway audio.
-
-From a built source checkout, replace `hermes-live` with `node dist/cli.js`.
-
-## Browser Client
-
-`hermes-live-voice/browser` is the canonical framework-independent browser client. It has no Node, provider SDK, or UI-framework runtime dependencies. The bundled web demo consumes the same module that is included in the packed npm artifact.
-
-```js
-import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
-
-const client = new HermesLiveClient({
-  webSocketUrlProvider: async () => {
-    const response = await fetch("/api/hermes-live/socket", {
-      credentials: "same-origin",
-    });
-    if (!response.ok) throw new Error("Live Voice is unavailable");
-    return (await response.json()).url;
-  },
-});
-
-client.on("transcript.delta", ({ speaker, text }) => renderTranscript(speaker, text));
-client.on("approval.request", renderApproval);
-client.on("error", ({ code, error }) => renderError(code, error.message));
-
-await client.connect();
-client.sendText("Inspect this repository");
-```
-
-The host endpoint must authenticate the browser and return a same-origin WebSocket proxy URL or a backend-issued short-lived ticket. The Hermes Live gateway does not mint those tickets itself. Do not put the installation-wide `HERMES_LIVE_AUTH_TOKEN` in a public bundle or browser storage.
-
-Every command method returns its generated request ID. `sendAudio()` returns `undefined` and emits `audio.dropped` when the browser WebSocket exceeds the configured backpressure limit. Unknown future server message types emit `unknownmessage`; malformed known lifecycle messages close the connection instead of corrupting local state.
-
-For microphone capture and PCM16 playback, compose `HermesLiveAudio` with a worklet URL owned by the host application. The gateway serves it at `/mic-worklet.js`, and the package exposes the source as `hermes-live-voice/browser/mic-worklet.js` for clients that copy or bundle static assets. Playback is serialized and bounded, and `interrupt()` returns OpenAI-compatible truncation metadata before sending `response.cancel`.
-
-The browser audio helper intentionally rejects G.711 output rather than decoding it as PCM16. Keep `OPENAI_REALTIME_INPUT_AUDIO_FORMAT=pcm16` and `OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT=pcm16` for browser voice clients until a client explicitly implements negotiated G.711 codecs.
+The TypeScript schemas in `src/domain/protocol/` and the browser validator in `clients/browser/hermes-live-client.js` are the normative contract.
 
 ## Authentication
 
-If `HERMES_LIVE_AUTH_TOKEN` is configured, clients must authenticate to:
+When `HERMES_LIVE_AUTH_TOKEN` is configured, authenticate:
 
 - `WS /v1/live`
 - `GET /ready`
 - `GET /v1/capabilities`
 
-`GET /health` remains public so load balancers and container health checks can probe the process without receiving gateway credentials.
-
-For HTTP endpoints and clients that can set headers:
+Server-side clients should send:
 
 ```txt
 Authorization: Bearer <token>
 ```
 
-Only for browser WebSocket clients that cannot set upgrade headers:
+Direct browser WebSockets that cannot set upgrade headers may use `/v1/live?token=<token>`. Treat that URL as a secret. Production browser integrations should instead use an authenticated same-origin WebSocket relay, as the Hermes Dashboard plugin does. `GET /health` stays public for health probes.
 
-```txt
-/v1/live?token=<token>
-```
+## Session Negotiation
 
-Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
-
-## HTTP Readiness
-
-`GET /ready` returns the same gateway, Hermes, and realtime readiness sections as `hermes-live check`.
-
-```json
-{
-  "status": "ready",
-  "checks": {
-    "gateway": { "ok": true, "authRequired": true },
-    "hermes": {
-      "ok": true,
-      "baseUrl": "http://127.0.0.1:8642",
-      "approvals": {
-        "uiSupported": true,
-        "interactive": false,
-        "fallback": "deny_all_then_stop",
-        "requiredFeature": "run_approval_response_by_id",
-        "negotiated": true
-      }
-    },
-    "realtime": {
-      "ok": true,
-      "configured": true,
-      "provider": "openai",
-      "model": "gpt-realtime-2.1",
-      "sessionChecked": false
-    }
-  }
-}
-```
-
-When any section is not ready, the endpoint returns `503` with that section's `error`.
-`sessionChecked: false` means readiness verified provider configuration, not a live Gemini/OpenAI session handshake.
-
-`GET /v1/capabilities` exposes the same approval object at `hermes.approvals`; readiness exposes it at `checks.hermes.approvals`. Approval UI support and safe upstream approval submission are separate capabilities. `uiSupported: true` means this gateway and its bundled clients implement approval controls. `interactive: true` is reported only after Hermes advertises `run_approval_response_by_id`. Otherwise uncorrelated approval requests use the `deny_all_then_stop` fail-closed fallback: the gateway attempts denial, stops the run, and closes the voice session instead of exposing positive choices. `negotiated: false` means the upstream capability probe itself did not complete, not that approval was implicitly enabled.
-
-## Client Limits
-
-Client message metadata such as request IDs, profile IDs, user labels, run IDs, MIME types, cancellation reasons, and playback truncation fields is bounded by the protocol before dispatch. Text input and provider tool-call text use `HERMES_LIVE_MAX_TEXT_CHARS`; audio frames use `HERMES_LIVE_MAX_AUDIO_BYTES`. PCM16 input must declare one integer `rate=` between 8,000 and 192,000 Hz. Resampling validates its target and refuses any calculated output above the 16 MiB allocation ceiling before allocating memory.
-
-The reverse path is bounded too. Provider transcript deltas, provider audio frames, retained Hermes output, usage payloads, raw run events, pre-ready provider events, and per-client WebSocket buffering all have hard ceilings. A provider that violates its negotiated output contract or a client that stops draining data is disconnected rather than allowed to grow process memory without bound.
-
-| Boundary | Default or hard ceiling |
-| --- | --- |
-| Client text | `HERMES_LIVE_MAX_TEXT_CHARS` (20,000; configurable up to 1,000,000) |
-| Decoded client/provider audio frame | `HERMES_LIVE_MAX_AUDIO_BYTES` (2,000,000; configurable up to 5,900,000) |
-| Queued inbound client messages | 256 messages / 8 MiB |
-| Pre-ready provider events | 256 events / 8 MiB |
-| Provider transcript delta | 20,000 characters |
-| Retained Hermes output | 200,000 characters |
-| Public raw run-event payload | 256,000 bytes |
-| Public usage payload | 64,000 bytes |
-| Individual provider tool response | 256,000 bytes; 4 MiB aggregate replay cache |
-| Browser inbound message | 8,000,000 bytes by default |
-| Browser queued playback | five seconds by default |
-
-Limits are protocol safety boundaries, not recommended application payload sizes.
-
-## Request IDs
-
-Every client message can include an `id` string. It is required for the mutating `approval.respond` message and optional elsewhere. When a message causes a `session.error`, the gateway echoes it as `requestId` so browser, mobile, and terminal clients can correlate validation or session-state failures.
-
-```json
-{
-  "type": "text.input",
-  "id": "req_123",
-  "text": "What changed?"
-}
-```
-
-## Start Session
-
-The first message must be `session.start`.
+The first client message must be:
 
 ```json
 {
   "type": "session.start",
-  "protocolVersion": 2,
-  "profileId": "default",
-  "userLabel": "alice"
+  "id": "start_1",
+  "protocolVersion": 3
 }
 ```
 
-The gateway owns Hermes memory identity by default. It uses `HERMES_LIVE_PROFILE_ID` and `HERMES_LIVE_USER_LABEL`, ignoring the two client fields above. Set `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true` only for a trusted-client deployment where clients are intentionally allowed to select Hermes memory scopes.
+Optional `profileId` and `userLabel` values are ignored unless the operator enables trusted client identity. The gateway rejects missing or unsupported versions before opening a provider session.
 
-The server replies:
+On success, the server sends `session.ready` followed by one or more bounded initial/reconnect snapshot frames:
 
 ```json
 {
   "type": "session.ready",
-  "protocolVersion": 2,
+  "protocolVersion": 3,
+  "requestId": "start_1",
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
   "hermes": {
     "model": "hermes-agent",
     "capabilities": {
-      "run_approval_response_by_id": true
+      "run_submission": true,
+      "run_status": true,
+      "run_events_sse": true,
+      "run_stop": true
     }
   },
   "realtime": {
     "provider": "openai",
     "model": "gpt-realtime-2.1",
     "audio": {
-      "input": {
-        "enabled": true,
-        "mimeType": "audio/pcm;rate=24000",
-        "recommendedFrameMs": 50
-      },
-      "output": {
-        "enabled": true,
-        "mimeType": "audio/pcm;rate=24000"
-      },
+      "input": { "enabled": true, "mimeType": "audio/pcm;rate=24000", "recommendedFrameMs": 50 },
+      "output": { "enabled": true, "mimeType": "audio/pcm;rate=24000" },
       "turnDetection": "disabled"
+    }
+  },
+  "tasks": {
+    "scope": "owner",
+    "sequence": "per_task",
+    "reconnect": "snapshot",
+    "durable": true,
+    "parallel": true,
+    "maxConcurrent": 3,
+    "maxRetained": 200,
+    "supports": {
+      "list": true,
+      "get": true,
+      "stop": true,
+      "resume": false,
+      "notificationAck": true
     }
   }
 }
 ```
 
-The current protocol version is `2`. Every client must send `protocolVersion: 2`; the gateway rejects missing or unsupported versions before opening a provider session. Protocol v2 is a breaking negotiation change: it makes approval correlation explicit, removes raw provider envelopes, and adds `run.stopping`. The `/v1/live` URL is retained as the endpoint path; it is not the protocol-version negotiation field. Clients must use the negotiated audio contract in `session.ready` rather than assume every deployment uses PCM16.
+Provider/model/audio values are negotiated, not constants. Mock mode reports audio disabled. Clients must not send or decode a codec that `session.ready` did not advertise.
 
-## Audio Input
+The following snapshot shape establishes the owner's current inbox:
 
-Send base64 PCM16 frames.
+```json
+{
+  "type": "task.snapshot",
+  "reason": "reconnect",
+  "tasks": [],
+  "truncated": false
+}
+```
+
+Each frame contains at most 100 tasks. Reconnect hydration always includes every retained active task and every unread notification, even when they sit behind newer terminal history; the gateway emits additional bounded frames when necessary. `truncated: true` means older read terminal history was omitted from the recent view, not that active or unread work was dropped and not that the message contains a pagination cursor.
+
+## Conversation Messages
+
+Text input:
+
+```json
+{ "type": "text.input", "id": "text_1", "text": "Inspect the repository and run its tests" }
+```
+
+PCM audio frame:
 
 ```json
 {
@@ -207,282 +119,239 @@ Send base64 PCM16 frames.
 }
 ```
 
-End the current stream:
+End a push-to-talk stream:
+
+```json
+{ "type": "audio.end", "id": "audio_end_1" }
+```
+
+The realtime provider may answer directly or call `start_background_task`. There is deliberately no client `task.start`: task creation goes through the provider's narrow delegation tool and returns a fast receipt so conversation can continue.
+
+Server conversation events are:
+
+- `transcript.delta` with `speaker`, `text`, and optional `final`;
+- `audio.output` with base64 data, MIME type, and optional playback correlation;
+- `input.speech_started` for OpenAI VAD;
+- `response.started`, `response.completed`, `response.cancelled`, and `response.failed`;
+- bounded `log` and `session.error` messages.
+
+## Task Controls
+
+All task controls require a unique request `id`. They are owner-scoped; a valid-looking task id owned by another scope is treated as not found.
+
+List recent tasks:
+
+```json
+{ "type": "task.list", "id": "list_1", "limit": 50 }
+```
+
+The response is a correlated snapshot with `reason: "list"`. `limit` defaults to 50 and cannot exceed 100. `truncated` is true only when at least one additional recent record exists beyond the requested limit.
+
+Fetch one exact task, including retained output when completed:
+
+```json
+{ "type": "task.get", "id": "get_1", "taskId": "task_0123456789abcdef0123456789abcdef" }
+```
+
+The response has `reason: "get"`, the same `requestId`, and zero or one task. An empty array means no task in this owner scope was found.
+
+Stop exactly one task:
 
 ```json
 {
-  "type": "audio.end"
+  "type": "task.stop",
+  "id": "stop_1",
+  "taskId": "task_0123456789abcdef0123456789abcdef",
+  "reason": "User cancelled this task"
 }
 ```
 
-For OpenAI Realtime with `OPENAI_REALTIME_TURN_DETECTION=disabled`, `audio.end` commits the input buffer and triggers a response. With OpenAI VAD enabled, provider turn detection owns that timing and `audio.end` is treated as a no-op by the OpenAI adapter.
+A queued task can become `task.cancelled` immediately. An active task normally emits `task.stopping` and remains non-terminal until Hermes confirms completion, failure, or cancellation. A stop with an ambiguous upstream outcome becomes `task.unknown`; the gateway never stops a different task by inference.
 
-## Cancel Provider Speech
+## Task Lifecycle
 
-Cancel the current realtime provider response before sending an interruption or new input:
+Lifecycle events have a stable `taskId`, a positive per-task `sequence`, and `occurredAt` in Unix milliseconds. Examples:
+
+```json
+{
+  "type": "task.accepted",
+  "taskId": "task_0123456789abcdef0123456789abcdef",
+  "sequence": 1,
+  "occurredAt": 1780000000000,
+  "state": "queued",
+  "title": "Inspect repository"
+}
+```
+
+```json
+{
+  "type": "task.progress",
+  "taskId": "task_0123456789abcdef0123456789abcdef",
+  "sequence": 4,
+  "occurredAt": 1780000001200,
+  "progress": { "message": "Hermes completed a tool." }
+}
+```
+
+```json
+{
+  "type": "task.completed",
+  "taskId": "task_0123456789abcdef0123456789abcdef",
+  "sequence": 8,
+  "occurredAt": 1780000010000,
+  "result": {
+    "summary": "Repository checks passed.",
+    "output": "Repository checks passed.",
+    "truncated": false
+  }
+}
+```
+
+The lifecycle types are:
+
+- `task.accepted`
+- `task.started`
+- `task.progress`
+- `task.stopping`
+- `task.completed`
+- `task.failed`
+- `task.cancelled`
+- `task.unknown`
+
+Public snapshots use states `accepted`, `queued`, `running`, `stopping`, `completed`, `failed`, `cancelled`, or `unknown`. Internal Hermes run ids, raw SSE events, reasoning, tool arguments, and approval identities are never exposed.
+
+List/reconnect snapshots omit full completed output and mark it truncated from that view; use `task.get` for retained output. A connected owner also receives bounded output on the live `task.completed` event.
+
+## Ordering And Reconnect
+
+`sequence` is monotonic within one task, not a global cursor. A client should:
+
+1. key state by `taskId`;
+2. accept a lifecycle update only when its sequence is newer than the retained sequence;
+3. treat conflicting content at the same `(taskId, sequence)` as a protocol error;
+4. clear stale cached active state on the first reconnect frame, then merge every bounded reconnect frame by task id;
+5. never infer task cancellation from socket closure.
+
+The shared browser client implements these rules. Task execution continues when a client or provider disconnects. Gateway-restart recovery is possible only while the upstream Hermes process still knows the persisted run id; see [Durable Background Tasks](background-tasks.md#persistence-and-recovery).
+
+## Notifications
+
+Terminal outcomes produce a durable owner-scoped notification:
+
+```json
+{
+  "type": "task.notification",
+  "taskId": "task_0123456789abcdef0123456789abcdef",
+  "sequence": 8,
+  "occurredAt": 1780000010000,
+  "notification": {
+    "notificationId": "notification_task_0123456789abcdef0123456789abcdef_8",
+    "kind": "completed",
+    "delivery": "when_idle",
+    "message": "“Inspect repository” completed.",
+    "createdAt": 1780000010000,
+    "acknowledged": false
+  }
+}
+```
+
+Kinds are `completed`, `failed`, `cancelled`, and `unknown`. Acknowledge only the exact unread notification currently presented:
+
+```json
+{
+  "type": "task.notification.ack",
+  "id": "ack_1",
+  "taskId": "task_0123456789abcdef0123456789abcdef",
+  "notificationId": "notification_task_0123456789abcdef0123456789abcdef_8"
+}
+```
+
+The response is another `task.notification` carrying `requestId: "ack_1"` and `acknowledged: true`. A spoken announcement and a UI acknowledgement are separate: speech is best-effort, while notification state is durable. If an `unknown` task later re-enters recovery, the gateway sends the old notification identity with `acknowledged: true` to withdraw that superseded notice before publishing any later terminal notification.
+
+## Speech Interruption Versus Task Stop
+
+Cancel the current provider response without touching tasks:
 
 ```json
 {
   "type": "response.cancel",
-  "reason": "user interrupted"
-}
-```
-
-This is a best-effort provider cancellation. OpenAI Realtime maps it to `response.cancel`, waits for the terminal response event before creating a queued follow-up response, and closes the provider session if cancellation is not acknowledged within a bounded deadline. Gemini Live handles barge-in through live audio activity, so the current Gemini adapter accepts this message without sending a dedicated provider cancel event.
-
-For OpenAI WebSocket playback, include truncation metadata when the user interrupts audio that has already started playing:
-
-```json
-{
-  "type": "response.cancel",
+  "id": "cancel_1",
   "reason": "user interrupted",
   "truncate": {
     "itemId": "item_...",
     "contentIndex": 0,
-    "audioEndMs": 1200
+    "audioEndMs": 420
   }
 }
 ```
 
-`audioEndMs` should be the number of milliseconds of that assistant audio item actually heard by the user. The gateway maps this to OpenAI's `conversation.item.truncate` event.
-Use `0` when the item has already been queued by the browser but none of that item has reached the user's speakers yet.
+OpenAI uses the optional truncation metadata to keep provider conversation history aligned with what the user actually heard. Gemini handles speech interruption through live audio activity and does not expose an equivalent direct cancel event.
 
-## Text Input
-
-Text input is useful for smoke tests and accessibility.
+Detach cleanly:
 
 ```json
-{
-  "type": "text.input",
-  "text": "What changed in this repository?"
-}
+{ "type": "session.close", "id": "close_1", "detach": true }
 ```
 
-## Output Events
+An ordinary WebSocket close has the same task-lifetime rule: background work remains server-owned. Only `task.stop` cancels a task.
 
-Assistant audio:
+## Browser Client
 
-```json
-{
-  "type": "audio.output",
-  "data": "<base64>",
-  "mimeType": "audio/pcm;rate=24000",
-  "itemId": "item_...",
-  "contentIndex": 0
-}
-```
+`hermes-live-voice/browser` is the framework-independent client used by the demo and Dashboard integration:
 
-`itemId` and `contentIndex` are optional provider metadata. OpenAI Realtime clients can use them to truncate unplayed assistant audio during interruption.
+```js
+import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
 
-Transcript:
-
-```json
-{
-  "type": "transcript.delta",
-  "speaker": "assistant",
-  "text": "I am checking Hermes now."
-}
-```
-
-Provider-managed speech start:
-
-```json
-{
-  "type": "input.speech_started",
-  "provider": "openai",
-  "itemId": "item_...",
-  "audioStartMs": 320
-}
-```
-
-OpenAI VAD can emit this when the provider detects user speech. Voice clients should stop local assistant playback immediately and send `response.cancel`. If queued assistant audio has provider item metadata, include `truncate` so the gateway can remove unheard audio from the provider conversation.
-
-Provider-neutral response lifecycle:
-
-```json
-{ "type": "response.started", "responseId": "resp_..." }
-{ "type": "response.completed", "responseId": "resp_..." }
-{ "type": "response.cancelled", "responseId": "resp_..." }
-{ "type": "response.failed", "responseId": "resp_...", "error": "Realtime response failed." }
-```
-
-`responseId` is optional because not every provider exposes one. Raw provider payloads are intentionally not forwarded: audio and lifecycle data are emitted only through these normalized messages so audio bytes are not duplicated and provider internals do not leak into clients.
-
-Hermes run started:
-
-```json
-{
-  "type": "run.started",
-  "runId": "run_...",
-  "sessionId": "live_..."
-}
-```
-
-Hermes run event (safe summary by default):
-
-```json
-{
-  "type": "run.event",
-  "runId": "run_...",
-  "event": {
-    "event": "tool.started",
-    "run_id": "run_...",
-    "timestamp": 1710000000
-  }
-}
-```
-
-`HERMES_LIVE_RUN_EVENT_DETAIL=summary` forwards only the allowlisted scalar fields `event`, `run_id`, `timestamp`, and `status`. It deliberately omits upstream `approval_id`; clients correlate approvals only with the gateway-owned `approval.approvalId` on `approval.request`. `none` suppresses `run.event` messages. `raw` forwards upstream Hermes event payloads up to a 256,000-byte event-payload ceiling and replaces larger events with a bounded summary carrying `truncated: true`. Raw mode should still be used only with trusted developer clients because events below that ceiling can contain tool arguments, output, paths, or error detail.
-
-Hermes completion:
-
-```json
-{
-  "type": "run.completed",
-  "runId": "run_...",
-  "output": "..."
-}
-```
-
-Hermes run failed:
-
-```json
-{
-  "type": "run.failed",
-  "runId": "run_...",
-  "error": "Hermes run failed."
-}
-```
-
-Session-level error:
-
-```json
-{
-  "type": "session.error",
-  "code": "provider_error",
-  "message": "Realtime provider failed before session ready.",
-  "requestId": "req_123",
-  "recoverable": false
-}
-```
-
-## Approvals
-
-The examples in this section are the targeted-capable case. The gateway emits `approval.request` only after Hermes advertises `run_approval_response_by_id: true` and the corresponding upstream event contains a stable, bounded `approval_id`:
-
-```json
-{
-  "type": "approval.request",
-  "runId": "run_...",
-  "event": {
-    "event": "approval.request"
+const client = new HermesLiveClient({
+  webSocketUrlProvider: async () => {
+    const response = await fetch("/api/hermes-live/socket", { credentials: "same-origin" });
+    if (!response.ok) throw new Error("Live Voice is unavailable");
+    return (await response.json()).url;
   },
-  "approval": {
-    "approvalId": "approval_...",
-    "command": "git push origin feature",
-    "description": "This command changes a remote repository.",
-    "patternKey": "git_push",
-    "choices": ["once", "session", "always", "deny"],
-    "allowPermanent": true
-  }
-}
+});
+
+client.subscribe(({ tasks, unreadNotifications }) => renderInbox(tasks, unreadNotifications));
+client.on("transcript.delta", renderTranscript);
+client.on("task.completed", renderTaskUpdate);
+client.on("task.notification", renderNotification);
+client.on("error", renderError);
+
+const audio = new HermesLiveAudio(client, { workletUrl: "/mic-worklet.js" });
+await client.connect();
+client.sendText("Inspect this repository while we discuss the next task");
 ```
 
-If the capability is absent or false, or an event omits a valid stable ID, the gateway does not create an actionable approval envelope. It attempts the legacy `deny_all` operation, then stops the run and emits a fatal error before closing the voice session even when denial was confirmed:
+Task methods return their generated request id:
+
+```js
+client.listTasks({ limit: 50 });
+client.getTask(taskId);
+client.stopTask(taskId, "user cancelled");
+client.acknowledgeNotification(taskId, notificationId);
+```
+
+`sendAudio()` emits `audio.dropped` if browser backpressure is exceeded. Unknown future server types emit `unknownmessage`; malformed known messages close the connection rather than corrupt local state.
+
+## HTTP Readiness And Capabilities
+
+`GET /ready` reports gateway, Hermes, and provider configuration. A healthy response does not open a live provider session; `checks.realtime.sessionChecked` remains `false`.
+
+`GET /v1/capabilities` reports protocol version, audio contract, task persistence/admission limits, disconnect continuation, restart semantics, ambiguity fencing, and feature flags. In v0.5, `hermes_approval` and `hermes_approval_ui` are false; the advertised fallback is deny-all then stop.
+
+## Limits And Errors
+
+Protocol fields are bounded before dispatch: ids, identity strings, reasons, MIME types, text, audio, task snapshots, results, usage, notifications, logs, and provider messages all have hard ceilings. PCM input must declare one integer sample rate between 8,000 and 192,000 Hz. Browser audio currently supports PCM16; it rejects G.711 output rather than misdecoding it.
+
+Errors use:
 
 ```json
 {
   "type": "session.error",
-  "code": "hermes_approval_identity_unsupported",
-  "message": "Interactive approval is unavailable because this Hermes version cannot correlate requests safely. The pending queue was denied, the run is being stopped, and the voice session is closing. Verify the run in Hermes before retrying.",
+  "code": "unsupported_protocol_version",
+  "message": "Hermes Live protocol v2 is incompatible with protocol v3. Upgrade hermes-live-voice and every connected client to the same release before reconnecting.",
+  "requestId": "start_1",
   "recoverable": false
 }
 ```
 
-Clients must preserve this fatal status after socket close and must not synthesize an `approvalId`, render positive approval controls, or send `approval.respond`. This containment is intentionally terminal because Hermes' FIFO response contract cannot prove that a visible request was the action denied when another client may respond concurrently.
-
-Hermes redacts credentials from approval commands before they enter its Runs API event stream. Hermes Live then projects only exact, bounded display values. If a supplied command, description, choice list, or permission pattern would need transformation, truncation, or control-character removal, the request is narrowed rather than silently repaired. A request with incomplete display context is deny-only. An informed request without an exact inspectable permission pattern can offer only `once` or `deny`. `session` and `always` require a visible exact `patternKey` or `patternKeys`, and clients must never invent wider choices.
-
-The gateway assigns every envelope an opaque gateway-owned `approvalId`, correlates it to Hermes' bounded upstream approval id, and retains envelopes server-side in FIFO order. It accepts a response only when the exact `runId` and `approvalId` match the active queue head and `choice` was offered in that envelope. `always` additionally requires `allowPermanent: true`. Protocol v2 rejects `resolveAll: true`; clients must answer each request explicitly. Approval request IDs are cached in a bounded idempotency window: an exact duplicate replays its prior acknowledgement without another Hermes mutation, while request-ID reuse with different data is rejected. Duplicate or mutated upstream approval identities fail closed. If Hermes' approval POST outcome cannot be confirmed, the gateway stops the run and closes the session rather than risk applying a retry to the next action.
-
-The client responds:
-
-```json
-{
-  "type": "approval.respond",
-  "id": "approval_response_123",
-  "runId": "run_...",
-  "approvalId": "approval_...",
-  "choice": "once"
-}
-```
-
-Valid choices:
-
-- `once`
-- `session`
-- `always`
-- `deny`
-
-After the gateway submits the decision to Hermes, it emits:
-
-```json
-{
-  "type": "approval.responded",
-  "requestId": "approval_response_123",
-  "runId": "run_...",
-  "approvalId": "approval_...",
-  "choice": "once",
-  "resolved": 1
-}
-```
-
-## Stop
-
-Stop the active run:
-
-```json
-{
-  "type": "run.stop",
-  "reason": "user interrupted"
-}
-```
-
-The server first confirms that a stop was requested without claiming the run is terminal:
-
-```json
-{
-  "type": "run.stopping",
-  "runId": "run_...",
-  "status": "stopping"
-}
-```
-
-Only Hermes `run.cancelled` emits `run.stopped`. Normal and failed terminal states emit `run.completed` and `run.failed`. Clients must keep the run in a stopping state until one of those terminal messages arrives.
-
-## Logs
-
-The gateway can emit operational logs to help clients explain non-terminal events:
-
-```json
-{
-  "type": "log",
-  "level": "info",
-  "message": "Hermes run stop requested",
-  "data": {
-    "runId": "run_..."
-  }
-}
-```
-
-## Close
-
-```json
-{
-  "type": "session.close"
-}
-```
-
-Closing the WebSocket also closes the provider session and asks Hermes to stop any active run.
-
-For an orderly client shutdown, send `session.close` and wait for the server's WebSocket close instead of immediately starting a client close handshake. Code `1000` confirms gateway cleanup completed. `session_shutdown_unconfirmed` followed by code `1011`, or a client-side shutdown timeout, means cleanup could not be confirmed and the user must verify any active task directly in Hermes.
+When a request has an `id`, validation or state failures echo it as `requestId`. Clients should show the bounded public message and use gateway logs for private diagnostics.

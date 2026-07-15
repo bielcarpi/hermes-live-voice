@@ -254,7 +254,7 @@ def test_url_and_payload_guards(plugin: Any) -> None:
         else:
             os.environ["HERMES_LIVE_AUTH_TOKEN"] = old_token
 
-    assert plugin._is_bounded_json_message('{"type":"session.start","protocolVersion":2}')
+    assert plugin._is_bounded_json_message('{"type":"session.start","protocolVersion":3}')
     assert not plugin._is_bounded_json_message("[]")
     assert not plugin._is_bounded_json_message('{"type":"audio.input","data":NaN}')
     assert not plugin._is_bounded_json_message('{"notType":"session.start"}')
@@ -262,9 +262,9 @@ def test_url_and_payload_guards(plugin: Any) -> None:
 
 
 def test_capability_sanitizing(plugin: Any) -> None:
-    protocol, provider, model, audio = plugin._capabilities_summary(
+    protocol, provider, model, audio, tasks = plugin._capabilities_summary(
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "realtime": {
                 "provider": "gemini",
                 "model": "gemini-live-2.5-flash",
@@ -281,10 +281,17 @@ def test_capability_sanitizing(plugin: Any) -> None:
                     "secret": "must not escape",
                 },
             },
+            "tasks": {
+                "durable": True,
+                "disconnectContinuation": True,
+                "maxConcurrent": 3,
+                "maxRetained": 200,
+                "statePath": "/private/must-not-escape/tasks.json",
+            },
             "secret": "must not escape",
         }
     )
-    assert protocol == 2
+    assert protocol == 3
     assert provider == "gemini"
     assert model == "gemini-live-2.5-flash"
     assert audio == {
@@ -293,11 +300,19 @@ def test_capability_sanitizing(plugin: Any) -> None:
         "turnDetection": "provider",
     }
     assert "secret" not in json.dumps(audio)
+    assert tasks == {
+        "durable": True,
+        "disconnectContinuation": True,
+        "maxConcurrent": 3,
+        "maxRetained": 200,
+        "parallel": True,
+    }
+    assert "statePath" not in json.dumps(tasks)
 
     reflected = "configured-dashboard-bearer"
-    protocol, provider, model, audio = plugin._capabilities_summary(
+    protocol, provider, model, audio, tasks = plugin._capabilities_summary(
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "realtime": {
                 "provider": f"provider-{reflected}-suffix",
                 "model": f"prefix-{reflected}",
@@ -310,7 +325,7 @@ def test_capability_sanitizing(plugin: Any) -> None:
         },
         sensitive_values=(reflected,),
     )
-    assert protocol == 2
+    assert protocol == 3
     assert provider is None
     assert model is None
     assert audio == {
@@ -318,6 +333,7 @@ def test_capability_sanitizing(plugin: Any) -> None:
         "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
     }
     assert reflected not in json.dumps(audio)
+    assert tasks is None
 
 
 def test_readiness_requires_every_check(plugin: Any) -> None:
@@ -343,7 +359,7 @@ def test_capabilities_require_hermes_live_identity(plugin: Any) -> None:
     valid = {
         "object": "hermes_live.capabilities",
         "service": "hermes-live",
-        "protocolVersion": 2,
+        "protocolVersion": 3,
     }
     assert plugin._capabilities_identity_is_valid(plugin._Probe(status=200, body=valid))
     for changed in (
@@ -352,7 +368,7 @@ def test_capabilities_require_hermes_live_identity(plugin: Any) -> None:
         {"protocolVersion": 0},
         {"protocolVersion": 1_001},
         {"protocolVersion": True},
-        {"protocolVersion": "2"},
+        {"protocolVersion": "3"},
     ):
         assert not plugin._capabilities_identity_is_valid(plugin._Probe(status=200, body={**valid, **changed}))
     assert not plugin._capabilities_identity_is_valid(plugin._Probe(status=503, body=valid))
@@ -399,7 +415,7 @@ async def test_status(plugin: Any) -> None:
                 body={
                     "object": "hermes_live.capabilities",
                     "service": "wrong-service" if wrong_service else "hermes-live",
-                    "protocolVersion": 2,
+                    "protocolVersion": 3,
                     "realtime": {
                         "provider": "gemini",
                         "model": "gemini-live",
@@ -408,6 +424,13 @@ async def test_status(plugin: Any) -> None:
                             "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
                             "turnDetection": "provider",
                         },
+                    },
+                    "tasks": {
+                        "durable": True,
+                        "disconnectContinuation": True,
+                        "maxConcurrent": 3,
+                        "maxRetained": 200,
+                        "stateFile": "/private/tasks.json",
                     },
                 },
             )
@@ -444,13 +467,20 @@ async def test_status(plugin: Any) -> None:
         "reachable": True,
         "ready": True,
         "gateway": {"mode": "server-proxied"},
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "provider": "gemini",
         "model": "gemini-live",
         "audio": {
             "input": {"enabled": True, "mimeType": "audio/pcm;rate=16000"},
             "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
             "turnDetection": "provider",
+        },
+        "tasks": {
+            "durable": True,
+            "disconnectContinuation": True,
+            "maxConcurrent": 3,
+            "maxRetained": 200,
+            "parallel": True,
         },
         "error": None,
     }
@@ -467,6 +497,7 @@ async def test_status(plugin: Any) -> None:
         "provider": None,
         "model": None,
         "audio": None,
+        "tasks": None,
         "error": "capabilities_unavailable",
     }
 
@@ -485,7 +516,7 @@ async def test_status_suppresses_reflected_bearer_and_failed_readiness(plugin: A
                 body={
                     "object": "hermes_live.capabilities",
                     "service": "hermes-live",
-                    "protocolVersion": 2,
+                    "protocolVersion": 3,
                     "realtime": {
                         "provider": "openai",
                         "model": f"prefix-{secret}-suffix",
@@ -528,13 +559,14 @@ async def test_status_suppresses_reflected_bearer_and_failed_readiness(plugin: A
         "reachable": True,
         "ready": False,
         "gateway": {"mode": "server-proxied"},
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "provider": "openai",
         "model": None,
         "audio": {
             "input": {"enabled": True},
             "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
         },
+        "tasks": None,
         "error": "gateway_not_ready",
     }
     assert secret not in json.dumps(status)
@@ -594,7 +626,7 @@ async def test_status_fetch_requires_json_media_type(plugin: Any) -> None:
 async def test_relay_and_route(plugin: Any) -> None:
     browser = _BrowserSocket(
         [
-            {"type": "websocket.receive", "text": '{"type":"session.start","protocolVersion":2}'},
+            {"type": "websocket.receive", "text": '{"type":"session.start","protocolVersion":3}'},
             {"type": "websocket.disconnect"},
         ]
     )
@@ -627,7 +659,7 @@ async def test_relay_and_route(plugin: Any) -> None:
     assert browser.accepted
     assert browser.closed == [1000]
     assert browser.sent == []
-    assert upstream.sent == ['{"type":"session.start","protocolVersion":2}']
+    assert upstream.sent == ['{"type":"session.start","protocolVersion":3}']
     assert captured["url"] == "wss://voice.example:9443/v1/live"
     assert captured["options"]["proxy"] is None
     assert captured["options"]["max_size"] == plugin.MAX_MESSAGE_BYTES
@@ -635,9 +667,9 @@ async def test_relay_and_route(plugin: Any) -> None:
     assert captured["options"]["additional_headers"] == {"Authorization": "Bearer server-owned-secret"}
 
     browser = _BrowserSocket()
-    upstream = _Upstream(['{"type":"session.ready","protocolVersion":2}'])
+    upstream = _Upstream(['{"type":"session.ready","protocolVersion":3}'])
     await plugin._relay_gateway_to_browser(upstream, browser)
-    assert browser.sent == ['{"type":"session.ready","protocolVersion":2}']
+    assert browser.sent == ['{"type":"session.ready","protocolVersion":3}']
 
     browser = _BrowserSocket([{"type": "websocket.receive", "bytes": b"binary"}])
     try:

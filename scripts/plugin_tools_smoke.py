@@ -105,7 +105,7 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
             {
                 "object": "hermes_live.capabilities",
                 "service": "hermes-live",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "websocket": {"path": "/v1/live", "protocol": "json-base64-audio", "secret": reflected_secret},
                 "realtime": {
                     "provider": "openai",
@@ -117,19 +117,30 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
                     },
                     "apiKey": reflected_secret,
                 },
-                "hermes": {
-                    "approvals": {
-                        "uiSupported": True,
-                        "interactive": False,
-                        "fallback": "deny_all_then_stop",
-                        "requiredFeature": "run_approval_response_by_id",
-                        "negotiated": True,
-                        "secret": reflected_secret,
-                    },
-                    "baseUrl": f"http://user:{reflected_secret}@internal.example",
+                "tasks": {
+                    "scope": "owner",
+                    "durable": True,
+                    "persistence": "local_file",
+                    "disconnectContinuation": True,
+                    "gatewayRestartRecovery": "reconcile_by_upstream_run_id",
+                    "hermesRestartRecovery": False,
+                    "ambiguousDispatch": "fenced_no_automatic_retry",
+                    "maxConcurrent": 3,
+                    "maxQueued": 32,
+                    "maxRetained": 200,
+                    "retentionMs": 604800000,
+                    "pollIntervalMs": 1000,
+                    "statePath": f"/private/{reflected_secret}/tasks.json",
                 },
                 "features": {
+                    "background_tasks": True,
+                    "durable_task_state": True,
+                    "task_reconnect_snapshot": True,
+                    "parallel_read_only_tasks": True,
+                    "exact_task_stop": True,
+                    "task_notifications": True,
                     "hermes_runs": True,
+                    "run_event_detail": "full",
                     "max_sessions": 4,
                     "unknown_secret": reflected_secret,
                 },
@@ -141,7 +152,22 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
             {
                 "status": "ready",
                 "checks": {
-                    "gateway": {"ok": True, "port": 8788, "authRequired": True, "secret": reflected_secret},
+                    "gateway": {
+                        "ok": True,
+                        "port": 8788,
+                        "authRequired": True,
+                        "tasks": {
+                            "durable": True,
+                            "maxConcurrent": 3,
+                            "maxQueued": 32,
+                            "maxRetained": 200,
+                            "retentionMs": 604800000,
+                            "pollIntervalMs": 1000,
+                            "stateFile": f"/private/{reflected_secret}/tasks.json",
+                        },
+                        "runEventDetail": "full",
+                        "secret": reflected_secret,
+                    },
                     "hermes": {
                         "ok": True,
                         "model": "hermes-agent",
@@ -177,7 +203,51 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
         "openai",
         "capability allowlist",
     )
+    capabilities = payload["checks"]["capabilities"]["body"]
+    assert_equal(
+        capabilities["tasks"],
+        {
+            "durable": True,
+            "disconnectContinuation": True,
+            "hermesRestartRecovery": False,
+            "scope": "owner",
+            "persistence": "local_file",
+            "gatewayRestartRecovery": "reconcile_by_upstream_run_id",
+            "ambiguousDispatch": "fenced_no_automatic_retry",
+            "maxConcurrent": 3,
+            "maxQueued": 32,
+            "maxRetained": 200,
+            "retentionMs": 604800000,
+            "pollIntervalMs": 1000,
+        },
+        "public task capability allowlist",
+    )
+    assert_equal(
+        capabilities["features"],
+        {
+            "background_tasks": True,
+            "durable_task_state": True,
+            "task_reconnect_snapshot": True,
+            "parallel_read_only_tasks": True,
+            "exact_task_stop": True,
+            "task_notifications": True,
+            "max_sessions": 4,
+        },
+        "task feature allowlist",
+    )
     assert_equal(payload["checks"]["ready"]["body"]["checks"]["hermes"]["ok"], True, "readiness allowlist")
+    assert_equal(
+        payload["checks"]["ready"]["body"]["checks"]["gateway"]["tasks"],
+        {
+            "durable": True,
+            "maxConcurrent": 3,
+            "maxQueued": 32,
+            "maxRetained": 200,
+            "retentionMs": 604800000,
+            "pollIntervalMs": 1000,
+        },
+        "readiness task allowlist excludes state paths",
+    )
     if secret in payload_text or reflected_secret in payload_text:
         raise AssertionError("probe output exposed a bearer or non-allowlisted upstream value")
     if len(payload_text) > tools.MAX_OUTPUT_CHARS:
@@ -237,7 +307,7 @@ def _check_token_reflection_and_control_suppression(tools: Any) -> None:
             {
                 "object": "hermes_live.capabilities",
                 "service": "hermes-live",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "websocket": {"path": "/v1/live", "protocol": "json\ncontrol"},
                 "realtime": {
                     "provider": "openai",

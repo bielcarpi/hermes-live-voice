@@ -312,10 +312,9 @@ def _sanitize_capabilities(value: dict[str, Any]) -> dict[str, Any]:
     if safe_realtime:
         result["realtime"] = safe_realtime
 
-    hermes = _mapping(value.get("hermes"))
-    approvals = _sanitize_approvals(_mapping(hermes.get("approvals")))
-    if approvals:
-        result["hermes"] = {"approvals": approvals}
+    tasks = _sanitize_task_capabilities(_mapping(value.get("tasks")))
+    if tasks:
+        result["tasks"] = tasks
 
     features = _sanitize_features(_mapping(value.get("features")))
     if features:
@@ -337,12 +336,14 @@ def _sanitize_audio(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _sanitize_approvals(value: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_task_capabilities(value: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for name in ("uiSupported", "interactive", "negotiated"):
+    for name in ("durable", "disconnectContinuation", "hermesRestartRecovery"):
         _copy_boolean(value, result, name)
-    for name in ("fallback", "requiredFeature"):
+    for name in ("scope", "persistence", "gatewayRestartRecovery", "ambiguousDispatch"):
         _copy_string(value, result, name)
+    for name in ("maxConcurrent", "maxQueued", "maxRetained", "retentionMs", "pollIntervalMs"):
+        _copy_integer(value, result, name)
     return result
 
 
@@ -352,14 +353,12 @@ _BOOLEAN_FEATURES = {
     "gemini_live",
     "openai_realtime",
     "mock_live",
-    "hermes_runs",
-    "hermes_run_events",
-    "hermes_stop",
-    "hermes_approval",
-    "hermes_approval_ui",
-    "hermes_approval_fallback_deny_all",
-    "hermes_approval_fallback_stops_run",
-    "hermes_approval_requires_targeted_response",
+    "background_tasks",
+    "durable_task_state",
+    "task_reconnect_snapshot",
+    "parallel_read_only_tasks",
+    "exact_task_stop",
+    "task_notifications",
     "browser_demo",
     "optional_hermes_plugin",
 }
@@ -369,7 +368,6 @@ def _sanitize_features(value: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name in _BOOLEAN_FEATURES:
         _copy_boolean(value, result, name)
-    _copy_string(value, result, "run_event_detail")
     _copy_integer(value, result, "max_sessions")
     return result
 
@@ -386,7 +384,9 @@ def _sanitize_readiness(value: dict[str, Any]) -> dict[str, Any]:
         _copy_boolean(gateway, safe_gateway, name)
     for name in ("port", "maxSessions"):
         _copy_integer(gateway, safe_gateway, name)
-    _copy_string(gateway, safe_gateway, "runEventDetail")
+    tasks = _sanitize_task_readiness(_mapping(gateway.get("tasks")))
+    if tasks:
+        safe_gateway["tasks"] = tasks
     if safe_gateway:
         safe_checks["gateway"] = safe_gateway
 
@@ -394,9 +394,6 @@ def _sanitize_readiness(value: dict[str, Any]) -> dict[str, Any]:
     safe_hermes: dict[str, Any] = {}
     _copy_boolean(hermes, safe_hermes, "ok")
     _copy_string(hermes, safe_hermes, "model")
-    approvals = _sanitize_approvals(_mapping(hermes.get("approvals")))
-    if approvals:
-        safe_hermes["approvals"] = approvals
     if safe_hermes:
         safe_checks["hermes"] = safe_hermes
 
@@ -421,6 +418,15 @@ def _sanitize_readiness(value: dict[str, Any]) -> dict[str, Any]:
 
     if safe_checks:
         result["checks"] = safe_checks
+    return result
+
+
+def _sanitize_task_readiness(value: dict[str, Any]) -> dict[str, Any]:
+    """Project readiness task settings without exposing persistence paths."""
+    result: dict[str, Any] = {}
+    _copy_boolean(value, result, "durable")
+    for name in ("maxConcurrent", "maxQueued", "maxRetained", "retentionMs", "pollIntervalMs"):
+        _copy_integer(value, result, name)
     return result
 
 

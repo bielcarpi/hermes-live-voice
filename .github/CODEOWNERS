@@ -2,6 +2,9 @@
 * @bielcarpi
 /src/adapters/inbound/http/ @bielcarpi
 /src/adapters/outbound/hermes/ @bielcarpi
+/src/adapters/outbound/task-store/ @bielcarpi
 /src/application/live-gateway/ @bielcarpi
+/src/application/task-supervisor/ @bielcarpi
+/src/domain/tasks/ @bielcarpi
 /.github/workflows/ @bielcarpi
 /SECURITY.md @bielcarpi

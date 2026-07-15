@@ -1,9 +1,12 @@
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 
 export const MAX_COMPATIBLE_AUDIO_FRAME_BYTES = 5_900_000;
 export const MAX_COMPATIBLE_TEXT_CHARS = 1_000_000;
 export const DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const MAX_OUTBOUND_BASE_URL_CHARS = 2_048;
+const MAX_STATE_FILE_PATH_CHARS = 4_096;
 
 const HermesBaseUrlSchema = z.string().url().refine(isSafeHermesBaseUrl, {
   message: "HERMES_BASE_URL must be a credential-free HTTP(S) root origin.",
@@ -26,6 +29,10 @@ const GoogleGenAiApiVersionSchema = z.preprocess(
     message: "GOOGLE_GENAI_API_VERSION must be a bounded v1/v1beta/v1alpha-style token.",
   }).optional(),
 );
+const TaskStateFileSchema = z.string().min(1).max(MAX_STATE_FILE_PATH_CHARS).refine(
+  (value) => isAbsolute(value) && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value),
+  { message: "HERMES_LIVE_TASK_STATE_FILE must be a bounded absolute path." },
+);
 
 const EnvSchema = z.object({
   NODE_ENV: z.string().optional(),
@@ -39,7 +46,6 @@ const EnvSchema = z.object({
   HERMES_LIVE_PROFILE_ID: z.string().default("default"),
   HERMES_LIVE_USER_LABEL: z.string().default("voice"),
   HERMES_LIVE_TRUST_CLIENT_IDENTITY: z.string().optional(),
-  HERMES_LIVE_RUN_EVENT_DETAIL: z.enum(["summary", "raw", "none"]).default("summary"),
   HERMES_LIVE_MAX_SESSIONS: z.coerce.number().int().positive().default(8),
   HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce
     .number()
@@ -55,6 +61,14 @@ const EnvSchema = z.object({
     .default(20_000),
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   HERMES_LIVE_DEMO_ENABLED: z.string().optional(),
+  HERMES_LIVE_TASK_STATE_FILE: TaskStateFileSchema.default(
+    join(homedir(), ".hermes", "hermes-live", "tasks-v1.json"),
+  ),
+  HERMES_LIVE_MAX_CONCURRENT_TASKS: z.coerce.number().int().min(1).max(16).default(3),
+  HERMES_LIVE_MAX_QUEUED_TASKS: z.coerce.number().int().min(0).max(512).default(32),
+  HERMES_LIVE_TASK_HISTORY_LIMIT: z.coerce.number().int().min(10).max(1_000).default(200),
+  HERMES_LIVE_TASK_RETENTION_HOURS: z.coerce.number().int().min(1).max(8_760).default(168),
+  HERMES_LIVE_TASK_POLL_INTERVAL_MS: z.coerce.number().int().min(250).max(60_000).default(2_000),
 
   HERMES_BASE_URL: HermesBaseUrlSchema.default("http://127.0.0.1:8642"),
   HERMES_AGENT_API_SERVER_KEY: z.string().optional(),
@@ -89,7 +103,6 @@ const EnvSchema = z.object({
 });
 
 export type RealtimeProvider = "gemini" | "openai" | "mock";
-export type HermesRunEventDetail = "summary" | "raw" | "none";
 
 export interface AppConfig {
   server: {
@@ -102,7 +115,6 @@ export interface AppConfig {
     defaultProfileId: string;
     defaultUserLabel: string;
     trustClientIdentity: boolean;
-    runEventDetail: HermesRunEventDetail;
     maxSessions: number;
     maxAudioBytes: number;
     maxTextChars: number;
@@ -116,6 +128,14 @@ export interface AppConfig {
     instructions?: string;
     timeoutMs: number;
     streamIdleTimeoutMs?: number;
+  };
+  tasks: {
+    stateFile: string;
+    maxConcurrent: number;
+    maxQueued: number;
+    historyLimit: number;
+    retentionMs: number;
+    pollIntervalMs: number;
   };
   realtime: {
     provider: RealtimeProvider;
@@ -159,7 +179,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       defaultProfileId: parsed.HERMES_LIVE_PROFILE_ID,
       defaultUserLabel: parsed.HERMES_LIVE_USER_LABEL,
       trustClientIdentity: parseBool(parsed.HERMES_LIVE_TRUST_CLIENT_IDENTITY),
-      runEventDetail: parsed.HERMES_LIVE_RUN_EVENT_DETAIL,
       maxSessions: parsed.HERMES_LIVE_MAX_SESSIONS,
       maxAudioBytes: parsed.HERMES_LIVE_MAX_AUDIO_BYTES,
       maxTextChars: parsed.HERMES_LIVE_MAX_TEXT_CHARS,
@@ -176,6 +195,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(parsed.HERMES_LIVE_RUN_INSTRUCTIONS ? { instructions: parsed.HERMES_LIVE_RUN_INSTRUCTIONS } : {}),
       timeoutMs: parsed.HERMES_LIVE_HERMES_TIMEOUT_MS,
       streamIdleTimeoutMs: parsed.HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS,
+    },
+    tasks: {
+      stateFile: parsed.HERMES_LIVE_TASK_STATE_FILE,
+      maxConcurrent: parsed.HERMES_LIVE_MAX_CONCURRENT_TASKS,
+      maxQueued: parsed.HERMES_LIVE_MAX_QUEUED_TASKS,
+      historyLimit: parsed.HERMES_LIVE_TASK_HISTORY_LIMIT,
+      retentionMs: parsed.HERMES_LIVE_TASK_RETENTION_HOURS * 60 * 60 * 1_000,
+      pollIntervalMs: parsed.HERMES_LIVE_TASK_POLL_INTERVAL_MS,
     },
     realtime: {
       provider: parsed.HERMES_LIVE_PROVIDER,

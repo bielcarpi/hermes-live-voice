@@ -61,7 +61,7 @@ a {
 }
 
 .panel {
-  width: min(1040px, 100%);
+  width: min(1180px, 100%);
   min-height: min(820px, calc(100vh - 64px));
   display: grid;
   grid-template-rows: auto auto minmax(360px, 1fr) auto auto;
@@ -108,6 +108,8 @@ footer {
 }
 
 h1,
+h2,
+h3,
 p {
   margin: 0;
 }
@@ -116,6 +118,15 @@ h1 {
   font-size: clamp(25px, 4vw, 36px);
   line-height: 1.05;
   letter-spacing: -0.035em;
+}
+
+h2 {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+h3 {
+  font-size: 14px;
 }
 
 .eyebrow {
@@ -169,7 +180,7 @@ h1 {
 }
 
 .status.error::before,
-.status.run-failed::before,
+.status.task-failed::before,
 .status.websocket-error::before {
   background: #ff6b6b;
   box-shadow: 0 0 0 4px rgba(255, 107, 107, 0.13);
@@ -256,6 +267,13 @@ button.danger:hover:not(:disabled) {
   padding: 15px;
 }
 
+.workspace {
+  min-height: 420px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.8fr);
+  gap: 14px;
+}
+
 label {
   display: grid;
   gap: 7px;
@@ -285,7 +303,8 @@ input:focus {
 }
 
 .conversation {
-  min-height: 360px;
+  min-height: 420px;
+  max-height: min(56vh, 640px);
   overflow: auto;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 18px;
@@ -294,6 +313,209 @@ input:focus {
     radial-gradient(circle at 50% 0%, rgba(248, 211, 53, 0.08), transparent 40%);
   padding: clamp(16px, 3vw, 24px);
   scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.task-inbox {
+  min-width: 0;
+  max-height: min(56vh, 640px);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 18px;
+  background: rgba(6, 9, 13, 0.72);
+  padding: 16px;
+}
+
+.task-inbox__header,
+.task-card__header,
+.task-card__meta,
+.task-card__actions {
+  display: flex;
+  align-items: center;
+}
+
+.task-inbox__header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-badge {
+  min-width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(248, 211, 53, 0.25);
+  border-radius: 999px;
+  background: rgba(248, 211, 53, 0.08);
+  color: #f8d335;
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.task-badge[data-unread="false"] {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: #7f8a99;
+}
+
+.task-inbox__copy {
+  color: #8995a5;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.task-summary {
+  color: #c5ceda;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.task-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  overflow: auto;
+  padding-right: 3px;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.task-empty {
+  min-height: 170px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: #707c8c;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.task-empty span {
+  font-size: 26px;
+}
+
+.task-card {
+  display: grid;
+  gap: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 12px;
+}
+
+.task-card[data-unread="true"] {
+  border-color: rgba(248, 211, 53, 0.28);
+  box-shadow: inset 3px 0 0 rgba(248, 211, 53, 0.72);
+}
+
+.task-card__header {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.task-card__header h3 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-state {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(101, 112, 128, 0.12);
+  color: #aeb8c5;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.task-state--running,
+.task-state--accepted,
+.task-state--queued {
+  background: rgba(87, 150, 255, 0.12);
+  color: #9fc2ff;
+}
+
+.task-state--completed {
+  background: rgba(94, 227, 156, 0.11);
+  color: #86edb8;
+}
+
+.task-state--failed,
+.task-state--unknown {
+  background: rgba(255, 107, 107, 0.11);
+  color: #ffaaaa;
+}
+
+.task-state--stopping,
+.task-state--cancelled {
+  background: rgba(248, 180, 53, 0.1);
+  color: #f5c66c;
+}
+
+.task-card__meta {
+  justify-content: space-between;
+  gap: 8px;
+  color: #6f7c8c;
+  font-size: 10px;
+}
+
+.task-card code,
+.task-card__details code {
+  overflow-wrap: anywhere;
+  color: #9ba7b6;
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.task-card__progress,
+.task-card__notification {
+  color: #b7c1ce;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.task-card__notification {
+  color: #e5cf76;
+}
+
+.task-card__actions {
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.task-card__actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.task-card__details {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding-top: 8px;
+  color: #9da8b8;
+  font-size: 11px;
+}
+
+.task-card__details summary {
+  cursor: pointer;
+  color: #c7d0dc;
+  font-weight: 650;
+}
+
+.task-card__details pre {
+  max-height: 190px;
+  margin: 8px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #dfe5ed;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .welcome {
@@ -382,29 +604,6 @@ input:focus {
   line-height: 1.55;
 }
 
-.approval-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.approval-actions button {
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.08);
-  color: #f7f5ee;
-  font-size: 12px;
-}
-
-.approval-queue-status {
-  flex-basis: 100%;
-  color: #9aa6b5;
-  font-size: 11px;
-  line-height: 1.45;
-}
-
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto;
@@ -464,6 +663,7 @@ footer a:hover {
 
   .topbar,
   .controls,
+  .workspace,
   .composer {
     grid-template-columns: 1fr;
   }
@@ -478,6 +678,15 @@ footer a:hover {
 
   .composer {
     grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .conversation,
+  .task-inbox {
+    max-height: none;
+  }
+
+  .task-inbox {
+    min-height: 320px;
   }
 
   .composer input {

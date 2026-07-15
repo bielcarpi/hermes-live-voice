@@ -22,11 +22,21 @@ try {
 
   const pack = parsePackJson(result.stdout);
   const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+  const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
   const cliSource = readFileSync("dist/cli.js", "utf8");
   const files = new Set(pack.files.map((file) => file.path));
 
-  if (packageJson.bin?.["hermes-live"] !== "./dist/cli.js") {
-    throw new Error('Package bin must expose "hermes-live" at ./dist/cli.js.');
+  if (packageJson.bin?.["hermes-live"] !== "dist/cli.js") {
+    throw new Error('Package bin must expose "hermes-live" at dist/cli.js.');
+  }
+  if (
+    packageLock.name !== packageJson.name ||
+    packageLock.version !== packageJson.version ||
+    packageLock.packages?.[""]?.name !== packageJson.name ||
+    packageLock.packages?.[""]?.version !== packageJson.version ||
+    packageLock.packages?.[""]?.bin?.["hermes-live"] !== packageJson.bin["hermes-live"]
+  ) {
+    throw new Error("package-lock.json root package metadata does not match package.json.");
   }
   if (!cliSource.startsWith("#!/usr/bin/env node\n")) {
     throw new Error("dist/cli.js must keep its node shebang.");
@@ -53,20 +63,28 @@ try {
     "dist/adapters/outbound/realtime/gemini-live.adapter.js",
     "dist/adapters/outbound/realtime/mock-live.adapter.js",
     "dist/adapters/outbound/realtime/openai-realtime.adapter.js",
+    "dist/adapters/outbound/task-store/file-task-store.js",
     "dist/application/live-gateway/live-gateway-session.js",
     "dist/application/live-gateway/client-capabilities.js",
     "dist/application/live-gateway/ports/client-connection.port.js",
     "dist/application/live-gateway/ports/hermes-runs.port.js",
     "dist/application/live-gateway/ports/realtime-model.port.js",
+    "dist/application/live-gateway/ports/task-supervisor.port.js",
+    "dist/application/live-gateway/task-public-projection.js",
+    "dist/application/task-supervisor/ports/task-store.port.js",
+    "dist/application/task-supervisor/task-supervisor.js",
     "dist/domain/audio/pcm.js",
     "dist/domain/protocol/client-protocol.js",
     "dist/domain/protocol/server-protocol.js",
     "dist/domain/protocol/version.js",
+    "dist/domain/tasks/task-transition.js",
+    "dist/domain/tasks/task.js",
     "clients/browser/hermes-live-client.js",
     "clients/browser/hermes-live-client.d.ts",
     "clients/browser/mic-worklet.js",
     "apps/web-demo/index.html",
     "apps/web-demo/app.js",
+    "docs/background-tasks.md",
     "docs/client-protocol.md",
     "docs/live-provider-testing.md",
     "examples/docker-compose.yml",
@@ -186,6 +204,22 @@ try {
     if (!existsSync(join(hermesPluginsDir, "hermes-live", relative))) {
       throw new Error(`Installed CLI plugin install did not write ${relative}.`);
     }
+  }
+
+  const installedPluginYaml = readFileSync(join(hermesPluginsDir, "hermes-live", "plugin.yaml"), "utf8");
+  const installedPluginVersion = /^version:[ \t]*([^\s#]+)/mu.exec(installedPluginYaml)?.[1];
+  if (installedPluginVersion !== packageJson.version) {
+    throw new Error(
+      `Installed plugin version mismatch: expected ${packageJson.version}, got ${installedPluginVersion ?? "missing"}.`,
+    );
+  }
+  const installedDashboardManifest = JSON.parse(
+    readFileSync(join(hermesPluginsDir, "hermes-live", "dashboard", "manifest.json"), "utf8"),
+  );
+  if (installedDashboardManifest.version !== packageJson.version) {
+    throw new Error(
+      `Installed Dashboard plugin version mismatch: expected ${packageJson.version}, got ${String(installedDashboardManifest.version)}.`,
+    );
   }
 
   const imported = spawnSync(

@@ -1,16 +1,25 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { assertGatewayExposureConfig, assertHermesApiConfig, assertRealtimeProviderConfig, type AppConfig } from "../../../config.js";
+import {
+  assertGatewayExposureConfig,
+  assertHermesApiConfig,
+  assertRealtimeProviderConfig,
+  makeSessionKey,
+  type AppConfig,
+} from "../../../config.js";
 import type { HermesRunsPort } from "../../../application/live-gateway/ports/hermes-runs.port.js";
+import type { TaskSupervisorPort } from "../../../application/live-gateway/ports/task-supervisor.port.js";
 import { LiveGatewaySession } from "../../../application/live-gateway/live-gateway-session.js";
+import { TaskSupervisor } from "../../../application/task-supervisor/task-supervisor.js";
 import type { LiveModelAdapter } from "../../../application/live-gateway/ports/realtime-model.port.js";
 import { HermesClient } from "../../outbound/hermes/hermes-runs.client.js";
 import { createLiveModelAdapter } from "../../outbound/realtime/factory.js";
+import { FileTaskStore } from "../../outbound/task-store/file-task-store.js";
 import type { Logger } from "../../../logger.js";
 import { buildReadinessReport } from "../../../readiness.js";
 import { serveStatic } from "./static.js";
@@ -25,9 +34,21 @@ export interface StartServerOptions {
   logger: Logger;
   hermes?: HermesRunsPort;
   liveModel?: LiveModelAdapter;
+  taskSupervisor?: TaskSupervisorRuntime;
 }
 
-export async function startServer({ config, logger, hermes: providedHermes, liveModel: providedLiveModel }: StartServerOptions): Promise<{
+export interface TaskSupervisorRuntime extends TaskSupervisorPort {
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export async function startServer({
+  config,
+  logger,
+  hermes: providedHermes,
+  liveModel: providedLiveModel,
+  taskSupervisor: providedTaskSupervisor,
+}: StartServerOptions): Promise<{
   close(): Promise<void>;
   url: string;
 }> {
@@ -40,6 +61,27 @@ export async function startServer({ config, logger, hermes: providedHermes, live
   }
   const hermes = providedHermes ?? new HermesClient(config.hermes);
   const liveModel = providedLiveModel ?? createLiveModelAdapter(config);
+  const taskSupervisor = providedTaskSupervisor ?? new TaskSupervisor({
+    store: new FileTaskStore({
+      directory: dirname(config.tasks.stateFile),
+      filename: basename(config.tasks.stateFile),
+      maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
+      retentionMs: config.tasks.retentionMs,
+    }),
+    hermes,
+    maxConcurrent: config.tasks.maxConcurrent,
+    maxQueued: config.tasks.maxQueued,
+    pollIntervalMs: config.tasks.pollIntervalMs,
+    ...(config.hermes.instructions ? { runInstructions: config.hermes.instructions } : {}),
+    onError: (error) => logger.error("background task supervisor error", { error: errorToMessage(error) }),
+  });
+  const defaultSessionKey = makeSessionKey(
+    config.server.sessionPrefix,
+    config.server.defaultProfileId,
+    config.server.defaultUserLabel,
+  );
+  taskSupervisor.registerOwner(defaultSessionKey, defaultSessionKey);
+  await taskSupervisor.initialize();
   const demoRoot = resolveDemoRoot();
   const browserClientRoot = resolveBrowserClientRoot();
   const sessions = new Set<LiveGatewaySession>();
@@ -93,7 +135,13 @@ export async function startServer({ config, logger, hermes: providedHermes, live
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      const session = new LiveGatewaySession(new WebSocketClientConnection(ws), { config, hermes, liveModel, logger });
+      const session = new LiveGatewaySession(new WebSocketClientConnection(ws), {
+        config,
+        hermes,
+        liveModel,
+        taskSupervisor,
+        logger,
+      });
       sessions.add(session);
       ws.once("close", () => {
         void session.close().finally(() => sessions.delete(session));
@@ -107,6 +155,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
     await listenHttpServer(server, config.server.port, config.server.host);
   } catch (error) {
     await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await taskSupervisor.close();
     throw error;
   }
   const address = server.address() as AddressInfo | null;
@@ -126,6 +175,7 @@ export async function startServer({ config, logger, hermes: providedHermes, live
       server.closeIdleConnections();
       server.closeAllConnections();
       await closing;
+      await taskSupervisor.close();
     },
   };
 }
@@ -195,19 +245,38 @@ async function handleHttp(
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },
       realtime: realtimeClientCapabilities(options.config),
       hermes: { approvals },
+      tasks: {
+        scope: "owner",
+        durable: true,
+        persistence: "local_file",
+        disconnectContinuation: true,
+        gatewayRestartRecovery: "reconcile_by_upstream_run_id",
+        hermesRestartRecovery: false,
+        ambiguousDispatch: "fenced_no_automatic_retry",
+        maxConcurrent: options.config.tasks.maxConcurrent,
+        maxQueued: options.config.tasks.maxQueued,
+        maxRetained: options.config.tasks.historyLimit,
+        retentionMs: options.config.tasks.retentionMs,
+        pollIntervalMs: options.config.tasks.pollIntervalMs,
+      },
       features: {
         auth_required: Boolean(options.config.server.authToken),
         server_managed_identity: !options.config.server.trustClientIdentity,
-        run_event_detail: options.config.server.runEventDetail,
         max_sessions: options.config.server.maxSessions,
         gemini_live: options.config.realtime.provider === "gemini",
         openai_realtime: options.config.realtime.provider === "openai",
         mock_live: options.config.realtime.provider === "mock",
         hermes_runs: true,
-        hermes_run_events: true,
+        background_tasks: true,
+        durable_task_state: true,
+        task_reconnect_snapshot: true,
+        parallel_read_only_tasks: options.config.tasks.maxConcurrent > 1,
+        exact_task_stop: true,
+        task_notifications: true,
+        hermes_run_events_internal: true,
         hermes_stop: true,
-        hermes_approval: approvals.interactive,
-        hermes_approval_ui: approvals.uiSupported,
+        hermes_approval: false,
+        hermes_approval_ui: false,
         hermes_approval_fallback_deny_all: approvals.fallback === "deny_all_then_stop",
         hermes_approval_fallback_stops_run: true,
         hermes_approval_requires_targeted_response: true,

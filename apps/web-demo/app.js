@@ -1,25 +1,37 @@
 import { HermesLiveAudio, HermesLiveClient } from "/hermes-live-client.js";
 
+const ACTIVE_TASK_STATES = new Set([
+  "accepted",
+  "queued",
+  "running",
+  "stopping",
+  "unknown",
+]);
+const MAX_VISIBLE_RECENT_TASKS = 12;
+const MAX_TASK_DETAIL_CHARS = 8_000;
+const MAX_CONVERSATION_ENTRIES = 100;
+
 const gatewayInput = document.querySelector("#gateway");
 const tokenInput = document.querySelector("#token");
 const connectButton = document.querySelector("#connect");
 const micButton = document.querySelector("#mic");
 const interruptButton = document.querySelector("#interrupt");
-const stopButton = document.querySelector("#stop");
 const form = document.querySelector("#text-form");
 const textInput = document.querySelector("#text");
 const sendButton = document.querySelector("#send");
 const statusEl = document.querySelector("#status");
 const logEl = document.querySelector("#log");
+const tasksEl = document.querySelector("#tasks");
+const taskBadgeEl = document.querySelector("#task-badge");
+const taskSummaryEl = document.querySelector("#task-summary");
 
 let client;
 let audio;
 let connectPending = false;
 let fatalSessionError = "";
-let approvalSequence = 0;
-const approvalQueue = [];
 
 setInteractive(false);
+renderTaskInbox(emptyTaskSnapshot());
 gatewayInput.value = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/v1/live`;
 
 connectButton.addEventListener("click", () => {
@@ -36,7 +48,9 @@ form.addEventListener("submit", (event) => {
   const text = textInput.value.trim();
   if (!text) return;
   try {
-    void audio.primePlayback().catch(showError);
+    if (client.session?.realtime?.audio?.output?.enabled) {
+      void audio.primePlayback().catch(showError);
+    }
     audio.interrupt("new text input");
     client.sendText(text);
     addLog("you", text);
@@ -58,14 +72,6 @@ interruptButton.addEventListener("click", () => {
   }
 });
 
-stopButton.addEventListener("click", () => {
-  try {
-    if (client.activeRunId) client.stopRun("demo user stopped Hermes task");
-  } catch (error) {
-    showError(error);
-  }
-});
-
 async function connect() {
   connectPending = true;
   fatalSessionError = "";
@@ -82,7 +88,14 @@ async function connect() {
   bindSession(nextClient, nextAudio);
   connectButton.textContent = "Disconnect";
   setInteractive(false);
-  void nextAudio.primePlayback().catch(showError);
+  void nextAudio.primePlayback().catch((error) => {
+    // Prime from the Connect gesture so real speech providers can unlock
+    // autoplay. A text-only provider such as mock mode has no playback path,
+    // so a browser without an audio device must not turn the session red.
+    if (nextAudio === audio && nextClient.session?.realtime?.audio?.output?.enabled === true) {
+      showError(error);
+    }
+  });
   try {
     await disposing;
     await nextClient.connect();
@@ -92,6 +105,9 @@ async function connect() {
 }
 
 function bindSession(nextClient, nextAudio) {
+  nextClient.subscribe((snapshot) => {
+    if (nextClient === client) renderTaskInbox(snapshot);
+  });
   nextClient.on("state", ({ state }) => {
     if (nextClient !== client) return;
     if (state === "connecting") setStatus("Connecting");
@@ -106,14 +122,16 @@ function bindSession(nextClient, nextAudio) {
     if (nextClient === client && code !== "session_error") showError(error);
   });
   nextClient.on("audio.dropped", ({ bufferedAmount }) => {
-    if (nextClient === client) addLog("audio", `Microphone frame dropped under backpressure (${bufferedAmount} bytes queued).`);
+    if (nextClient === client) {
+      addLog("audio", `Microphone frame dropped under backpressure (${bufferedAmount} bytes queued).`);
+    }
   });
   nextClient.on("close", () => {
     if (nextClient !== client) return;
-    resetApprovalQueue();
     setStatus(fatalSessionError ? "Error" : "Disconnected");
     setInteractive(false);
     connectButton.textContent = "Connect";
+    renderTaskInbox(nextClient.getSnapshot());
     void nextAudio.dispose();
   });
   nextAudio.on("microphone", ({ active }) => {
@@ -125,7 +143,9 @@ function bindSession(nextClient, nextAudio) {
     if (nextAudio === audio) showError(error);
   });
   nextAudio.on("audio.dropped", ({ queuedMs }) => {
-    if (nextAudio === audio) addLog("audio", `Provider audio dropped because ${Math.round(queuedMs)}ms was already queued.`);
+    if (nextAudio === audio) {
+      addLog("audio", `Provider audio dropped because ${Math.round(queuedMs)}ms was already queued.`);
+    }
   });
 }
 
@@ -134,7 +154,7 @@ function handleMessage(message) {
     fatalSessionError = "";
     setStatus("Connected");
     setInteractive(true);
-    addLog("session", JSON.stringify(message, null, 2));
+    addLog("session", "Live voice connected. Background tasks will remain durable if this session disconnects.");
   } else if (message.type === "transcript.delta") {
     addLog(message.speaker ?? "assistant", message.text ?? "");
   } else if (message.type === "input.speech_started") {
@@ -142,49 +162,21 @@ function handleMessage(message) {
     addLog("speech", `started${message.audioStartMs === undefined ? "" : ` at ${message.audioStartMs}ms`}`);
   } else if (message.type === "audio.output") {
     void audio.play(message).catch(showError);
-  } else if (message.type === "run.started") {
-    addLog("run", `started ${message.runId}`);
-  } else if (message.type === "run.event") {
-    handleRunEvent(message);
-  } else if (message.type === "run.completed") {
-    clearApprovalQueueForRun(message.runId, "This Hermes run completed before the approval was answered.");
-    addLog("hermes", message.output ?? "");
-  } else if (message.type === "approval.request") {
-    addApprovalRequest(message);
-  } else if (message.type === "approval.responded") {
-    resolveApprovalQueue(message);
-    addLog("approval", `submitted ${message.choice} for ${message.runId}`);
-  } else if (message.type === "run.failed" || message.type === "session.error") {
-    setStatus(message.type === "run.failed" ? "Run failed" : "Error");
-    audio.clearPlayback();
-    if (message.type === "run.failed") {
-      clearApprovalQueueForRun(message.runId, "This Hermes run failed before the approval was answered.");
-    }
-    if (message.type === "session.error" && !message.recoverable) {
-      fatalSessionError = String(message.message ?? message.error ?? "The Live Voice session failed.");
-      resetApprovalQueue();
+  } else if (message.type === "task.notification" && !message.notification.acknowledged) {
+    addLog("task", message.notification.message);
+  } else if (message.type === "task.failed" || message.type === "task.unknown") {
+    addLog("task", message.error.message);
+  } else if (message.type === "session.error") {
+    setStatus("Error");
+    audio?.clearPlayback();
+    if (!message.recoverable) {
+      fatalSessionError = String(message.message ?? "The Live Voice session failed.");
       setInteractive(false);
     }
-    addLog("error", JSON.stringify(message, null, 2));
-  } else if (message.type === "run.stopping") {
-    addLog("run", `stop requested for ${message.runId}: ${message.status}`);
-  } else if (message.type === "run.stopped") {
-    audio.clearPlayback();
-    clearApprovalQueueForRun(message.runId, "This Hermes run stopped before the approval was answered.");
-    addLog("run", `stopped ${message.runId}: ${message.status}`);
-  } else {
-    addLog(message.type, JSON.stringify(message, null, 2));
+    addLog("error", message.message ?? "The Live Voice session reported an error.");
+  } else if (message.type === "log" && message.level !== "debug") {
+    addLog(message.level, message.message);
   }
-}
-
-function handleRunEvent(message) {
-  const event = message.event ?? {};
-  if (event.event === "message.delta" && typeof event.delta === "string") {
-    addLog("hermes", event.delta);
-    return;
-  }
-  if (event.event === "approval.request" || event.event === "run.completed" || event.event === "run.failed") return;
-  addLog("run.event", JSON.stringify(event, null, 2));
 }
 
 async function toggleMicrophone() {
@@ -200,7 +192,6 @@ async function toggleMicrophone() {
 async function disposeSession() {
   const previousAudio = audio;
   const previousClient = client;
-  resetApprovalQueue();
   audio = undefined;
   client = undefined;
   await Promise.allSettled([
@@ -209,177 +200,196 @@ async function disposeSession() {
   ]);
 }
 
+function renderTaskInbox(snapshot) {
+  const activeTasks = Array.isArray(snapshot?.activeTasks) ? snapshot.activeTasks : [];
+  const recentTasks = Array.isArray(snapshot?.recentTasks) ? snapshot.recentTasks : [];
+  const unreadNotifications = Array.isArray(snapshot?.unreadNotifications)
+    ? snapshot.unreadNotifications
+    : [];
+  const visibleTasks = activeTasks.concat(recentTasks.slice(0, MAX_VISIBLE_RECENT_TASKS));
+  const unreadByTask = new Map(unreadNotifications.map((notification) => [notification.taskId, notification]));
+
+  taskBadgeEl.textContent = String(unreadNotifications.length);
+  taskBadgeEl.dataset.unread = unreadNotifications.length > 0 ? "true" : "false";
+  taskBadgeEl.setAttribute(
+    "aria-label",
+    unreadNotifications.length === 0
+      ? "No unread task updates"
+      : `${unreadNotifications.length} unread task ${unreadNotifications.length === 1 ? "update" : "updates"}`,
+  );
+  taskSummaryEl.textContent = taskInboxSummary(activeTasks.length, recentTasks.length);
+  tasksEl.innerHTML = "";
+
+  if (visibleTasks.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "task-empty";
+    const mark = document.createElement("span");
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = "⋯";
+    const copy = document.createElement("p");
+    copy.textContent = "Tasks delegated during the conversation will appear here.";
+    empty.append(mark, copy);
+    tasksEl.append(empty);
+    return;
+  }
+
+  for (const task of visibleTasks) {
+    tasksEl.append(createTaskCard(task, unreadByTask.get(task.taskId), snapshot?.connection === "ready"));
+  }
+}
+
+function createTaskCard(task, notification, connected) {
+  const card = document.createElement("article");
+  card.className = "task-card";
+  card.dataset.taskId = task.taskId;
+  card.dataset.unread = notification ? "true" : "false";
+
+  const header = document.createElement("div");
+  header.className = "task-card__header";
+  const title = document.createElement("h3");
+  title.textContent = task.title || "Background task";
+  title.title = task.title || task.taskId;
+  const state = document.createElement("span");
+  state.className = `task-state task-state--${task.state}`;
+  state.textContent = taskStateLabel(task.state);
+  header.append(title, state);
+
+  const meta = document.createElement("div");
+  meta.className = "task-card__meta";
+  const id = document.createElement("code");
+  id.textContent = task.taskId;
+  id.title = `Stable task ID: ${task.taskId}`;
+  const updated = document.createElement("time");
+  updated.dateTime = new Date(task.updatedAt).toISOString();
+  updated.textContent = formatTaskTime(task.updatedAt);
+  meta.append(id, updated);
+
+  card.append(header, meta);
+  if (task.progress?.message) {
+    const progress = document.createElement("p");
+    progress.className = "task-card__progress";
+    progress.textContent = taskProgressText(task.progress);
+    card.append(progress);
+  }
+  if (notification) {
+    const notice = document.createElement("p");
+    notice.className = "task-card__notification";
+    notice.textContent = notification.message;
+    card.append(notice);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "task-card__actions";
+  if (isTaskStoppable(task)) {
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "danger";
+    stop.textContent = task.state === "stopping" ? "Stopping…" : "Stop task";
+    stop.disabled = !connected || task.state === "stopping";
+    stop.setAttribute("aria-label", `Stop task ${task.taskId}`);
+    stop.addEventListener("click", () => {
+      try {
+        client.stopTask(task.taskId, "stopped from Hermes Live web demo");
+      } catch (error) {
+        showError(error);
+      }
+    });
+    actions.append(stop);
+  }
+  if (notification) {
+    const acknowledge = document.createElement("button");
+    acknowledge.type = "button";
+    acknowledge.className = "secondary";
+    acknowledge.textContent = "Mark read";
+    acknowledge.disabled = !connected;
+    acknowledge.setAttribute("aria-label", `Mark task ${task.taskId} update as read`);
+    acknowledge.addEventListener("click", () => {
+      try {
+        client.acknowledgeNotification(task.taskId, notification.notificationId);
+      } catch (error) {
+        showError(error);
+      }
+    });
+    actions.append(acknowledge);
+  }
+  if (actions.childElementCount > 0) card.append(actions);
+
+  const detail = taskDetail(task);
+  if (detail) {
+    const details = document.createElement("details");
+    details.className = "task-card__details";
+    const summary = document.createElement("summary");
+    summary.textContent = task.state === "completed" ? "View result" : "View details";
+    const output = document.createElement("pre");
+    output.textContent = detail;
+    details.append(summary, output);
+    card.append(details);
+  }
+  return card;
+}
+
+function emptyTaskSnapshot() {
+  return { connection: "idle", activeTasks: [], recentTasks: [], unreadNotifications: [] };
+}
+
+function taskInboxSummary(activeCount, recentCount) {
+  if (activeCount === 0 && recentCount === 0) return "No background tasks yet";
+  if (activeCount === 0) return `${recentCount} recent ${recentCount === 1 ? "task" : "tasks"}`;
+  return `${activeCount} active · ${recentCount} recent`;
+}
+
+function taskStateLabel(state) {
+  const labels = {
+    accepted: "Accepted",
+    queued: "Queued",
+    running: "Running",
+    stopping: "Stopping",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    unknown: "Check status",
+  };
+  return labels[state] || "Updated";
+}
+
+function taskProgressText(progress) {
+  const amount = progress.percent !== undefined
+    ? `${Math.round(progress.percent)}%`
+    : progress.current !== undefined && progress.total !== undefined
+      ? `${progress.current}/${progress.total}`
+      : "";
+  return [progress.message, amount].filter(Boolean).join(" · ");
+}
+
+function taskDetail(task) {
+  const value = task.result?.output ?? task.result?.summary ?? task.error?.message ?? "";
+  if (!value) return "";
+  return value.length > MAX_TASK_DETAIL_CHARS
+    ? `${value.slice(0, MAX_TASK_DETAIL_CHARS)}\n\n[Result truncated in this view]`
+    : value;
+}
+
+function isTaskStoppable(task) {
+  return ACTIVE_TASK_STATES.has(task.state);
+}
+
+function formatTaskTime(timestamp) {
+  if (!Number.isFinite(timestamp)) return "";
+  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function addLog(kind, value) {
+  const text = String(value ?? "");
+  if (!text) return;
   const entry = document.createElement("div");
   entry.className = "entry";
   entry.innerHTML = `<strong></strong><pre></pre>`;
   entry.querySelector("strong").textContent = kind;
-  entry.querySelector("pre").textContent = value;
+  entry.querySelector("pre").textContent = text;
   logEl.append(entry);
+  const entries = logEl.querySelectorAll(".entry");
+  if (entries.length > MAX_CONVERSATION_ENTRIES) entries[0].remove();
   logEl.scrollTop = logEl.scrollHeight;
-}
-
-function addApprovalRequest(message) {
-  const entry = document.createElement("div");
-  entry.className = "entry";
-  entry.setAttribute("role", "region");
-  entry.setAttribute("aria-live", "assertive");
-  const title = document.createElement("strong");
-  title.textContent = "approval";
-  const titleId = `approval-${++approvalSequence}`;
-  title.id = titleId;
-  entry.setAttribute("aria-labelledby", titleId);
-  const body = document.createElement("pre");
-  const approval = message.approval ?? {};
-  const patternKeys = approvalPatternKeys(approval);
-  const informed =
-    (typeof approval.command === "string" && approval.command.length > 0) ||
-    (typeof approval.description === "string" && approval.description.length > 0);
-  body.textContent = [
-    approval.description,
-    approval.command ? `Command: ${approval.command}` : undefined,
-    approval.approvalId ? `Approval: ${approval.approvalId}` : undefined,
-    patternKeys.length
-      ? `Permission pattern: ${patternKeys.join(", ")}`
-      : informed
-        ? "No inspectable permission pattern; session and permanent approval are unavailable."
-        : "Request details are unavailable; denial is the only safe option.",
-  ].filter(Boolean).join("\n") || "Hermes requested an approval without additional context.";
-  const actions = document.createElement("div");
-  actions.className = "approval-actions";
-  const queueStatus = document.createElement("span");
-  queueStatus.className = "approval-queue-status";
-  queueStatus.setAttribute("role", "status");
-  queueStatus.setAttribute("aria-live", "polite");
-
-  const allowedChoices = ["once", "session", "always", "deny"];
-  const suppliedChoices = Array.isArray(approval.choices) &&
-      approval.choices.length > 0 &&
-      approval.choices.every((choice) => typeof choice === "string" && allowedChoices.includes(choice))
-    ? approval.choices
-    : ["deny"];
-  const choices = [...new Set(suppliedChoices)]
-    .filter((choice) => allowedChoices.includes(choice))
-    .filter((choice) => informed || choice === "deny")
-    .filter((choice) => !["session", "always"].includes(choice) || patternKeys.length > 0)
-    .filter((choice) => choice !== "always" || (approval.allowPermanent === true && patternKeys.length > 0));
-  if (!choices.includes("deny")) choices.push("deny");
-  const queued = {
-    message,
-    actions,
-    buttons: [],
-    queueStatus,
-    permanentArmed: false,
-    submitted: false,
-    wasActionable: false,
-  };
-  for (const choice of choices) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = choice;
-    button.addEventListener("click", () => {
-      if (approvalQueue[0] !== queued || queued.submitted) return;
-      if (choice === "always" && (!queued.permanentArmed || button.textContent !== "confirm always")) {
-        queued.permanentArmed = true;
-        button.textContent = "confirm always";
-        queueStatus.textContent = "Permanent approval changes future policy. Click confirm always again to continue.";
-        return;
-      }
-      try {
-        client.respondToApproval(choice, message.runId, { approvalId: approval.approvalId });
-        queued.submitted = true;
-        refreshApprovalQueue();
-      } catch (error) {
-        queued.permanentArmed = false;
-        if (choice === "always") button.textContent = "always";
-        refreshApprovalQueue();
-        showError(error);
-      }
-    });
-    queued.buttons.push(button);
-    actions.append(button);
-  }
-  actions.append(queueStatus);
-
-  entry.append(title, body, actions);
-  logEl.append(entry);
-  approvalQueue.push(queued);
-  refreshApprovalQueue();
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-function approvalPatternKeys(approval) {
-  const values = [];
-  const primary = inspectablePattern(approval.patternKey);
-  if (primary) values.push(primary);
-  if (Array.isArray(approval.patternKeys)) {
-    for (const value of approval.patternKeys) {
-      const pattern = inspectablePattern(value);
-      if (pattern) values.push(pattern);
-    }
-  }
-  return [...new Set(values)].slice(0, 32);
-}
-
-function inspectablePattern(value) {
-  if (typeof value !== "string") return "";
-  return value
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\|$)/g, "")
-    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\u001b[@-_]/g, "")
-    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
-    .trim()
-    .slice(0, 256);
-}
-
-function resolveApprovalQueue(message) {
-  const index = approvalQueue.findIndex((queued) =>
-    queued.message.runId === message.runId &&
-    queued.message.approval?.approvalId === message.approvalId);
-  if (index >= 0) {
-    const queued = approvalQueue[index];
-    queued.submitted = true;
-    queued.queueStatus.textContent = `Resolved: ${message.choice}`;
-    for (const button of queued.buttons) button.disabled = true;
-    approvalQueue.splice(index, 1);
-  }
-  refreshApprovalQueue();
-}
-
-function refreshApprovalQueue() {
-  approvalQueue.forEach((queued, index) => {
-    const actionable = index === 0 && !queued.submitted;
-    const becameActionable = actionable && !queued.wasActionable;
-    for (const button of queued.buttons) button.disabled = !actionable;
-    if (!queued.submitted && !queued.permanentArmed) {
-      queued.queueStatus.textContent = actionable
-        ? "Answer this approval to continue."
-        : "Queued: answer the earlier approval first (Hermes resolves approvals FIFO).";
-    }
-    queued.wasActionable = actionable;
-    if (becameActionable) queued.buttons[0]?.focus();
-  });
-}
-
-function clearApprovalQueueForRun(runId, reason) {
-  for (let index = approvalQueue.length - 1; index >= 0; index -= 1) {
-    const queued = approvalQueue[index];
-    if (queued.message.runId !== runId) continue;
-    queued.submitted = true;
-    queued.queueStatus.textContent = reason;
-    for (const button of queued.buttons) button.disabled = true;
-    approvalQueue.splice(index, 1);
-  }
-  refreshApprovalQueue();
-}
-
-function resetApprovalQueue() {
-  for (const queued of approvalQueue) {
-    queued.submitted = true;
-    queued.queueStatus.textContent = "Session ended before this approval was answered.";
-    for (const button of queued.buttons) button.disabled = true;
-  }
-  approvalQueue.length = 0;
 }
 
 function setStatus(value) {
@@ -390,9 +400,8 @@ function setStatus(value) {
 function setInteractive(enabled) {
   textInput.disabled = !enabled;
   sendButton.disabled = !enabled;
-  micButton.disabled = !enabled;
-  interruptButton.disabled = !enabled;
-  stopButton.disabled = !enabled;
+  micButton.disabled = !enabled || client?.session?.realtime?.audio?.input?.enabled !== true;
+  interruptButton.disabled = !enabled || client?.session?.realtime?.audio?.output?.enabled !== true;
 }
 
 function showError(error) {
