@@ -80,7 +80,21 @@ The `ready` argument includes the authenticated `/ready` probe when `HERMES_LIVE
 
 ## Runtime Usage
 
-Run the gateway from a GitHub clone:
+Install the package and its matching Hermes plugin:
+
+```sh
+npm install --global hermes-live-voice
+hermes-live plugin install --force
+hermes plugins enable hermes-live
+```
+
+Start the installed gateway:
+
+```sh
+HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_AGENT_API_SERVER_KEY=... HERMES_LIVE_PROVIDER=mock hermes-live serve
+```
+
+For source development, run from a GitHub clone instead:
 
 ```sh
 npm ci
@@ -88,12 +102,6 @@ npm run build
 node dist/cli.js plugin install --symlink
 hermes plugins enable hermes-live
 HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_AGENT_API_SERVER_KEY=... HERMES_LIVE_PROVIDER=mock npm run dev
-```
-
-Or run the built CLI directly:
-
-```sh
-HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_AGENT_API_SERVER_KEY=... HERMES_LIVE_PROVIDER=mock node dist/cli.js serve
 ```
 
 Or with Docker:
@@ -108,16 +116,18 @@ Then connect clients to:
 ws://localhost:8788/v1/live
 ```
 
+The commands below assume the globally installed package. From a built source checkout, replace `hermes-live` with `node dist/cli.js`.
+
 For a terminal smoke test:
 
 ```sh
-node dist/cli.js client "What should I work on next?"
+hermes-live client "What should I work on next?"
 ```
 
 For a persistent remote/headless session:
 
 ```sh
-node dist/cli.js terminal
+hermes-live terminal
 ```
 
 The terminal surface is text-control only. Use Hermes Ctrl+B Voice Mode for local terminal audio or the Dashboard/browser client for gateway audio.
@@ -128,27 +138,27 @@ The realtime provider does not receive Hermes tools directly. It receives gatewa
 
 ## Install In Hermes
 
-Current Hermes releases can clone the plugin subdirectory, install it under `~/.hermes/plugins/hermes-live/`, and enable it in one command:
+The npm package can install its bundled plugin under `~/.hermes/plugins/hermes-live/`:
+
+```sh
+hermes-live plugin install --force
+hermes plugins enable hermes-live
+```
+
+Current Hermes releases can also install the latest plugin source directly from GitHub:
 
 ```sh
 hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --enable
 ```
 
-For a local clone or npm package, copy or symlink the packaged plugin directory instead:
-
-```sh
-node dist/cli.js plugin install
-hermes plugins enable hermes-live
-```
-
 Useful installer options:
 
 ```sh
-node dist/cli.js plugin status
-node dist/cli.js plugin path
-node dist/cli.js plugin install --force
-node dist/cli.js plugin install --symlink
-node dist/cli.js plugin install --dir /custom/hermes/plugins
+hermes-live plugin status
+hermes-live plugin path
+hermes-live plugin install --force
+hermes-live plugin install --symlink
+hermes-live plugin install --dir /custom/hermes/plugins
 ```
 
 Project-local plugins can also be used under `.hermes/plugins/` when `HERMES_ENABLE_PROJECT_PLUGINS=true` is set for trusted repositories.

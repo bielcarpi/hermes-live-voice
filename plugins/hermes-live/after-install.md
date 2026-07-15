@@ -4,15 +4,17 @@ The Hermes plugin, Dashboard tab, and server-side Dashboard proxy are now availa
 
 ## 1. Start the companion gateway
 
-From a built checkout of `hermes-live-voice`:
+From the installed `hermes-live-voice` package:
 
 ```sh
 HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
 HERMES_LIVE_PROVIDER=gemini \
 GEMINI_API_KEY=your-gemini-key \
-node dist/cli.js serve
+hermes-live serve
 ```
+
+From a built source checkout, the equivalent command is `node dist/cli.js serve`.
 
 Use `HERMES_LIVE_PROVIDER=openai` with `OPENAI_API_KEY` for OpenAI Realtime, or `HERMES_LIVE_PROVIDER=mock` for a text-only, no-provider-cost integration check.
 

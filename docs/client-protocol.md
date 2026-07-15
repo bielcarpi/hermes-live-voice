@@ -11,10 +11,12 @@ Use `wss://` behind TLS in production.
 For a one-shot terminal smoke test, use:
 
 ```sh
-node dist/cli.js client "What is the current status?"
+hermes-live client "What is the current status?"
 ```
 
-For a persistent text-control session, use `node dist/cli.js terminal`. It exercises this same protocol while exposing task progress, provider interruption, Hermes task stop, and targeted approvals as terminal commands. Approval commands are enabled only when Hermes advertises `run_approval_response_by_id` and supplies a stable ID for the request. With a legacy uncorrelated approval contract, the terminal shows no actionable approval prompt; the gateway attempts to deny the pending queue, stops the Hermes run, and closes the voice session for operator verification. The terminal intentionally has no native audio dependency: use official Hermes Voice Mode (Ctrl+B) for a local microphone, or the Dashboard/browser client for remote gateway audio.
+For a persistent text-control session, use `hermes-live terminal`. It exercises this same protocol while exposing task progress, provider interruption, Hermes task stop, and targeted approvals as terminal commands. Approval commands are enabled only when Hermes advertises `run_approval_response_by_id` and supplies a stable ID for the request. With a legacy uncorrelated approval contract, the terminal shows no actionable approval prompt; the gateway attempts to deny the pending queue, stops the Hermes run, and closes the voice session for operator verification. The terminal intentionally has no native audio dependency: use official Hermes Voice Mode (Ctrl+B) for a local microphone, or the Dashboard/browser client for remote gateway audio.
+
+From a built source checkout, replace `hermes-live` with `node dist/cli.js`.
 
 ## Browser Client
 
@@ -70,7 +72,7 @@ Query-token auth is not accepted for `/ready` or `/v1/capabilities`.
 
 ## HTTP Readiness
 
-`GET /ready` returns the same gateway, Hermes, and realtime readiness sections as `node dist/cli.js check`.
+`GET /ready` returns the same gateway, Hermes, and realtime readiness sections as `hermes-live check`.
 
 ```json
 {

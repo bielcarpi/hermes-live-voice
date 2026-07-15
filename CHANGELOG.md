@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.3.2 - 2026-07-15
+
+- Publish `hermes-live-voice` on npm and make the installed `hermes-live` CLI the primary setup path for the gateway, Hermes plugin, terminal, and custom browser clients.
+- Serialize tagged releases, protect immutable version tags/assets, select explicit npm dist-tags, make GitHub release creation retry-safe, and verify the exact npm tarball, provenance, dist-tag, and installed CLI after trusted publication.
+- Streamline the README around a Dashboard-first quick start, clearer client choices, and concise production-readiness evidence.
+- Update the runtime WebSocket dependency to `ws` 8.21.1 and move the development toolchain to TypeScript 7.0.2 and tsx 4.23.1, with an explicit TypeScript build root.
+- Upgrade the GitHub Actions setup and artifact actions, make checksum manifests portable, group compatible Dependabot updates, and preserve the intentional Node 20 runtime baseline.
+- Harden contribution guidance, checkout credential handling, and ignored secret, build, and editor artifacts for safer community contributions.
+
 ## 0.3.1 - 2026-07-14
 
 - Negotiate targeted Hermes approval responses explicitly. Any current uncorrelated approval triggers deny-all where possible, run stop, fatal session closure, and an operator-verification warning; interactive choices require stable upstream IDs and exact run/approval/choice/count confirmation.

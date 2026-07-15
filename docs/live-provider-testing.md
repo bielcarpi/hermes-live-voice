@@ -4,6 +4,8 @@ Default CI uses fake Hermes clients and the mock realtime provider. That keeps p
 
 Use this page before claiming a hosted gateway is ready.
 
+Commands below assume the globally installed package. From a source checkout, use `npm run check`, `npm run check:live-provider`, and `npm run dev` in place of `hermes-live check`, `hermes-live provider-smoke`, and `hermes-live serve`.
+
 ## Prerequisites
 
 - Hermes API Server running with run endpoints enabled.
@@ -16,7 +18,7 @@ Use this page before claiming a hosted gateway is ready.
 ## Step 1: Check Hermes And Provider Config
 
 ```sh
-npm run check
+hermes-live check
 ```
 
 Expected:
@@ -59,12 +61,6 @@ The exact Hermes capability fields can vary by Hermes version. This proves gatew
 After setting `HERMES_LIVE_PROVIDER` and the provider credentials, run:
 
 ```sh
-npm run check:live-provider
-```
-
-For an installed package or Docker image, run the CLI directly:
-
-```sh
 hermes-live provider-smoke
 ```
 
@@ -91,7 +87,7 @@ GEMINI_API_KEY=... \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
-npm run dev
+hermes-live serve
 ```
 
 Gemini Enterprise / Vertex:
@@ -104,7 +100,7 @@ GOOGLE_CLOUD_LOCATION=us-central1 \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
-npm run dev
+hermes-live serve
 ```
 
 OpenAI Realtime:
@@ -117,7 +113,7 @@ OPENAI_REALTIME_TURN_DETECTION=disabled \
 HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
-npm run dev
+hermes-live serve
 ```
 
 Override `OPENAI_REALTIME_MODEL` only when intentionally validating another documented Realtime-compatible model.

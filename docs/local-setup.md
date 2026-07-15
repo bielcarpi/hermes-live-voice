@@ -1,4 +1,6 @@
-# Local Setup
+# Local Setup From Source
+
+This guide is for contributors running a repository checkout. For the packaged installation, start with the npm-first [Quick Start](../README.md#quick-start).
 
 ## 1. Start Hermes
 
@@ -91,7 +93,9 @@ If you bind the gateway to `0.0.0.0`, set a strong `HERMES_LIVE_AUTH_TOKEN`; oth
 Install and enable the plugin, start the companion gateway, then start or restart Hermes Dashboard:
 
 ```sh
-hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --enable
+npm run build
+node dist/cli.js plugin install --symlink
+hermes plugins enable hermes-live
 hermes dashboard
 ```
 
