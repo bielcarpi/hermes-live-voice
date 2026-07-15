@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable version tag to verify and publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,6 +17,9 @@ permissions:
 concurrency:
   group: hermes-live-release
   queue: max
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   verify-package:
@@ -22,6 +31,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
@@ -29,11 +39,33 @@ jobs:
       - name: Verify tag matches package version
         run: |
           package_version="$(node -p 'require("./package.json").version')"
-          test "$GITHUB_REF_NAME" = "v$package_version"
-      - name: Verify tag points at protected main
+          test "$RELEASE_TAG" = "v$package_version"
+      - name: Verify release source
         run: |
           main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-          test "$GITHUB_SHA" = "$main_sha"
+          package_sha="$(git rev-parse HEAD)"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            test "$GITHUB_SHA" = "$main_sha"
+            test "$package_sha" = "$main_sha"
+          else
+            test "$GITHUB_REF_NAME" = "main"
+            comparison_json="$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$main_sha")"
+            comparison="$(jq -r '.status' <<< "$comparison_json")"
+            case "$comparison" in
+              ahead|identical) ;;
+              *) echo "Release tag is not in protected main history." >&2; exit 1 ;;
+            esac
+            unexpected_files="$(jq -r '.files[] | select(.filename != ".github/workflows/release.yml") | .filename' <<< "$comparison_json")"
+            if [ -n "$unexpected_files" ]; then
+              echo "Recovery source differs from the release tag outside release.yml:" >&2
+              printf '%s\n' "$unexpected_files" >&2
+              exit 1
+            fi
+            release_json="$(gh release view "$RELEASE_TAG" --json tagName,isDraft,isImmutable)"
+            test "$(jq -r '.tagName' <<< "$release_json")" = "$RELEASE_TAG"
+            test "$(jq -r '.isDraft' <<< "$release_json")" = "false"
+            test "$(jq -r '.isImmutable' <<< "$release_json")" = "true"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
       - run: npm ci
@@ -72,10 +104,11 @@ jobs:
           package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          package_file="$(realpath "$package_file")"
           package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(`${packageJson.name}\t${packageJson.version}`); })')"
           IFS=$'\t' read -r package_name package_version <<< "$package_metadata"
           test "$package_name" = "hermes-live-voice"
-          test "$GITHUB_REF_NAME" = "v$package_version"
+          test "$RELEASE_TAG" = "v$package_version"
           case "$package_version" in
             *-*) prerelease=true ;;
             *) prerelease=false ;;
@@ -90,14 +123,14 @@ jobs:
           package_basename="$(basename "$package_file")"
           expected_prerelease="${{ steps.package.outputs.prerelease }}"
 
-          if release_json="$(gh release view "$GITHUB_REF_NAME" --json databaseId,name,isDraft,isPrerelease,assets 2>/dev/null)"; then
-            test "$(jq -r '.name' <<< "$release_json")" = "$GITHUB_REF_NAME"
+          if release_json="$(gh release view "$RELEASE_TAG" --json databaseId,name,isDraft,isPrerelease,assets 2>/dev/null)"; then
+            test "$(jq -r '.name' <<< "$release_json")" = "$RELEASE_TAG"
             test "$(jq -r '.isPrerelease' <<< "$release_json")" = "${{ steps.package.outputs.prerelease }}"
             is_draft="$(jq -r '.isDraft' <<< "$release_json")"
             release_id="$(jq -r '.databaseId' <<< "$release_json")"
             unexpected_assets="$(jq -r --arg package "$package_basename" '.assets[] | select(.name != $package and .name != "SHA256SUMS") | .name' <<< "$release_json")"
             if [ -n "$unexpected_assets" ]; then
-              echo "Unexpected assets exist on $GITHUB_REF_NAME:" >&2
+              echo "Unexpected assets exist on $RELEASE_TAG:" >&2
               printf '%s\n' "$unexpected_assets" >&2
               exit 1
             fi
@@ -106,12 +139,12 @@ jobs:
               asset_name="$(basename "$expected_file")"
               if jq -e --arg name "$asset_name" '.assets[] | select(.name == $name)' <<< "$release_json" >/dev/null; then
                 mkdir -p existing-release
-                gh release download "$GITHUB_REF_NAME" --pattern "$asset_name" --dir existing-release
+                gh release download "$RELEASE_TAG" --pattern "$asset_name" --dir existing-release
                 cmp "$expected_file" "existing-release/$asset_name"
               elif [ "$is_draft" = "true" ]; then
-                gh release upload "$GITHUB_REF_NAME" "$expected_file"
+                gh release upload "$RELEASE_TAG" "$expected_file"
               else
-                echo "Published release $GITHUB_REF_NAME is missing $asset_name." >&2
+                echo "Published release $RELEASE_TAG is missing $asset_name." >&2
                 exit 1
               fi
             done
@@ -131,20 +164,20 @@ jobs:
               echo "Existing published release matches the verified artifacts."
             fi
           elif [ "$expected_prerelease" = "true" ]; then
-            gh release create "$GITHUB_REF_NAME" release/*.tgz release/SHA256SUMS \
-              --title "$GITHUB_REF_NAME" --generate-notes --verify-tag --prerelease --latest=false
+            gh release create "$RELEASE_TAG" release/*.tgz release/SHA256SUMS \
+              --title "$RELEASE_TAG" --generate-notes --verify-tag --prerelease --latest=false
           else
-            gh release create "$GITHUB_REF_NAME" release/*.tgz release/SHA256SUMS \
-              --title "$GITHUB_REF_NAME" --generate-notes --verify-tag --latest
+            gh release create "$RELEASE_TAG" release/*.tgz release/SHA256SUMS \
+              --title "$RELEASE_TAG" --generate-notes --verify-tag --latest
           fi
 
-          final_release="$(gh release view "$GITHUB_REF_NAME" --json isDraft,isImmutable,isPrerelease)"
+          final_release="$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable,isPrerelease)"
           test "$(jq -r '.isDraft' <<< "$final_release")" = "false"
           test "$(jq -r '.isImmutable' <<< "$final_release")" = "true"
           test "$(jq -r '.isPrerelease' <<< "$final_release")" = "$expected_prerelease"
           rm -rf verified-release
           mkdir verified-release
-          gh release download "$GITHUB_REF_NAME" \
+          gh release download "$RELEASE_TAG" \
             --pattern "$package_basename" \
             --pattern SHA256SUMS \
             --dir verified-release
@@ -207,10 +240,11 @@ jobs:
           package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          package_file="$(realpath "$package_file")"
           package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(`${packageJson.name}\t${packageJson.version}`); })')"
           IFS=$'\t' read -r package_name package_version <<< "$package_metadata"
           test "$package_name" = "hermes-live-voice"
-          test "$GITHUB_REF_NAME" = "v$package_version"
+          test "$RELEASE_TAG" = "v$package_version"
           case "$package_version" in
             *-*) npm_tag=next ;;
             *) npm_tag=latest ;;
