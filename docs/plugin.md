@@ -20,7 +20,7 @@ The current plugin registers:
 
 - `hermes_live_status` tool.
 - `/hermes-live` slash command.
-- Official Dashboard **Live Voice** tab with connection state, transcript, task activity, interruption, run stop, and capability-gated approval controls.
+- Hermes Dashboard **Live Voice** tab with connection state, transcript, task activity, interruption, run stop, and capability-gated approval controls.
 - Same-origin Dashboard status and WebSocket endpoints authenticated by Hermes.
 - Server-side gateway credential injection so browser code never receives `HERMES_LIVE_AUTH_TOKEN`.
 - Packaged shared browser client, microphone worklet, and styles.
@@ -30,7 +30,7 @@ The current plugin registers:
 
 The network/audio gateway remains a separate runtime process. This keeps provider sockets and long-lived gateway credentials outside the Dashboard browser and outside Hermes core.
 
-## Official Dashboard
+## Hermes Dashboard
 
 After installing and enabling the plugin, start the companion gateway and restart the Dashboard:
 
@@ -51,6 +51,8 @@ Choose **Live Voice** from the plugin navigation group. The page checks readines
 
 The browser opens a host-authenticated WebSocket to `/api/plugins/hermes-live/live`. The plugin backend reuses Hermes Dashboard authentication and origin policy before proxying to the gateway. It does not expose the upstream URL or token in `/status` responses.
 
+The Dashboard status backend does not follow redirects and accepts only bounded JSON responses. The WebSocket proxy also rejects handshake redirects, so it never replays the installation bearer to a redirect target. It reports ready only after validating the Hermes Live capabilities object, service identity, and protocol version and confirming that the gateway, Hermes, and realtime readiness checks are all explicitly healthy. It omits any allowlisted capability string that reflects the configured gateway bearer.
+
 ## Hermes Tool
 
 When the plugin is enabled in Hermes, the model can call:
@@ -66,6 +68,10 @@ Arguments:
 - `timeout_ms`: HTTP timeout between `100` and `10000`; defaults to `2000`.
 
 The tool reads `HERMES_LIVE_URL` and `HERMES_LIVE_AUTH_TOKEN` from the Hermes process environment. It never returns the token value.
+
+`HERMES_LIVE_URL` must be a credential-free `http://` or `https://` origin. A path, query, fragment, embedded username/password, unsupported scheme, malformed port, or surrounding whitespace makes the tool fail before it sends a request or echoes the configured value. Keep the bearer only in `HERMES_LIVE_AUTH_TOKEN`; unsafe whitespace/control characters and values larger than 8 KiB are rejected before probing.
+
+Gateway probes do not follow redirects. Each response must be JSON and is read through a 16 KiB limit; larger, non-JSON, malformed, or endpoint-incompatible responses fail with a stable error code. The tool returns only bounded, endpoint-specific status/capability/readiness fields. Allowed string fields are still omitted if they contain control characters or reflect the configured bearer, including as part of a longer value. The tool does not relay raw response bodies, upstream error text, readiness base URLs, or unknown fields into the Hermes model context.
 
 ## Slash Command
 
@@ -107,8 +113,12 @@ HERMES_BASE_URL=http://127.0.0.1:8642 HERMES_AGENT_API_SERVER_KEY=... HERMES_LIV
 Or with Docker:
 
 ```sh
-docker compose -f examples/docker-compose.yml up
+HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
+HERMES_LIVE_AUTH_TOKEN=your-random-gateway-token \
+docker compose -f examples/docker-compose.yml up --build
 ```
+
+Both variables are required by the Compose example. Put them in a protected env file and pass `--env-file` instead of shell history for a persistent deployment.
 
 Then connect clients to:
 
@@ -130,7 +140,7 @@ For a persistent remote/headless session:
 hermes-live terminal
 ```
 
-The terminal surface is text-control only. Use Hermes Ctrl+B Voice Mode for local terminal audio or the Dashboard/browser client for gateway audio.
+The terminal surface is text-control only, but it still opens a realtime-provider session and can incur provider usage. Use Hermes Voice Mode or Desktop for first-party local audio, and the Dashboard/browser client for gateway audio.
 
 ## Boundary
 
@@ -145,11 +155,13 @@ hermes-live plugin install --force
 hermes plugins enable hermes-live
 ```
 
-Current Hermes releases can also install the latest plugin source directly from GitHub:
+For bleeding-edge development only, Hermes can install the latest plugin source directly from the repository default branch:
 
 ```sh
 hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --enable
 ```
+
+That syntax shallow-clones unpinned `main`; it does not install the npm gateway CLI and cannot guarantee plugin/runtime version parity. Prefer `hermes-live plugin install --force` for normal use. If you test latest source, run the gateway from the same checkout.
 
 Useful installer options:
 

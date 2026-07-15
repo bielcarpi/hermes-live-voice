@@ -16,12 +16,12 @@
   <rect x="26" y="218" width="1228" height="16" fill="#0b0f14" opacity="0.75" />
 
   <g font-family="Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" font-weight="900" letter-spacing="3">
-    <text x="66" y="154" font-size="80" fill="#05070a" opacity="0.9" transform="translate(11 15)">HERMES LIVE-VOICE</text>
-    <text x="66" y="154" font-size="80" fill="none" stroke="#05070a" stroke-width="13" stroke-linejoin="round">HERMES LIVE-VOICE</text>
-    <text x="66" y="154" font-size="80" fill="#ffb32c" transform="translate(7 8)">HERMES LIVE-VOICE</text>
-    <text x="66" y="154" font-size="80" fill="#ffd21a">HERMES LIVE-VOICE</text>
+    <text x="66" y="154" font-size="80" fill="#05070a" opacity="0.9" transform="translate(11 15)">HERMES LIVE VOICE</text>
+    <text x="66" y="154" font-size="80" fill="none" stroke="#05070a" stroke-width="13" stroke-linejoin="round">HERMES LIVE VOICE</text>
+    <text x="66" y="154" font-size="80" fill="#ffb32c" transform="translate(7 8)">HERMES LIVE VOICE</text>
+    <text x="66" y="154" font-size="80" fill="#ffd21a">HERMES LIVE VOICE</text>
     <g clip-path="url(#lowerStripe)">
-      <text x="66" y="154" font-size="80" fill="#d57921">HERMES LIVE-VOICE</text>
+      <text x="66" y="154" font-size="80" fill="#d57921">HERMES LIVE VOICE</text>
     </g>
     <text x="70" y="194" font-size="22" fill="#e7edf7" letter-spacing="5">TALK TO HERMES LIKE A LIVE CALL</text>
   </g>

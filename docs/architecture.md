@@ -64,6 +64,8 @@ The gateway owns:
 
 The Dashboard browser never receives `HERMES_LIVE_AUTH_TOKEN`. It authenticates to Hermes' own Dashboard, obtains a host-authorized same-origin WebSocket URL, and connects to the plugin backend. The backend revalidates Dashboard authentication and origin policy, then opens the upstream gateway socket with the installation credential server-side.
 
+The credentialed Dashboard WebSocket rejects handshake redirects. Hermes JSON calls and the long-lived event stream also reject redirects, keeping private run input and the server-owned Hermes session scope pinned to the configured origin. The OpenAI Realtime adapter likewise disables WebSocket redirects so its provider bearer cannot trigger a second connection attempt. Hermes accepts only a credential-free HTTP(S) root origin; OpenAI accepts a credential-free WS(S) URL without a fragment and redacts path/query text from public diagnostics. Gemini explicitly supplies the official Developer API or validated regional Vertex base URL to the SDK, preventing ambient SDK base-URL or cloud-mode variables from retargeting provider credentials.
+
 Custom/community web UIs should use the same shape: an authenticated same-origin WebSocket proxy or a backend-issued short-lived ticket. A static frontend that embeds the shared gateway bearer is suitable only for trusted local development.
 
 The gateway code is organized as a small ports-and-adapters system:
@@ -145,7 +147,9 @@ Gateway = translator, session manager, safety boundary
 
 ### Current delegation model
 
-In v0.3, `start_hermes_run` is synchronous from the realtime provider's perspective: its tool result returns after the Hermes SSE run reaches a terminal event. The Dashboard and connected clients still receive progress and stop controls while that work runs, plus approval controls when the negotiated Hermes contract supports them, but the speech model cannot naturally hold a second provider-side conversation or call `get_hermes_run_status` during the outstanding tool call. Provider-authored transcript lines are therefore labeled **Live voice**, not Hermes. A future async run bridge will return the run id immediately and deliver bounded progress/completion notifications independently.
+Currently, `start_hermes_run` is synchronous from the realtime provider's perspective: its tool result returns after the Hermes SSE run reaches a terminal event. The Dashboard and connected clients still receive progress and stop controls while that work runs, plus approval controls when the negotiated Hermes contract supports them, but the speech model cannot naturally hold a second provider-side conversation or call `get_hermes_run_status` during the outstanding tool call. Provider-authored transcript lines are therefore labeled **Live voice**, not Hermes. A future async run bridge will return the run id immediately and deliver bounded progress/completion notifications independently.
+
+Gemini Live can separately emit `toolCallCancellation.ids` when an interrupted provider turn withdraws previously issued function calls. The adapter preserves those ids as a distinct event instead of treating them as ordinary speech cancellation. The gateway requires every id to match its bounded per-session tool-call ledger, suppresses queued execution and unsent/replayed results for cancelled calls, and uses the existing idempotent Hermes stop path when a cancelled `start_hermes_run` still owns a known active run. If cancellation races the Hermes start response, arrives after the owned run becomes terminal, or overlaps an in-flight provider-result send, the session fails closed for operator verification. A result whose provider send already started cannot be recalled, and completed Hermes side effects cannot be generically undone. See the [Gemini Live API reference](https://ai.google.dev/api/live#BidiGenerateContentToolCallCancellation).
 
 ## Session Identity
 

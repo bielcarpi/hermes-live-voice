@@ -6,7 +6,7 @@ The roadmap favors a small, trustworthy bridge over a broad voice platform.
 
 ## Now: reliable self-hosted developer preview
 
-- Keep Gemini Live and OpenAI Realtime adapters aligned with their documented GA event shapes.
+- Keep Gemini Live and OpenAI Realtime adapters aligned with their documented event shapes.
 - Make installation, provider verification, and failure messages obvious.
 - Preserve the three-tool boundary between realtime providers and Hermes.
 - Keep credentials and Hermes session keys server-side.
@@ -16,10 +16,14 @@ The roadmap favors a small, trustworthy bridge over a broad voice platform.
 
 ## Next: excellent voice-agent experience
 
+- Return a run id immediately and deliver bounded progress/completion notifications asynchronously so provider conversation does not pause for the full Hermes task.
 - Safe structured narration for long Hermes runs, using allowlisted status messages rather than raw model reasoning or tool output.
 - Reconnect grace and explicit run reattachment for unreliable mobile networks.
+- Gemini context-window compression, session resumption, and `GoAway` handling for sessions beyond the current single-connection preview path.
+- Optional OpenAI spoken-input transcription with an explicit transcription model, separate-cost disclosure, and normalized user transcript events.
 - Session, delegation, interruption, latency, error, and cost telemetry hooks.
 - Explicit client event-detail policies for production integrations.
+- Track a stable public Hermes Dashboard backend-auth contract and test the plugin against an explicit upstream version matrix.
 - A curated extension for the community Hermes WebUI, paired with a small authenticated same-origin WebSocket proxy.
 - Accessibility testing with screen readers and real microphone permission flows across supported browsers.
 
@@ -47,13 +51,7 @@ Provider compatibility is earned through tests, not model-name configuration alo
 5. Provider errors close or recover without leaking credentials.
 6. Captured event fixtures cover the documented protocol shape.
 
-### OpenAI `gpt-live-1` watchlist
-
-`gpt-live-1` is not currently present in OpenAI's public API documentation or model catalog. Hermes Live Voice therefore does not claim support or an availability date.
-
-If OpenAI releases it as a public Realtime-compatible API model, the adapter boundary should make adoption straightforward, but the model will only be advertised after it passes the compatibility gates above. Until then, the documented OpenAI default is `gpt-realtime-2.1`.
-
-Source of truth: [OpenAI Realtime and audio documentation](https://developers.openai.com/api/docs/guides/realtime).
+Provider source of truth: [OpenAI Realtime and audio](https://developers.openai.com/api/docs/guides/realtime) and the [Gemini Live API](https://ai.google.dev/gemini-api/docs/live-api). Future model names stay out of the roadmap until they are publicly documented and pass the compatibility gates above.
 
 ## Adoption gates
 

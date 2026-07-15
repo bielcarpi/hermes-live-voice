@@ -9,7 +9,7 @@ import { stdin as input, stderr as approvalOutput } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { assertRuntimeConfig, loadConfig } from "./config.js";
+import { assertRuntimeConfig, loadConfig, publicBaseUrl } from "./config.js";
 import type { AppConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { HERMES_LIVE_PROTOCOL_VERSION } from "./protocol.js";
@@ -110,9 +110,17 @@ async function main(): Promise<void> {
       JSON.stringify(
         {
           ...config,
-          hermes: { ...config.hermes, apiKey: redact(config.hermes.apiKey) },
+          hermes: {
+            ...config.hermes,
+            baseUrl: publicBaseUrl(config.hermes.baseUrl),
+            apiKey: redact(config.hermes.apiKey),
+          },
           gemini: { ...config.gemini, apiKey: redact(config.gemini.apiKey) },
-          openai: { ...config.openai, apiKey: redact(config.openai.apiKey) },
+          openai: {
+            ...config.openai,
+            baseUrl: publicBaseUrl(config.openai.baseUrl),
+            apiKey: redact(config.openai.apiKey),
+          },
           server: { ...config.server, authToken: redact(config.server.authToken) },
         },
         null,
@@ -168,6 +176,7 @@ Optional:
   HERMES_LIVE_MAX_SESSIONS Concurrent WebSocket session limit, default 8
   HERMES_LIVE_RUN_EVENT_DETAIL summary, raw, or none; default summary
   HERMES_LIVE_TRUST_CLIENT_IDENTITY Allow profileId/userLabel from clients; default false
+  HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS  Hermes run SSE idle timeout, default 120000
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
   HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke

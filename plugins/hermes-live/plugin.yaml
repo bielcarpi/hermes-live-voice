@@ -1,5 +1,5 @@
 name: hermes-live
-version: 0.3.2
+version: 0.4.0
 description: "Connect Hermes Agent to an interruptible Gemini Live or OpenAI Realtime voice session through the self-hosted Hermes Live Voice gateway."
 author: Biel Carpi and Hermes Live contributors
 kind: standalone

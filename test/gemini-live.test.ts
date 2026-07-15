@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildGeminiClientOptions,
   buildGeminiLiveConnectConfig,
   createGeminiLiveEventForwarder,
   buildGeminiRealtimeAudioInput,
@@ -9,6 +10,7 @@ import {
   GeminiLiveAdapter,
   GeminiLiveSession,
   normalizeGeminiLiveMessage,
+  officialGeminiApiBaseUrl,
 } from "../src/adapters/outbound/realtime/gemini-live.adapter.js";
 
 describe("Gemini Live adapter helpers", () => {
@@ -18,6 +20,61 @@ describe("Gemini Live adapter helpers", () => {
       outputAudioTranscription: {},
       systemInstruction: "test instruction",
     });
+  });
+
+  it("pins official Gemini endpoints and ignores ambient SDK endpoint overrides", () => {
+    const names = [
+      "GOOGLE_GEMINI_BASE_URL",
+      "GOOGLE_VERTEX_BASE_URL",
+      "GOOGLE_GENAI_USE_ENTERPRISE",
+      "GOOGLE_GENAI_USE_VERTEXAI",
+    ] as const;
+    const previous = new Map(names.map((name) => [name, process.env[name]]));
+    process.env.GOOGLE_GEMINI_BASE_URL = "http://127.0.0.1:9/gemini-credential-target";
+    process.env.GOOGLE_VERTEX_BASE_URL = "http://127.0.0.1:9/vertex-credential-target";
+    process.env.GOOGLE_GENAI_USE_ENTERPRISE = "true";
+    process.env.GOOGLE_GENAI_USE_VERTEXAI = "true";
+
+    try {
+      const developerConfig = testGeminiConfig({ enterprise: false, apiKey: "endpoint-sensitive-key" });
+      expect(buildGeminiClientOptions(developerConfig)).toMatchObject({
+        enterprise: false,
+        apiKey: "endpoint-sensitive-key",
+        httpOptions: { baseUrl: "https://generativelanguage.googleapis.com/" },
+      });
+      const developerClient = (new GeminiLiveAdapter(developerConfig) as any).createClient();
+      expect(developerClient.apiClient.isVertexAI()).toBe(false);
+      expect(developerClient.apiClient.getBaseUrl()).toBe("https://generativelanguage.googleapis.com/");
+      expect(developerClient.apiClient.getWebsocketBaseUrl()).toBe("wss://generativelanguage.googleapis.com/");
+
+      const vertexConfig = testGeminiConfig({
+        enterprise: true,
+        apiKey: undefined,
+        project: "demo-project",
+        location: "us-central1",
+      });
+      expect(buildGeminiClientOptions(vertexConfig)).toMatchObject({
+        enterprise: true,
+        project: "demo-project",
+        location: "us-central1",
+        httpOptions: { baseUrl: "https://us-central1-aiplatform.googleapis.com/" },
+      });
+      const vertexClient = (new GeminiLiveAdapter(vertexConfig) as any).createClient();
+      expect(vertexClient.apiClient.isVertexAI()).toBe(true);
+      expect(vertexClient.apiClient.getBaseUrl()).toBe("https://us-central1-aiplatform.googleapis.com/");
+      expect(vertexClient.apiClient.getWebsocketBaseUrl()).toBe("wss://us-central1-aiplatform.googleapis.com/");
+
+      expect(officialGeminiApiBaseUrl({ enterprise: true, location: "global" }))
+        .toBe("https://aiplatform.googleapis.com/");
+      expect(officialGeminiApiBaseUrl({ enterprise: true, location: "eu" }))
+        .toBe("https://aiplatform.eu.rep.googleapis.com/");
+    } finally {
+      for (const name of names) {
+        const value = previous.get(name);
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it("emits one response start per Gemini turn before assistant output", () => {
@@ -45,6 +102,28 @@ describe("Gemini Live adapter helpers", () => {
       type: "tool_call",
       call: { id: "call_1", name: "start_hermes_run", args: { message: "hello" } },
     });
+  });
+
+  it("normalizes Gemini tool-call cancellation ids", () => {
+    expect(
+      normalizeGeminiLiveMessage({
+        toolCallCancellation: { ids: ["call_1", "call_2"] },
+      }),
+    ).toEqual([{ type: "tool_call_cancelled", callIds: ["call_1", "call_2"] }]);
+
+    expect(
+      normalizeGeminiLiveMessage({
+        tool_call_cancellation: { ids: ["call_snake"] },
+      }),
+    ).toEqual([{ type: "tool_call_cancelled", callIds: ["call_snake"] }]);
+  });
+
+  it("preserves malformed Gemini tool-call cancellations for fail-closed gateway validation", () => {
+    expect(
+      normalizeGeminiLiveMessage({
+        toolCallCancellation: { ids: ["call_1", 2] },
+      }),
+    ).toEqual([{ type: "tool_call_cancelled", callIds: [] }]);
   });
 
   it("normalizes text and audio parts", () => {
@@ -237,6 +316,21 @@ describe("Gemini Live adapter helpers", () => {
     await expect(
       new GeminiLiveAdapter(testGeminiConfig({ enterprise: true, project: undefined })).connect(testConnectParams()),
     ).rejects.toThrow(/GOOGLE_CLOUD_PROJECT/);
+    await expect(
+      new GeminiLiveAdapter(testGeminiConfig({ enterprise: true, project: "unsafe/project" })).connect(testConnectParams()),
+    ).rejects.toThrow(/GOOGLE_CLOUD_PROJECT/);
+    await expect(
+      new GeminiLiveAdapter(testGeminiConfig({ location: "us-central1/../../target" })).connect(testConnectParams()),
+    ).rejects.toThrow(/GOOGLE_CLOUD_LOCATION/);
+    await expect(
+      new GeminiLiveAdapter(testGeminiConfig({ location: "a".repeat(64) })).connect(testConnectParams()),
+    ).rejects.toThrow(/GOOGLE_CLOUD_LOCATION/);
+    await expect(
+      new GeminiLiveAdapter(testGeminiConfig({ apiVersion: "v1beta?key=secret" })).connect(testConnectParams()),
+    ).rejects.toThrow(/GOOGLE_GENAI_API_VERSION/);
+    await expect(
+      new GeminiLiveAdapter(testGeminiConfig({ apiVersion: `v1${"1".repeat(32)}` })).connect(testConnectParams()),
+    ).rejects.toThrow(/GOOGLE_GENAI_API_VERSION/);
   });
 });
 

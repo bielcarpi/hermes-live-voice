@@ -33,6 +33,7 @@ GATEWAY_WEBSOCKET_PATH = "/v1/live"
 MAX_MESSAGE_BYTES = 8_000_000
 MAX_STATUS_BODY_BYTES = 256_000
 MAX_TOKEN_BYTES = 8_192
+MAX_GATEWAY_URL_CHARS = 2_048
 STATUS_TIMEOUT_SECONDS = 2.5
 
 
@@ -73,7 +74,18 @@ def _normalise_gateway_url(value: str | None = None) -> str:
     raw = DEFAULT_GATEWAY_URL if value is None else value
     if not isinstance(raw, str):
         raise GatewayConfigurationError("gateway URL must be a string")
-    if not raw or any(character.isspace() or character == "\\" for character in raw):
+    if (
+        not raw
+        or len(raw) > MAX_GATEWAY_URL_CHARS
+        or raw != raw.strip()
+        or any(
+            character.isspace()
+            or character == "\\"
+            or ord(character) < 0x20
+            or ord(character) == 0x7F
+            for character in raw
+        )
+    ):
         raise GatewayConfigurationError("gateway URL contains unsafe characters")
 
     try:
@@ -110,8 +122,14 @@ def _gateway_token() -> str | None:
     token = os.getenv("HERMES_LIVE_AUTH_TOKEN")
     if not token:
         return None
-    encoded = token.encode("utf-8")
-    if len(encoded) > MAX_TOKEN_BYTES or any(character.isspace() or ord(character) == 0x7F for character in token):
+    try:
+        encoded = token.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise GatewayConfigurationError("gateway token contains unsafe characters") from exc
+    if len(encoded) > MAX_TOKEN_BYTES or any(
+        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+        for character in token
+    ):
         raise GatewayConfigurationError("gateway token contains unsafe characters")
     return token
 
@@ -120,6 +138,28 @@ def _gateway_websocket_url(gateway_url: str) -> str:
     parsed = urlsplit(_normalise_gateway_url(gateway_url))
     scheme = "wss" if parsed.scheme == "https" else "ws"
     return urlunsplit((scheme, parsed.netloc, GATEWAY_WEBSOCKET_PATH, "", ""))
+
+
+def _reject_upstream_redirect(error: Exception) -> Exception:
+    """Return the handshake error so websockets cannot follow its Location."""
+
+    return error
+
+
+def _disable_upstream_redirects(connection: Any) -> Any:
+    """Fail closed if the upstream client cannot disable redirect handling.
+
+    websockets follows HTTP handshake redirects by default and reuses
+    ``additional_headers`` on the redirected request.  Replacing the per-
+    connection redirect hook keeps the installation bearer pinned to the
+    configured gateway origin.
+    """
+
+    try:
+        connection.process_redirect = _reject_upstream_redirect
+    except Exception as exc:
+        raise GatewayConfigurationError("upstream WebSocket redirects could not be disabled") from exc
+    return connection
 
 
 @router.get("/status")
@@ -153,15 +193,19 @@ async def gateway_status() -> dict[str, Any]:
         )
 
     reachable = any(probe.reached_server for probe in (health, capabilities, readiness))
-    ready = readiness.ok and readiness.body is not None and readiness.body.get("status") == "ready"
-    protocol_version, provider, model, audio = _capabilities_summary(capabilities.body if capabilities.ok else None)
+    capabilities_valid = _capabilities_identity_is_valid(capabilities)
+    ready = capabilities_valid and _readiness_is_ready(readiness)
+    protocol_version, provider, model, audio = _capabilities_summary(
+        capabilities.body if capabilities_valid else None,
+        sensitive_values=(token,) if token else (),
+    )
 
     error: str | None
     if not reachable:
         error = "gateway_unreachable"
     elif capabilities.status in {401, 403} or readiness.status in {401, 403}:
         error = "gateway_auth_failed"
-    elif not capabilities.ok or capabilities.body is None:
+    elif not capabilities_valid:
         error = "capabilities_unavailable"
     elif not ready:
         error = "gateway_not_ready"
@@ -204,6 +248,9 @@ async def _fetch_json(
 
     try:
         async with client.stream("GET", url, headers=headers) as response:
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json" and not content_type.endswith("+json"):
+                return _Probe(status=response.status_code, error="invalid_content_type")
             chunks: list[bytes] = []
             size = 0
             async for chunk in response.aiter_bytes():
@@ -213,8 +260,8 @@ async def _fetch_json(
                 chunks.append(chunk)
             raw = b"".join(chunks)
             try:
-                parsed = json.loads(raw) if raw else None
-            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+                parsed = json.loads(raw, parse_constant=_reject_json_constant) if raw else None
+            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
                 return _Probe(status=response.status_code, error="invalid_json")
             if parsed is not None and not isinstance(parsed, dict):
                 return _Probe(status=response.status_code, error="invalid_json")
@@ -227,32 +274,67 @@ async def _fetch_json(
 
 def _capabilities_summary(
     capabilities: dict[str, Any] | None,
+    *,
+    sensitive_values: tuple[str, ...] = (),
 ) -> tuple[int | None, str | None, str | None, dict[str, Any] | None]:
     if not isinstance(capabilities, dict):
         return None, None, None, None
 
-    raw_protocol = capabilities.get("protocolVersion")
-    protocol_version = raw_protocol if isinstance(raw_protocol, int) and not isinstance(raw_protocol, bool) and 0 < raw_protocol <= 1_000 else None
+    protocol_version = _safe_protocol_version(capabilities.get("protocolVersion"))
 
     realtime = capabilities.get("realtime")
     if not isinstance(realtime, dict):
         return protocol_version, None, None, None
 
-    provider = _safe_text(realtime.get("provider"))
-    model = _safe_text(realtime.get("model"))
-    audio = _safe_audio(realtime.get("audio"))
+    provider = _safe_text(realtime.get("provider"), sensitive_values=sensitive_values)
+    model = _safe_text(realtime.get("model"), sensitive_values=sensitive_values)
+    audio = _safe_audio(realtime.get("audio"), sensitive_values=sensitive_values)
     return protocol_version, provider, model, audio
 
 
-def _safe_text(value: Any, *, maximum: int = 256) -> str | None:
+def _capabilities_identity_is_valid(capabilities: _Probe) -> bool:
+    return (
+        capabilities.ok
+        and capabilities.error is None
+        and isinstance(capabilities.body, dict)
+        and capabilities.body.get("object") == "hermes_live.capabilities"
+        and capabilities.body.get("service") == "hermes-live"
+        and _safe_protocol_version(capabilities.body.get("protocolVersion")) is not None
+    )
+
+
+def _safe_protocol_version(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= 1_000 else None
+
+
+def _readiness_is_ready(readiness: _Probe) -> bool:
+    if not readiness.ok or not isinstance(readiness.body, dict) or readiness.body.get("status") != "ready":
+        return False
+    checks = readiness.body.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    return all(
+        isinstance(checks.get(name), dict) and checks[name].get("ok") is True
+        for name in ("gateway", "hermes", "realtime")
+    )
+
+
+def _safe_text(
+    value: Any,
+    *,
+    maximum: int = 256,
+    sensitive_values: tuple[str, ...] = (),
+) -> str | None:
     if not isinstance(value, str) or not value or len(value) > maximum:
         return None
     if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
         return None
+    if any(secret and secret in value for secret in sensitive_values):
+        return None
     return value
 
 
-def _safe_audio(value: Any) -> dict[str, Any] | None:
+def _safe_audio(value: Any, *, sensitive_values: tuple[str, ...] = ()) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
 
@@ -262,7 +344,11 @@ def _safe_audio(value: Any) -> dict[str, Any] | None:
         if not isinstance(raw_direction, dict) or not isinstance(raw_direction.get("enabled"), bool):
             continue
         safe_direction: dict[str, Any] = {"enabled": raw_direction["enabled"]}
-        mime_type = _safe_text(raw_direction.get("mimeType"), maximum=128)
+        mime_type = _safe_text(
+            raw_direction.get("mimeType"),
+            maximum=128,
+            sensitive_values=sensitive_values,
+        )
         if mime_type is not None:
             safe_direction["mimeType"] = mime_type
         if direction == "input":
@@ -271,7 +357,11 @@ def _safe_audio(value: Any) -> dict[str, Any] | None:
                 safe_direction["recommendedFrameMs"] = frame_ms
         result[direction] = safe_direction
 
-    turn_detection = _safe_text(value.get("turnDetection"), maximum=64)
+    turn_detection = _safe_text(
+        value.get("turnDetection"),
+        maximum=64,
+        sensitive_values=sensitive_values,
+    )
     if turn_detection is not None:
         result["turnDetection"] = turn_detection
     return result or None
@@ -323,7 +413,10 @@ async def live_websocket(ws: WebSocket) -> None:
         connect_options["additional_headers"] = {"Authorization": f"Bearer {token}"}
 
     try:
-        async with connect(_gateway_websocket_url(gateway_url), **connect_options) as upstream:
+        upstream_connection = _disable_upstream_redirects(
+            connect(_gateway_websocket_url(gateway_url), **connect_options)
+        )
+        async with upstream_connection as upstream:
             await _bridge_connections(ws, upstream)
     except WebSocketDisconnect:
         return

@@ -10,7 +10,7 @@ Hermes Live Voice is a gateway and client protocol, not one fixed application. T
 | Bundled browser demo | First-class development tool | Local gateway setup and protocol troubleshooting. |
 | `hermes-live-voice/browser` | First-class integration API | Custom/community browser, Electron, mobile-web, React, Vue, Svelte, or vanilla clients. |
 | `hermes-live terminal` | First-class text control | SSH, headless hosts, remote operations, transcripts, task events, negotiated approval status/controls, interruption, and stop. |
-| Hermes Ctrl+B Voice Mode | Official Hermes feature | The shortest local terminal microphone path; not replaced by this project. |
+| Hermes Voice Mode and Desktop voice | Official Hermes features | First-party CLI/TUI, Desktop, messaging, and Discord voice experiences; not replaced by this project. |
 | Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement Hermes Live realtime audio, lifecycle, task, or approval events by itself. |
 
 ## Hermes Dashboard
@@ -56,7 +56,7 @@ HERMES_LIVE_AUTH_TOKEN=your-random-gateway-token
 
 `HERMES_LIVE_URL` must be a credential-free HTTP(S) origin. The Dashboard backend rejects user information, paths, query parameters, fragments, and WS(S) schemes. The token is a separate server-side value.
 
-Hermes Live Voice v0.3.2 was manually exercised in the official `nousresearch/hermes-agent:latest` Docker image running Hermes Agent v0.18.2. The packaged plugin, authenticated readiness path, mock WebSocket session, and real Gemini Live handshake were verified. Compatibility is also guarded by captured upstream fixtures, plugin manifest, Python backend, generated-asset, browser-client, package, and protocol tests.
+Hermes Live Voice v0.4.0 was manually exercised in the official `nousresearch/hermes-agent:latest` Docker image running Hermes Agent v0.18.2. The packaged plugin, authenticated readiness path, mock WebSocket session, and real Gemini Live handshake were verified. Compatibility is also guarded by captured upstream fixtures, plugin manifest, Python backend, generated-asset, browser-client, package, and protocol tests.
 
 ## Custom Or Community Browser UI
 
@@ -164,7 +164,7 @@ client.respondToApproval(choice, request.runId, {
 
 ### Hermes WebUI
 
-The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is the most natural next adapter because it already has a dedicated extension system and turn-based voice UI. A secure Live Voice integration should be a separate panel using the shared browser client plus a small backend WebSocket proxy. A frontend-only extension would expose the shared gateway token and is not a production design.
+The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is the most natural next adapter because it already has voice input and administrator-controlled extension injection. A secure Live Voice integration should be a separate panel using the shared browser client plus a small backend WebSocket proxy. A frontend-only extension would expose the shared gateway token and is not a production design.
 
 The existing microphone flow should remain available. Hermes Live is a persistent realtime provider/Hermes session with its own interruption and task lifecycle, so silently presenting it as an ordinary chat turn would make history and cancellation behavior confusing.
 
@@ -176,11 +176,11 @@ It does not currently implement the Hermes Live protocol. OpenAI-compatible Chat
 
 ### Hermes Desktop And Native Apps
 
-Hermes Desktop has its own native turn-based voice loop and does not load Dashboard plugins. A future integration can reuse the JSON/WebSocket contract but needs a native audio transport and UI. Native mobile and device clients are similarly protocol-ready, not already implemented.
+Hermes Desktop is a separate native React client with its own voice surface; it does not automatically consume Dashboard tabs. A future integration can reuse the JSON/WebSocket contract but needs a Desktop-specific audio transport and UI. Native mobile and device clients are similarly protocol-ready, not already implemented.
 
 ## Terminal
 
-For local microphone use, run Hermes and press Ctrl+B. For a remote/headless gateway session:
+For first-party local microphone use, use Hermes Voice Mode or Hermes Desktop. For a remote/headless gateway session:
 
 ```sh
 HERMES_LIVE_URL=https://voice.example.com \
@@ -188,7 +188,7 @@ HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
 hermes-live terminal
 ```
 
-The terminal shows transcript, provider response state, Hermes task progress, negotiated approval warnings or requests, and separate `/interrupt` and `/stop` commands. It intentionally has no native microphone/audio dependency stack.
+The terminal shows transcript, provider response state, sanitized Hermes task state, negotiated approval warnings or requests, and separate `/interrupt` and `/stop` commands. It intentionally has no native microphone/audio dependency stack, but still opens a realtime-provider session and can incur provider usage. Treat it as interactive remote control or a diagnostic/accessibility fallback, not deterministic automation.
 
 ## Integration Verification
 
@@ -200,7 +200,7 @@ Before calling a UI integration ready:
 4. Test microphone permission granted and denied.
 5. Verify provider audio playback and barge-in.
 6. Start a long Hermes tool run, stop it, and confirm the voice session remains connected.
-7. With a targeted-capable Hermes fixture, exercise allow, deny, and permanent confirmation with an inspectable pattern; with current legacy Hermes, verify deny/stop/session-close containment, the fatal warning, and absence of buttons.
+7. With a targeted-capable Hermes fixture, exercise allow, deny, and permanent confirmation with an inspectable pattern; with the Hermes v0.18.2 compatibility fixture, verify deny/stop/session-close containment, the fatal warning, and absence of buttons.
 8. Disconnect/reconnect and navigate away during an active run.
 9. Test desktop, narrow mobile, keyboard-only, reduced-motion, and screen-reader behavior.
 10. Inspect browser, Dashboard, gateway, and Hermes logs for errors and credential disclosure.

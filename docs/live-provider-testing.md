@@ -44,7 +44,7 @@ Expected:
     "provider": "openai",
     "model": "gpt-realtime-2.1",
     "sessionChecked": false,
-    "baseUrl": "wss://api.openai.com/v1/realtime",
+    "baseUrl": "wss://api.openai.com/[redacted-path]",
     "voice": "marin",
     "reasoningEffort": "low",
     "turnDetection": "disabled",
@@ -77,6 +77,8 @@ Expected:
 
 This command opens and closes a Gemini Live or OpenAI Realtime session with the same adapter the gateway uses. It does not require Hermes to be running, does not send user audio/text, and does not start a Hermes run. Success means both the connection and the provider's close event were confirmed. Set `HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS` if your provider or network needs a longer startup bound.
 
+Provider-controlled error text and close reasons are intentionally suppressed from this diagnostic; only generic failure context and a bounded numeric close code are retained. Check the provider's own authenticated console for deeper request diagnostics instead of weakening gateway log redaction.
+
 ## Step 3: Start The Gateway
 
 Gemini Live:
@@ -102,6 +104,8 @@ HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=local-test-token \
 hermes-live serve
 ```
+
+The gateway validates the project, location, and optional API-version token, then pins `@google/genai` to the corresponding official Vertex endpoint. Ambient Google SDK base-URL and cloud-mode overrides are intentionally ignored.
 
 OpenAI Realtime:
 
@@ -205,6 +209,8 @@ The currently documented OpenAI voice-agent model is `gpt-realtime-2.1`. Treat m
 
 OpenAI Realtime can run with VAD or push-to-talk. In this repo, `OPENAI_REALTIME_TURN_DETECTION=disabled` means the client sends `audio.end`; `semantic_vad` and `server_vad` delegate turn boundaries to OpenAI.
 
+The gateway surfaces assistant audio transcripts emitted by the voice-agent session. It does not currently enable OpenAI's separate spoken-input transcription model, so do not expect user-audio transcript lines in OpenAI mode. OpenAI documents input transcription as an optional, separately billed model; adding it should make the model and cost visible in configuration rather than enabling it implicitly.
+
 For Realtime 2 models, `OPENAI_REALTIME_REASONING_EFFORT` accepts `minimal`, `low`, `medium`, `high`, or `xhigh`. Keep `low` until live testing proves the workflow needs deeper reasoning.
 
 Clients can send `response.cancel` before a barge-in or new turn. The OpenAI adapter maps that to OpenAI Realtime's `response.cancel` event when a response is pending or active.
@@ -217,11 +223,16 @@ The default `GEMINI_MODEL` is the Gemini API Live preview model used by this rep
 
 For Gemini 3.1 Live, text updates during an active conversation go through `sendRealtimeInput({ text })`. `sendClientContent` is kept only as an SDK compatibility fallback because current Gemini 3.1 Live guidance limits client content to initial context history seeding.
 
+The current Gemini adapter is a single-connection preview path: it does not yet configure context-window compression or implement session resumption and `GoAway` migration. Google documents finite audio-only session and underlying connection lifetimes, so do not claim indefinite or durable Gemini sessions. Complete a long-session test appropriate to your deployment window; reconnect/resumption support is tracked in the roadmap.
+
 References:
 
 - OpenAI Realtime overview: https://developers.openai.com/api/docs/guides/realtime
 - OpenAI Realtime WebSocket guide: https://developers.openai.com/api/docs/guides/realtime-websocket
 - OpenAI Realtime conversations: https://developers.openai.com/api/docs/guides/realtime-conversations
+- OpenAI Realtime input-transcription costs: https://developers.openai.com/api/docs/guides/realtime-costs#input-transcription-costs
+- OpenAI input-audio transcription event: https://developers.openai.com/api/reference/resources/realtime/server-events#conversation.item.input_audio_transcription.completed
 - OpenAI GPT-Realtime-2.1 model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1
 - Gemini Live API: https://ai.google.dev/gemini-api/docs/live-api
+- Gemini Live session management: https://ai.google.dev/gemini-api/docs/live-api/session-management
 - Gemini Enterprise Live API reference: https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/multimodal-live

@@ -25,7 +25,7 @@ The gateway expects these feature flags to be true:
 - `run_stop`
 - `run_approval_response`
 
-Hermes JSON requests time out after 30 seconds by default. Set `HERMES_LIVE_HERMES_TIMEOUT_MS` to a positive number of milliseconds if your local or remote Hermes API Server needs a different bound. Zero is rejected because every Hermes request must remain bounded.
+Hermes JSON requests and initial run-event response headers time out after 30 seconds by default. Set `HERMES_LIVE_HERMES_TIMEOUT_MS` to a positive number of milliseconds if your local or remote Hermes API Server needs a different bound. After Hermes opens a run-event SSE response, a separate idle watchdog defaults to 120 seconds (`HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS`). Any received SSE bytes reset that watchdog, including Hermes' normal keepalive comments, so a healthy long-running task can continue while a silent dead stream fails visibly. Both values must be positive; zero/unbounded requests or streams are rejected.
 
 Realtime provider sessions must report ready within 15 seconds by default. Set `HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS` if your provider or network needs a longer startup bound.
 
@@ -69,6 +69,8 @@ Gemini Enterprise / Vertex mode:
 HERMES_LIVE_PROVIDER=gemini GOOGLE_GENAI_USE_ENTERPRISE=true GOOGLE_CLOUD_PROJECT=... HERMES_AGENT_API_SERVER_KEY=$API_SERVER_KEY npm run dev
 ```
 
+Vertex mode accepts a canonical Google Cloud project id and location such as `us-central1`, plus an optional bounded `GOOGLE_GENAI_API_VERSION` token such as `v1beta`. The gateway derives and pins the corresponding official Google endpoint; ambient `GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL`, or SDK cloud-mode variables cannot retarget the connection.
+
 OpenAI:
 
 ```sh
@@ -76,6 +78,8 @@ HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=... HERMES_AGENT_API_SERVER_KEY=$API_
 ```
 
 `OPENAI_REALTIME_MODEL` defaults to the currently documented `gpt-realtime-2.1`. `OPENAI_REALTIME_REASONING_EFFORT` applies to Realtime 2 models and accepts `minimal`, `low`, `medium`, `high`, or `xhigh`. Override the model only after validating it against the live-provider checklist.
+
+`HERMES_BASE_URL` accepts only a credential-free HTTP(S) root origin. `OPENAI_REALTIME_BASE_URL` accepts a credential-free WS(S) URL without a fragment; a documented custom path and query are preserved for the connection, but WebSocket redirects are rejected. Path text, query names, and query values are redacted from readiness and `print-config`, so do not depend on those diagnostics to recover provider URL parameters.
 
 ## 4. Check Readiness
 
@@ -120,10 +124,13 @@ HERMES_LIVE_DEMO_ENABLED=false npm run dev
 Production runs default the demo off when `NODE_ENV=production`. If you want to test the demo through Docker or another production-like process, enable it explicitly:
 
 ```sh
-HERMES_LIVE_DEMO_ENABLED=true docker compose -f examples/docker-compose.yml up
+HERMES_AGENT_API_SERVER_KEY=$API_SERVER_KEY \
+HERMES_LIVE_AUTH_TOKEN=your-random-gateway-token \
+HERMES_LIVE_DEMO_ENABLED=true \
+docker compose -f examples/docker-compose.yml up --build
 ```
 
-The Compose example publishes the gateway only on `127.0.0.1` by default. Set `HERMES_LIVE_HOST_PORT` to choose a different host port; use a TLS reverse proxy for remote access rather than removing the loopback bind without equivalent network controls. Its container filesystem is read-only except for a bounded `/tmp` tmpfs.
+The Compose example requires both gateway/Hermes credentials and publishes only on `127.0.0.1` by default. For repeat use, put values in a protected env file and pass `--env-file`. Set `HERMES_LIVE_HOST_PORT` to choose a different host port; use a TLS reverse proxy for remote access rather than removing the loopback bind without equivalent network controls. Its container filesystem is read-only except for a bounded `/tmp` tmpfs.
 
 ## 7. Terminal Clients
 
@@ -133,13 +140,13 @@ With the gateway running:
 node dist/cli.js client "What is the current status?"
 ```
 
-That one-shot client is useful in smoke tests and scripts. For a persistent interactive session:
+That one-shot client is useful in smoke tests. For a persistent interactive session:
 
 ```sh
 node dist/cli.js terminal
 ```
 
-The terminal console supports text turns, task progress, negotiated approval requests or compatibility warnings, `/interrupt`, and `/stop`. It does not capture or play gateway audio. For local microphone use, run `hermes` and press Ctrl+B for Hermes Voice Mode; for remote gateway voice, use the Dashboard or browser UI.
+The terminal console supports text turns, sanitized task state, negotiated approval requests or compatibility warnings, `/interrupt`, and `/stop`. It does not capture or play gateway audio, but it still opens a realtime-provider session and can incur provider usage. Use it for interactive remote control or diagnostics, not deterministic automation. For first-party local microphone use, use Hermes Voice Mode or Desktop; for remote gateway voice, use the Dashboard or browser UI.
 
 For the CLI clients, `HERMES_LIVE_URL` may be an HTTP(S) gateway origin or a WS(S) endpoint. The CLI normalizes an origin to `/v1/live` and sends `HERMES_LIVE_AUTH_TOKEN` as an upgrade header. Do not embed credentials in the URL.
 

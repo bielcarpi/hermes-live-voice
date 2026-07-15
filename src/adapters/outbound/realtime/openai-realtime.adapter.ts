@@ -43,6 +43,7 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
     }
     const ws = new WebSocket(url, {
       headers,
+      followRedirects: false,
       handshakeTimeout: Math.min(OPENAI_HANDSHAKE_TIMEOUT_MS, this.connectTimeoutMs),
       maxPayload: OPENAI_MAX_EVENT_BYTES,
     });

@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HermesClient,
@@ -13,6 +14,12 @@ afterEach(() => {
 });
 
 describe("HermesClient", () => {
+  it("rejects an unbounded idle watchdog in manually constructed clients", () => {
+    expect(() => hermesClient({ streamIdleTimeoutMs: 0 })).toThrow(
+      "Hermes event-stream idle timeout must be a positive timer-safe integer.",
+    );
+  });
+
   it("sends runs with the Hermes session key header when authenticated", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: "run_123", status: "queued" }));
     vi.stubGlobal("fetch", fetchMock);
@@ -31,6 +38,7 @@ describe("HermesClient", () => {
       "http://127.0.0.1:8642/v1/runs",
       expect.objectContaining({
         method: "POST",
+        redirect: "error",
         headers: expect.objectContaining({
           authorization: "Bearer hermes-secret",
           "X-Hermes-Session-Key": "agent:main:hermes-live:profile:default:user:alice",
@@ -206,12 +214,18 @@ describe("HermesClient", () => {
     await expect(client.assertRunsSupported()).rejects.toThrow(/run_events_sse, run_stop, run_approval_response/);
   });
 
-  it("includes Hermes response details in request failures", async () => {
-    fetchMock.mockResolvedValueOnce(new Response("nope", { status: 401 }));
+  it("does not expose Hermes response bodies in request failures", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      "Authorization: Bearer hermes-secret; X-Hermes-Session-Key: private-scope",
+      { status: 401 },
+    ));
     vi.stubGlobal("fetch", fetchMock);
     const client = hermesClient();
 
-    await expect(client.capabilities()).rejects.toThrow("Hermes request failed: 401 nope");
+    const error = await client.capabilities().catch((caught: unknown) => caught);
+    expect(error).toEqual(new Error("Hermes request failed: 401 /v1/capabilities"));
+    expect(String(error)).not.toContain("hermes-secret");
+    expect(String(error)).not.toContain("private-scope");
   });
 
   it("times out stalled JSON requests", async () => {
@@ -278,6 +292,7 @@ describe("HermesClient", () => {
       "http://127.0.0.1:8642/v1/runs/run_123/events",
       expect.objectContaining({
         method: "GET",
+        redirect: "error",
         headers: expect.objectContaining({
           accept: "text/event-stream",
           authorization: "Bearer hermes-secret",
@@ -285,6 +300,77 @@ describe("HermesClient", () => {
         }),
       }),
     );
+  });
+
+  it("keeps the request timeout on run-event response headers", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal | undefined;
+          signal?.addEventListener("abort", () => reject(signal.reason));
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient({ timeoutMs: 25 });
+    const result = expect(collectEvents(client.streamRunEvents("run_headers"))).rejects.toThrow(
+      "Hermes events request timed out after 25ms: /v1/runs/{run_id}/events",
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    await result;
+  });
+
+  it("does not expose Hermes event-stream response bodies in request failures", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      "reflected bearer hermes-secret and private-session-scope",
+      { status: 502 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    const error = await collectEvents(
+      client.streamRunEvents("hermes-secret-private-session-scope", { sessionKey: "private-session-scope" }),
+    ).catch((caught: unknown) => caught);
+    expect(error).toEqual(new Error("Hermes events request failed: 502 /v1/runs/{run_id}/events"));
+    expect(String(error)).not.toContain("hermes-secret");
+    expect(String(error)).not.toContain("private-session-scope");
+  });
+
+  it("never follows Hermes JSON or SSE redirects with private request data", async () => {
+    let redirectedRequests = 0;
+    const target = createServer((request, response) => {
+      redirectedRequests += 1;
+      if (request.method === "GET") {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end('data: {"event":"run.completed","output":"redirected"}\n\n');
+      } else {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"run_id":"run_redirected","status":"started"}');
+      }
+    });
+    const targetUrl = await listenOnLoopback(target);
+    const source = createServer((_request, response) => {
+      response.writeHead(307, { location: `${targetUrl}/credential-capture` });
+      response.end();
+    });
+    const sourceUrl = await listenOnLoopback(source);
+
+    try {
+      const client = hermesClient({ baseUrl: sourceUrl });
+      await expect(client.startRun({
+        input: "private redirected prompt",
+        sessionId: "live_redirect",
+        sessionKey: "private-session-scope",
+      })).rejects.toThrow();
+      await expect(
+        collectEvents(client.streamRunEvents("run_private", { sessionKey: "private-session-scope" })),
+      ).rejects.toThrow();
+      expect(redirectedRequests).toBe(0);
+    } finally {
+      await Promise.all([closeServer(source), closeServer(target)]);
+    }
   });
 
   it("does not apply the request timeout to an established run event stream", async () => {
@@ -310,6 +396,70 @@ describe("HermesClient", () => {
       { event: "run.completed", output: "done" },
     ]);
   });
+
+  it("times out and cancels an established run event stream after configured inactivity", async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient({ streamIdleTimeoutMs: 25 });
+    const result = expect(collectEvents(client.streamRunEvents("run_stalled"))).rejects.toThrow(
+      "Hermes events stream was idle for 25ms: /v1/runs/{run_id}/events",
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    await result;
+    expect(cancelled).toBe(true);
+  });
+
+  it("keeps the stream watchdog for legacy manual client configs that omit the new option", async () => {
+    vi.useFakeTimers();
+    const stream = new ReadableStream<Uint8Array>();
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HermesClient({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "hermes-secret",
+      model: "hermes-agent",
+      timeoutMs: 30_000,
+    });
+    const result = expect(collectEvents(client.streamRunEvents("run_legacy"))).rejects.toThrow(
+      "Hermes events stream was idle for 120000ms: /v1/runs/{run_id}/events",
+    );
+
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    await result;
+  });
+
+  it("treats Hermes SSE keepalives as activity for the stream idle watchdog", async () => {
+    vi.useFakeTimers();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        setTimeout(() => controller.enqueue(new TextEncoder().encode(": keepalive\n\n")), 20);
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode('data: {"event":"run.completed","output":"done"}\n\n'));
+          controller.close();
+        }, 40);
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient({ streamIdleTimeoutMs: 25 });
+    const eventsPromise = collectEvents(client.streamRunEvents("run_heartbeat"));
+
+    await vi.advanceTimersByTimeAsync(40);
+
+    await expect(eventsPromise).resolves.toEqual([
+      { event: "run.completed", output: "done" },
+    ]);
+  });
 });
 
 function hermesClient(overrides: Partial<ConstructorParameters<typeof HermesClient>[0]> = {}): HermesClient {
@@ -318,6 +468,7 @@ function hermesClient(overrides: Partial<ConstructorParameters<typeof HermesClie
     apiKey: "hermes-secret",
     model: "hermes-agent",
     timeoutMs: 30_000,
+    streamIdleTimeoutMs: 120_000,
     ...overrides,
   });
 }
@@ -332,4 +483,20 @@ async function collectEvents(events: AsyncGenerator<Record<string, unknown>>): P
     collected.push(event);
   }
   return collected;
+}
+
+async function listenOnLoopback(server: ReturnType<typeof createServer>): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test server did not expose a TCP address");
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
 }

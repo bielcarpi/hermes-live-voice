@@ -1,4 +1,4 @@
-import type { AppConfig } from "../../../config.js";
+import { DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS, type AppConfig } from "../../../config.js";
 import type { ApprovalChoice } from "../../../domain/protocol/client-protocol.js";
 import type { HermesRunEvent } from "../../../domain/protocol/server-protocol.js";
 import type {
@@ -12,19 +12,23 @@ import type {
 import { parseSseStream } from "./sse.js";
 
 export const MAX_HERMES_JSON_RESPONSE_BYTES = 1_000_000;
-const MAX_HERMES_ERROR_DETAIL_CHARS = 2_000;
+const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 
 export class HermesClient implements HermesRunsPort {
   readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly model: string;
   private readonly timeoutMs: number;
+  private readonly streamIdleTimeoutMs: number;
 
   constructor(config: AppConfig["hermes"]) {
     this.baseUrl = config.baseUrl;
     this.apiKey = config.apiKey;
     this.model = config.model;
     this.timeoutMs = config.timeoutMs;
+    this.streamIdleTimeoutMs = validStreamIdleTimeout(
+      config.streamIdleTimeoutMs ?? DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS,
+    );
   }
 
   async health(signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -132,58 +136,72 @@ export class HermesClient implements HermesRunsPort {
   async *streamRunEvents(runId: string, options?: AbortSignal | HermesRequestOptions): AsyncGenerator<HermesRunEvent> {
     const requestOptions = normalizeHermesRequestOptions(options);
     const path = `/v1/runs/${encodeURIComponent(runId)}/events`;
+    const publicPath = "/v1/runs/{run_id}/events";
+    const idleTimeoutMessage =
+      `Hermes events stream was idle for ${this.streamIdleTimeoutMs}ms: ${publicPath}`;
     const requestSignal = createRequestSignal(
       requestOptions.signal,
       this.timeoutMs,
-      `Hermes events request timed out after ${this.timeoutMs}ms: ${path}`,
+      `Hermes events request timed out after ${this.timeoutMs}ms: ${publicPath}`,
     );
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
         method: "GET",
+        redirect: "error",
         headers: this.headers({ accept: "text/event-stream", ...this.sessionHeaders(requestOptions.sessionKey) }),
         signal: requestSignal.signal,
       });
       if (!response.ok) {
-        const detail = await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
-        throw new Error(
-          `Hermes events request failed: ${response.status} ${detail.slice(0, MAX_HERMES_ERROR_DETAIL_CHARS)}`.trim(),
-        );
+        await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
+        throw new Error(`Hermes events request failed: ${response.status} ${publicPath}`);
       }
       if (!response.body) {
         throw new Error("Hermes events response did not include a body.");
       }
       requestSignal.clearTimeout();
-      yield* parseSseStream(response.body);
+      yield* parseSseStream(response.body, {
+        idleTimeoutMs: this.streamIdleTimeoutMs,
+        idleTimeoutMessage,
+        onIdle: () => requestSignal.abort(new Error(idleTimeoutMessage)),
+      });
     } catch (error) {
-      throw requestSignal.timedOut() ? new Error(`Hermes events request timed out after ${this.timeoutMs}ms: ${path}`) : error;
+      throw requestSignal.timedOut()
+        ? new Error(`Hermes events request timed out after ${this.timeoutMs}ms: ${publicPath}`)
+        : error;
     } finally {
       requestSignal.cleanup();
     }
   }
 
   private async requestJson<T>(path: string, init: RequestInit & { headers?: Record<string, string> }): Promise<T> {
-    const requestSignal = createRequestSignal(init.signal ?? undefined, this.timeoutMs, `Hermes request timed out after ${this.timeoutMs}ms: ${path}`);
+    const publicPath = publicHermesRequestPath(path);
+    const requestSignal = createRequestSignal(
+      init.signal ?? undefined,
+      this.timeoutMs,
+      `Hermes request timed out after ${this.timeoutMs}ms: ${publicPath}`,
+    );
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         ...init,
+        redirect: "error",
         signal: requestSignal.signal,
         headers: this.headers(init.headers),
       });
       if (!response.ok) {
-        const detail = await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
-        throw new Error(
-          `Hermes request failed: ${response.status} ${detail.slice(0, MAX_HERMES_ERROR_DETAIL_CHARS)}`.trim(),
-        );
+        await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
+        throw new Error(`Hermes request failed: ${response.status} ${publicPath}`);
       }
       const body = await readBoundedResponseText(response, MAX_HERMES_JSON_RESPONSE_BYTES);
       try {
         return JSON.parse(body) as T;
       } catch {
-        throw new Error(`Hermes returned invalid JSON for ${path}.`);
+        throw new Error(`Hermes returned invalid JSON for ${publicPath}.`);
       }
     } catch (error) {
-      throw requestSignal.timedOut() ? new Error(`Hermes request timed out after ${this.timeoutMs}ms: ${path}`) : error;
+      throw requestSignal.timedOut()
+        ? new Error(`Hermes request timed out after ${this.timeoutMs}ms: ${publicPath}`)
+        : error;
     } finally {
       requestSignal.cleanup();
     }
@@ -247,6 +265,22 @@ function isBoundedHermesIdentifier(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
+function publicHermesRequestPath(path: string): string {
+  if (["/health", "/v1/capabilities", "/v1/runs"].includes(path)) return path;
+  if (/^\/v1\/runs\/[^/]+\/events$/u.test(path)) return "/v1/runs/{run_id}/events";
+  if (/^\/v1\/runs\/[^/]+\/stop$/u.test(path)) return "/v1/runs/{run_id}/stop";
+  if (/^\/v1\/runs\/[^/]+\/approval$/u.test(path)) return "/v1/runs/{run_id}/approval";
+  if (/^\/v1\/runs\/[^/]+$/u.test(path)) return "/v1/runs/{run_id}";
+  return "/unknown";
+}
+
+function validStreamIdleTimeout(value: number): number {
+  if (!Number.isInteger(value) || value <= 0 || value > MAX_TIMER_TIMEOUT_MS) {
+    throw new Error("Hermes event-stream idle timeout must be a positive timer-safe integer.");
+  }
+  return value;
+}
+
 function signalInit(signal: AbortSignal | undefined): Pick<RequestInit, "signal"> {
   return signal ? { signal } : {};
 }
@@ -263,6 +297,7 @@ function createRequestSignal(
   signal: AbortSignal;
   timedOut(): boolean;
   clearTimeout(): void;
+  abort(reason: Error): void;
   cleanup(): void;
 } {
   const controller = new AbortController();
@@ -297,6 +332,7 @@ function createRequestSignal(
     signal: controller.signal,
     timedOut: () => timedOut,
     clearTimeout: clearRequestTimeout,
+    abort: (reason) => controller.abort(reason),
     cleanup: () => {
       clearRequestTimeout();
       parentSignal?.removeEventListener("abort", onParentAbort);

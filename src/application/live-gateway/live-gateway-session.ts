@@ -73,6 +73,12 @@ interface ProviderToolCallRecord {
   fingerprint: string;
   name: string;
   state: "pending" | "done";
+  responseDelivery: "not_started" | "sending" | "sent";
+  operationStarted?: boolean;
+  cancelled?: boolean;
+  runId?: string;
+  runTerminalStatus?: "completed" | "failed" | "cancelled";
+  cancellationOperation?: Promise<void>;
   response?: Record<string, unknown>;
   responseBytes?: number;
   replayUnavailable?: boolean;
@@ -318,7 +324,7 @@ export class LiveGatewaySession {
             }
             this.deps.logger.warn("realtime provider reported an error", {
               sessionId: this.id,
-              error: errorToMessage(error),
+              error: "realtime_provider_error",
             });
             if (this.closing) return;
             this.fail(
@@ -388,14 +394,14 @@ export class LiveGatewaySession {
         this.deps.logger.warn("live session startup failed", {
           sessionId: this.id,
           phase: startupPhase,
-          error: errorToMessage(error),
+          error: startupPhase === "realtime" ? "realtime_provider_startup_failed" : errorToMessage(error),
         });
         this.fail(
           "session_start_failed",
           new Error(
             startupPhase === "hermes"
               ? "Hermes API readiness check failed. Check the gateway logs."
-              : publicRealtimeStartupError(error),
+              : publicRealtimeStartupError(error, this.deps.config.server.providerReadyTimeoutMs),
           ),
           providerCleanupConfirmed,
           message.id,
@@ -553,7 +559,7 @@ export class LiveGatewaySession {
         this.deps.logger.error("failed to confirm pending realtime provider connection cleanup", {
           sessionId: this.id,
           context,
-          error: errorToMessage(error),
+          error: "realtime_provider_cleanup_unconfirmed",
         });
         return false;
       },
@@ -580,7 +586,7 @@ export class LiveGatewaySession {
         this.deps.logger.error("failed to confirm realtime provider session close", {
           sessionId: this.id,
           context,
-          error: errorToMessage(error),
+          error: "realtime_provider_close_unconfirmed",
         });
         return false;
       },
@@ -699,7 +705,10 @@ export class LiveGatewaySession {
     }
   }
 
-  private async executeToolCall(call: LiveToolCall): Promise<Record<string, unknown>> {
+  private async executeToolCall(
+    call: LiveToolCall,
+    record: ProviderToolCallRecord,
+  ): Promise<Record<string, unknown>> {
     switch (call.name) {
       case "start_hermes_run": {
         const message = stringArg(call, "message");
@@ -711,7 +720,7 @@ export class LiveGatewaySession {
         if (recentContext) {
           validateText(recentContext, this.deps.config.server.maxTextChars, "Recent voice context");
         }
-        return await this.startHermesRun(message, recentContext);
+        return await this.startHermesRun(message, recentContext, record);
       }
       case "get_hermes_run_status": {
         const runId = this.resolveActiveRunId(stringArg(call, "run_id") || undefined);
@@ -760,6 +769,7 @@ export class LiveGatewaySession {
         void this.closeClientAfterCleanup(1011, "conflicting realtime tool call");
         return;
       }
+      if (existing.cancelled) return;
       if (existing.state === "done" && !existing.response) {
         this.fail(
           "realtime_tool_replay_unavailable",
@@ -778,7 +788,9 @@ export class LiveGatewaySession {
         this.pendingProviderToolCalls += 1;
         this.scheduleProviderToolOperation(async () => {
           try {
-            await this.sendProviderToolResponse(call, existing.response!);
+            if (!existing.cancelled) {
+              await this.deliverProviderToolResponse(call, existing.response!, existing);
+            }
           } finally {
             existing.replayPending = false;
             this.pendingProviderToolCalls -= 1;
@@ -801,32 +813,44 @@ export class LiveGatewaySession {
       fingerprint,
       name: call.name,
       state: "pending",
+      responseDelivery: "not_started",
       ...(call.name === "start_hermes_run" ? { startMarkerActive: true } : {}),
     };
     this.providerToolCalls.set(id, record);
     this.pendingProviderToolCalls += 1;
     if (call.name === "start_hermes_run") this.pendingStartToolCalls += 1;
     this.scheduleProviderToolOperation(async () => {
-      let response: Record<string, unknown>;
       try {
-        response = await this.executeToolCall(call);
-      } catch (error) {
-        const publicError = boundedText(errorToMessage(error), 2_000);
-        response = { ok: false, error: publicError };
-        this.fail("tool_call_failed", new Error(publicError), true);
-      }
-      response = boundedProviderToolResponse(response);
-      const responseBytes = safeJsonByteLength(response);
-      if (responseBytes <= MAX_CACHED_PROVIDER_TOOL_RESPONSE_BYTES - this.cachedProviderToolResponseBytes) {
-        record.response = response;
-        record.responseBytes = responseBytes;
-        this.cachedProviderToolResponseBytes += responseBytes;
-      } else {
-        record.replayUnavailable = true;
-      }
-      record.state = "done";
-      try {
-        await this.sendProviderToolResponse(call, response);
+        record.operationStarted = true;
+        if (record.cancelled) {
+          record.state = "done";
+          return;
+        }
+        let response: Record<string, unknown>;
+        try {
+          response = await this.executeToolCall(call, record);
+        } catch (error) {
+          const publicError = boundedText(errorToMessage(error), 2_000);
+          response = { ok: false, error: publicError };
+          if (!record.cancelled) {
+            this.fail("tool_call_failed", new Error(publicError), true);
+          }
+        }
+        response = boundedProviderToolResponse(response);
+        if (!record.cancelled) {
+          const responseBytes = safeJsonByteLength(response);
+          if (responseBytes <= MAX_CACHED_PROVIDER_TOOL_RESPONSE_BYTES - this.cachedProviderToolResponseBytes) {
+            record.response = response;
+            record.responseBytes = responseBytes;
+            this.cachedProviderToolResponseBytes += responseBytes;
+          } else {
+            record.replayUnavailable = true;
+          }
+        }
+        record.state = "done";
+        if (!record.cancelled) {
+          await this.deliverProviderToolResponse(call, response, record);
+        }
       } finally {
         this.pendingProviderToolCalls -= 1;
         if (call.name === "start_hermes_run") {
@@ -834,6 +858,145 @@ export class LiveGatewaySession {
         }
       }
     });
+  }
+
+  private handleProviderToolCallCancellation(callIds: string[]): void {
+    if (callIds.length === 0 || callIds.length > MAX_PROCESSED_PROVIDER_TOOL_CALLS) {
+      throw new Error("Realtime provider emitted an invalid tool-call cancellation batch.");
+    }
+
+    const records: Array<{ id: string; record: ProviderToolCallRecord }> = [];
+    for (const id of new Set(callIds.map(requireProviderToolCancellationId))) {
+      const record = this.providerToolCalls.get(id);
+      if (!record) {
+        this.fail(
+          "realtime_tool_cancellation_unknown",
+          new Error("Realtime provider cancelled a tool-call id that this session did not issue."),
+          false,
+        );
+        void this.closeClientAfterCleanup(1011, "uncorrelated realtime tool cancellation");
+        return;
+      }
+      records.push({ id, record });
+    }
+
+    const newlyCancelled: Array<{ id: string; record: ProviderToolCallRecord }> = [];
+    for (const { id, record } of records) {
+      if (record.cancelled) continue;
+      record.cancelled = true;
+      newlyCancelled.push({ id, record });
+      if (record.responseBytes !== undefined) {
+        this.cachedProviderToolResponseBytes = Math.max(
+          0,
+          this.cachedProviderToolResponseBytes - record.responseBytes,
+        );
+      }
+      record.response = undefined;
+      record.responseBytes = undefined;
+      record.replayUnavailable = true;
+      this.deps.logger.info("realtime provider cancelled tool call", {
+        sessionId: this.id,
+        state: record.state,
+      });
+      this.send({
+        type: "log",
+        level: "info",
+        message: "Realtime provider cancelled tool call",
+      });
+    }
+
+    for (const { id, record } of newlyCancelled) {
+      if (record.responseDelivery === "sending") {
+        void this.failClosedProviderToolCancellation(
+          "realtime_tool_cancellation_delivery_indeterminate",
+          "Realtime provider cancelled a tool call while its result was being delivered. The result cannot be recalled, so the session is closing for verification.",
+          "realtime tool result delivery indeterminate",
+        );
+        continue;
+      }
+      if (record.name === "start_hermes_run") {
+        this.containProviderCancelledStart(record);
+      }
+    }
+  }
+
+  private containProviderCancelledStart(record: ProviderToolCallRecord): void {
+    if (!record.operationStarted || record.cancellationOperation) return;
+    if (!record.runId) {
+      if (record.state === "done") return;
+      void this.failClosedProviderToolCancellation(
+        "hermes_run_start_cancellation_indeterminate",
+        "Realtime provider cancelled start_hermes_run before Hermes confirmed its run id. The session is closing to contain possible work.",
+        "Hermes run start cancellation indeterminate",
+      );
+      return;
+    }
+    if (
+      record.runTerminalStatus !== undefined ||
+      record.state === "done" ||
+      !this.hermesRunActive ||
+      this.activeRunId !== record.runId
+    ) {
+      void this.failClosedProviderToolCancellation(
+        "hermes_run_tool_cancellation_too_late",
+        "Realtime provider cancelled start_hermes_run after the owned Hermes run could no longer be stopped safely. Side effects may already have occurred; the session is closing for verification.",
+        "Hermes run tool cancellation arrived too late",
+      );
+      return;
+    }
+    const cancellation = this.stopProviderCancelledHermesRun(record);
+    record.cancellationOperation = cancellation;
+    void cancellation;
+  }
+
+  private failClosedProviderToolCancellation(
+    code: string,
+    message: string,
+    reason: string,
+  ): Promise<void> {
+    if (this.closing) return Promise.resolve();
+    this.fail(code, new Error(boundedText(message, 500)), false);
+    return this.closeClientAfterCleanup(1011, reason);
+  }
+
+  private async stopProviderCancelledHermesRun(record: ProviderToolCallRecord): Promise<void> {
+    const runId = record.runId;
+    if (!runId || this.closing) return;
+    if (!this.hermesRunActive || this.activeRunId !== runId) {
+      await this.failClosedProviderToolCancellation(
+        "hermes_run_tool_cancellation_too_late",
+        "Realtime provider cancelled start_hermes_run after the owned Hermes run could no longer be stopped safely. Side effects may already have occurred; the session is closing for verification.",
+        "Hermes run tool cancellation arrived too late",
+      );
+      return;
+    }
+    try {
+      const result = await this.stopRun(runId, "realtime provider cancelled tool call");
+      if (
+        result.status === "terminal" &&
+        record.runTerminalStatus !== "cancelled" &&
+        !this.closing
+      ) {
+        await this.failClosedProviderToolCancellation(
+          "hermes_run_tool_cancellation_too_late",
+          "Realtime provider cancelled start_hermes_run, but the owned Hermes run became terminal before its stop could be confirmed. Side effects may already have occurred; the session is closing for verification.",
+          "Hermes run tool cancellation arrived too late",
+        );
+      }
+    } catch (error) {
+      if (this.closing) return;
+      this.deps.logger.error("failed to contain provider-cancelled Hermes run", {
+        sessionId: this.id,
+        runId,
+        error: errorToMessage(error),
+      });
+      this.fail(
+        "realtime_tool_cancellation_failed",
+        new Error("The cancelled Hermes run could not be contained. The session is closing for verification."),
+        false,
+      );
+      await this.closeClientAfterCleanup(1011, "realtime tool cancellation failed");
+    }
   }
 
   private handleLiveModelEvent(event: LiveModelEvent): void {
@@ -860,6 +1023,8 @@ export class LiveGatewaySession {
       });
     } else if (event.type === "tool_call") {
       this.enqueueProviderToolCall(event.call);
+    } else if (event.type === "tool_call_cancelled") {
+      this.handleProviderToolCallCancellation(event.callIds);
     } else if (event.type === "input_speech_started") {
       const itemId = publicProviderIdentifier(event.itemId);
       const audioStartMs = publicAudioStartMs(event.audioStartMs);
@@ -881,7 +1046,7 @@ export class LiveGatewaySession {
       if (event.status === "failed") {
         this.deps.logger.warn("realtime provider response failed", {
           sessionId: this.id,
-          error: boundedText(event.error ?? "Realtime response failed.", 2_000),
+          error: "realtime_provider_response_failed",
         });
         const responseId = publicProviderIdentifier(event.responseId);
         this.send({
@@ -903,17 +1068,21 @@ export class LiveGatewaySession {
     if (this.closing) return;
     try {
       this.handleLiveModelEvent(event);
-    } catch (error) {
+    } catch {
       this.fail(
         "realtime_provider_event_invalid",
-        new Error(`Realtime provider emitted an invalid event: ${errorToMessage(error)}`),
+        new Error("Realtime provider emitted an invalid event."),
         false,
       );
       void this.closeClientAfterCleanup(1011, "invalid realtime provider event");
     }
   }
 
-  private async startHermesRun(message: string, recentVoiceContext?: string): Promise<Record<string, unknown>> {
+  private async startHermesRun(
+    message: string,
+    recentVoiceContext: string | undefined,
+    providerCall: ProviderToolCallRecord,
+  ): Promise<Record<string, unknown>> {
     if (!this.sessionKey) {
       throw new Error("session.start has not completed.");
     }
@@ -949,6 +1118,7 @@ export class LiveGatewaySession {
             : "started",
         };
         this.activeRunId = normalized.runId;
+        providerCall.runId = normalized.runId;
         return normalized;
       });
       this.pendingRunStart = pendingStart;
@@ -979,6 +1149,7 @@ export class LiveGatewaySession {
         if (event.event === "message.delta" && typeof event.delta === "string") {
           transcript = appendBoundedText(transcript, event.delta, MAX_HERMES_OUTPUT_CHARS);
         } else if (event.event === "run.completed") {
+          providerCall.runTerminalStatus = "completed";
           this.clearPendingApprovals(runId);
           finalOutput = boundedText(
             typeof event.output === "string" ? event.output : transcript,
@@ -991,14 +1162,29 @@ export class LiveGatewaySession {
             output: finalOutput || transcript,
             ...(usage ? { usage } : {}),
           });
+          if (providerCall.cancelled) {
+            await this.failClosedProviderToolCancellation(
+              "hermes_run_tool_cancellation_too_late",
+              "The owned Hermes run completed after its provider tool call was cancelled. Side effects may already have occurred; the session is closing for verification.",
+              "Hermes run completed after tool cancellation",
+            );
+          }
           return { ok: true, run_id: runId, output: finalOutput || transcript, usage };
         } else if (event.event === "run.failed") {
+          providerCall.runTerminalStatus = "failed";
           this.clearPendingApprovals(runId);
           this.deps.logger.warn("Hermes run reported failure", {
             sessionId: this.id,
             runId,
-            error: String(event.error ?? "Hermes run failed."),
+            error: "hermes_run_failed",
           });
+          if (providerCall.cancelled) {
+            await this.failClosedProviderToolCancellation(
+              "hermes_run_tool_cancellation_too_late",
+              "The owned Hermes run failed after its provider tool call was cancelled, so its side-effect outcome is uncertain. The session is closing for verification.",
+              "Hermes run failed after tool cancellation",
+            );
+          }
           return {
             ok: false,
             run_id: runId,
@@ -1007,6 +1193,7 @@ export class LiveGatewaySession {
             error: "Hermes run failed. Check the gateway logs for details.",
           };
         } else if (event.event === "run.cancelled") {
+          providerCall.runTerminalStatus = "cancelled";
           this.clearPendingApprovals(runId);
           return { ok: false, run_id: runId, status: "cancelled" };
         }
@@ -1580,7 +1767,7 @@ export class LiveGatewaySession {
     } catch (error) {
       this.deps.logger.warn("failed to cancel realtime response", {
         sessionId: this.id,
-        error: errorToMessage(error),
+        error: "realtime_provider_cancel_failed",
       });
       if (this.closing) return;
       this.send({ type: "log", level: "warn", message: "Realtime response cancellation failed", data: { reason } });
@@ -1600,7 +1787,7 @@ export class LiveGatewaySession {
       this.deps.logger.warn("realtime provider rejected client input", {
         sessionId: this.id,
         input: label,
-        error: errorToMessage(error),
+        error: "realtime_provider_input_failed",
       });
       this.fail(
         "realtime_provider_input_failed",
@@ -1611,8 +1798,24 @@ export class LiveGatewaySession {
     }
   }
 
-  private async sendProviderToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
-    if (this.closing) return;
+  private async deliverProviderToolResponse(
+    call: LiveToolCall,
+    response: Record<string, unknown>,
+    record: ProviderToolCallRecord,
+  ): Promise<void> {
+    if (this.closing || record.cancelled) return;
+    record.responseDelivery = "sending";
+    const delivered = await this.sendProviderToolResponse(call, response);
+    if (delivered && !record.cancelled) {
+      record.responseDelivery = "sent";
+    }
+  }
+
+  private async sendProviderToolResponse(
+    call: LiveToolCall,
+    response: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (this.closing) return false;
     try {
       if (!this.liveSession) throw new Error("Realtime provider session is unavailable.");
       await withAbortAndDeadline(
@@ -1621,12 +1824,12 @@ export class LiveGatewaySession {
         MAX_PROVIDER_IO_WAIT_MS,
         "Realtime provider tool response did not settle before the safety deadline.",
       );
+      return true;
     } catch (error) {
-      if (this.closing) return;
+      if (this.closing) return false;
       this.deps.logger.warn("failed to send realtime tool response", {
         sessionId: this.id,
-        callId: call.id,
-        error: errorToMessage(error),
+        error: "realtime_provider_tool_response_failed",
       });
       this.fail(
         "realtime_tool_response_failed",
@@ -1634,6 +1837,7 @@ export class LiveGatewaySession {
         false,
       );
       await this.closeClientAfterCleanup(1011, "realtime tool response failed");
+      return false;
     }
   }
 
@@ -1664,10 +1868,10 @@ export class LiveGatewaySession {
     ) {
       const operation = this.providerToolOperations.shift()!;
       this.activeProviderToolOperations += 1;
-      void operation().catch((error) => {
+      void operation().catch(() => {
         this.deps.logger.error("unexpected realtime tool operation failure", {
           sessionId: this.id,
-          error: errorToMessage(error),
+          error: "realtime_tool_operation_failed",
         });
       }).finally(() => {
         this.activeProviderToolOperations -= 1;
@@ -1822,6 +2026,18 @@ function requireProviderToolCallId(call: LiveToolCall): string {
   return call.id;
 }
 
+function requireProviderToolCancellationId(value: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 256 ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new Error("Realtime provider emitted a tool cancellation without a bounded id.");
+  }
+  return value;
+}
+
 function providerToolCallFingerprint(call: LiveToolCall): string {
   let args: string;
   try {
@@ -1882,10 +2098,10 @@ function publicHermesCapabilities(
   };
 }
 
-function publicRealtimeStartupError(error: unknown): string {
+function publicRealtimeStartupError(error: unknown, readyTimeoutMs: number): string {
   const message = errorToMessage(error);
   if (
-    message.startsWith("Realtime provider did not become ready within ") ||
+    message === `Realtime provider did not become ready within ${readyTimeoutMs}ms.` ||
     message === "Realtime provider session closed before ready." ||
     message === "Realtime provider exceeded the safe pre-ready event queue limit."
   ) {
@@ -1916,7 +2132,7 @@ function publicHermesRunEvent(
 
 function summarizeHermesRunEvent(event: HermesRunEvent): HermesRunEvent {
   const summary: Record<string, unknown> = {};
-  for (const key of ["event", "run_id", "timestamp", "status", "approval_id"] as const) {
+  for (const key of ["event", "run_id", "timestamp", "status"] as const) {
     const value = event[key];
     if (typeof value === "string") {
       summary[key] = boundedText(value, 512);
@@ -2096,19 +2312,20 @@ function boundedUsage(value: unknown): Record<string, unknown> | undefined {
 
 function publicProviderCloseEvent(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const code = typeof record.code === "number" && Number.isSafeInteger(record.code)
-    ? record.code
-    : undefined;
+  const code = safeProviderCloseCode((value as Record<string, unknown>).code);
   return code === undefined ? undefined : { code };
 }
 
 function providerCloseLogDetail(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const record = value as Record<string, unknown>;
-  const code = typeof record.code === "number" && Number.isSafeInteger(record.code) ? record.code : undefined;
-  const reason = boundedDisplayText(record.reason, 2_000);
-  return { ...(code === undefined ? {} : { providerCode: code }), ...(reason ? { providerReason: reason } : {}) };
+  const code = safeProviderCloseCode((value as Record<string, unknown>).code);
+  return code === undefined ? {} : { providerCode: code };
+}
+
+function safeProviderCloseCode(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1_000 && value <= 4_999
+    ? value
+    : undefined;
 }
 
 function publicProviderIdentifier(value: unknown): string | undefined {
