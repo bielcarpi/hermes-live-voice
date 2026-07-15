@@ -18,9 +18,13 @@ Hermes Live Voice is a gateway and client protocol, not one fixed application. T
 Install and enable the plugin, run the companion gateway, and restart the Dashboard:
 
 ```sh
-hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --enable
+npm install --global hermes-live-voice
+hermes-live plugin install --force
+hermes plugins enable hermes-live
 hermes dashboard
 ```
+
+See [plugin installation](plugin.md#install-in-hermes) for the latest-source and development alternatives.
 
 Choose **Live Voice** in the plugin navigation group.
 
@@ -52,11 +56,17 @@ HERMES_LIVE_AUTH_TOKEN=your-random-gateway-token
 
 `HERMES_LIVE_URL` must be a credential-free HTTP(S) origin. The Dashboard backend rejects user information, paths, query parameters, fragments, and WS(S) schemes. The token is a separate server-side value.
 
-Hermes Live Voice v0.3.1 was manually exercised in the official `nousresearch/hermes-agent:latest` Docker image running Hermes Agent v0.18.2. Compatibility is also guarded by captured upstream fixtures, plugin manifest, Python backend, generated-asset, browser-client, package, and protocol tests.
+Hermes Live Voice v0.3.2 was manually exercised in the official `nousresearch/hermes-agent:latest` Docker image running Hermes Agent v0.18.2. The packaged plugin, authenticated readiness path, mock WebSocket session, and real Gemini Live handshake were verified. Compatibility is also guarded by captured upstream fixtures, plugin manifest, Python backend, generated-asset, browser-client, package, and protocol tests.
 
 ## Custom Or Community Browser UI
 
-Install the package after it is published, or consume the same exports from a GitHub checkout/package tarball:
+Install the package in your UI project:
+
+```sh
+npm install hermes-live-voice
+```
+
+Import the dependency-free browser client:
 
 ```js
 import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";

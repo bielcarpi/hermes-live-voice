@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hermes-live-release
+  queue: max
+
 jobs:
   verify-package:
     runs-on: ubuntu-latest
@@ -44,12 +48,12 @@ jobs:
           name: release-package
           path: release/
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 30
 
   github-release:
     needs: verify-package
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       GH_REPO: ${{ github.repository }}
     permissions:
@@ -62,14 +66,91 @@ jobs:
       - name: Verify packaged checksum
         run: sha256sum --check SHA256SUMS
         working-directory: release
-      - name: Verify packaged version
+      - name: Verify packaged metadata
+        id: package
         run: |
           package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
-          package_version="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => process.stdout.write(JSON.parse(data).version))')"
+          package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(`${packageJson.name}\t${packageJson.version}`); })')"
+          IFS=$'\t' read -r package_name package_version <<< "$package_metadata"
+          test "$package_name" = "hermes-live-voice"
           test "$GITHUB_REF_NAME" = "v$package_version"
-      - run: gh release create "$GITHUB_REF_NAME" release/*.tgz release/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          case "$package_version" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "file=$package_file" >> "$GITHUB_OUTPUT"
+          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+      - name: Create or verify GitHub release
+        run: |
+          package_file="${{ steps.package.outputs.file }}"
+          package_basename="$(basename "$package_file")"
+          expected_prerelease="${{ steps.package.outputs.prerelease }}"
+
+          if release_json="$(gh release view "$GITHUB_REF_NAME" --json databaseId,name,isDraft,isPrerelease,assets 2>/dev/null)"; then
+            test "$(jq -r '.name' <<< "$release_json")" = "$GITHUB_REF_NAME"
+            test "$(jq -r '.isPrerelease' <<< "$release_json")" = "${{ steps.package.outputs.prerelease }}"
+            is_draft="$(jq -r '.isDraft' <<< "$release_json")"
+            release_id="$(jq -r '.databaseId' <<< "$release_json")"
+            unexpected_assets="$(jq -r --arg package "$package_basename" '.assets[] | select(.name != $package and .name != "SHA256SUMS") | .name' <<< "$release_json")"
+            if [ -n "$unexpected_assets" ]; then
+              echo "Unexpected assets exist on $GITHUB_REF_NAME:" >&2
+              printf '%s\n' "$unexpected_assets" >&2
+              exit 1
+            fi
+
+            for expected_file in "$package_file" release/SHA256SUMS; do
+              asset_name="$(basename "$expected_file")"
+              if jq -e --arg name "$asset_name" '.assets[] | select(.name == $name)' <<< "$release_json" >/dev/null; then
+                mkdir -p existing-release
+                gh release download "$GITHUB_REF_NAME" --pattern "$asset_name" --dir existing-release
+                cmp "$expected_file" "existing-release/$asset_name"
+              elif [ "$is_draft" = "true" ]; then
+                gh release upload "$GITHUB_REF_NAME" "$expected_file"
+              else
+                echo "Published release $GITHUB_REF_NAME is missing $asset_name." >&2
+                exit 1
+              fi
+            done
+
+            if [ "$is_draft" = "true" ]; then
+              if [ "$expected_prerelease" = "true" ]; then
+                make_latest=false
+              else
+                make_latest=true
+              fi
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+                -F draft=false \
+                -F prerelease="$expected_prerelease" \
+                -f make_latest="$make_latest" >/dev/null
+              echo "Recovered and published the matching draft release."
+            else
+              echo "Existing published release matches the verified artifacts."
+            fi
+          elif [ "$expected_prerelease" = "true" ]; then
+            gh release create "$GITHUB_REF_NAME" release/*.tgz release/SHA256SUMS \
+              --title "$GITHUB_REF_NAME" --generate-notes --verify-tag --prerelease --latest=false
+          else
+            gh release create "$GITHUB_REF_NAME" release/*.tgz release/SHA256SUMS \
+              --title "$GITHUB_REF_NAME" --generate-notes --verify-tag --latest
+          fi
+
+          final_release="$(gh release view "$GITHUB_REF_NAME" --json isDraft,isImmutable,isPrerelease)"
+          test "$(jq -r '.isDraft' <<< "$final_release")" = "false"
+          test "$(jq -r '.isImmutable' <<< "$final_release")" = "true"
+          test "$(jq -r '.isPrerelease' <<< "$final_release")" = "$expected_prerelease"
+          rm -rf verified-release
+          mkdir verified-release
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "$package_basename" \
+            --pattern SHA256SUMS \
+            --dir verified-release
+          test "$(find verified-release -maxdepth 1 -type f | wc -l)" -eq 2
+          cmp "$package_file" "verified-release/$package_basename"
+          cmp release/SHA256SUMS verified-release/SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -79,6 +160,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
+    outputs:
+      package_name: ${{ steps.package.outputs.name }}
+      package_version: ${{ steps.package.outputs.version }}
+      npm_tag: ${{ steps.package.outputs.npm_tag }}
+      integrity: ${{ steps.package.outputs.integrity }}
+      published_now: ${{ steps.publish.outputs.published_now }}
     permissions:
       id-token: write
     steps:
@@ -114,11 +201,159 @@ jobs:
       - name: Verify packaged checksum
         run: sha256sum --check SHA256SUMS
         working-directory: release
-      - name: Verify tag matches package version
+      - name: Verify packaged metadata
+        id: package
         run: |
           package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
-          package_version="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => process.stdout.write(JSON.parse(data).version))')"
+          package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(`${packageJson.name}\t${packageJson.version}`); })')"
+          IFS=$'\t' read -r package_name package_version <<< "$package_metadata"
+          test "$package_name" = "hermes-live-voice"
           test "$GITHUB_REF_NAME" = "v$package_version"
-      - run: npm publish ./release/*.tgz --access public --provenance
+          case "$package_version" in
+            *-*) npm_tag=next ;;
+            *) npm_tag=latest ;;
+          esac
+          integrity="$(node -e 'const crypto = require("node:crypto"); const fs = require("node:fs"); process.stdout.write(`sha512-${crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64")}`);' "$package_file")"
+          echo "PACKAGE_FILE=$package_file" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=$package_name" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=$package_version" >> "$GITHUB_ENV"
+          echo "NPM_TAG=$npm_tag" >> "$GITHUB_ENV"
+          echo "EXPECTED_INTEGRITY=$integrity" >> "$GITHUB_ENV"
+          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
+          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
+      - name: Publish verified package with OIDC
+        id: publish
+        run: |
+          package_spec="$PACKAGE_NAME@$PACKAGE_VERSION"
+          set +e
+          existing_integrity="$(npm view "$package_spec" dist.integrity --registry=https://registry.npmjs.org/ 2>npm-view-error.log)"
+          view_status=$?
+          set -e
+
+          if [ "$view_status" -eq 0 ]; then
+            test "$existing_integrity" = "$EXPECTED_INTEGRITY"
+            echo "$package_spec already exists with the verified integrity; treating this as an idempotent rerun."
+            echo "published_now=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! grep -q 'E404' npm-view-error.log; then
+            sed -n '1,120p' npm-view-error.log >&2
+            exit "$view_status"
+          fi
+
+          set +e
+          npm publish "$PACKAGE_FILE" \
+            --access public \
+            --provenance \
+            --ignore-scripts \
+            --tag "$NPM_TAG" \
+            --registry=https://registry.npmjs.org/
+          publish_status=$?
+          set -e
+
+          if [ "$publish_status" -eq 0 ]; then
+            echo "published_now=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Publish returned status $publish_status; checking whether the registry accepted the immutable version before failing."
+          for attempt in 1 2 3 4 5 6; do
+            set +e
+            existing_integrity="$(npm view "$package_spec" dist.integrity --registry=https://registry.npmjs.org/ 2>npm-view-after-publish.log)"
+            view_status=$?
+            set -e
+            if [ "$view_status" -eq 0 ] && [ "$existing_integrity" = "$EXPECTED_INTEGRITY" ]; then
+              echo "$package_spec exists with the verified integrity after an ambiguous publish response."
+              echo "published_now=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$view_status" -eq 0 ] && [ -n "$existing_integrity" ]; then
+              echo "Registry integrity mismatch for $package_spec after the ambiguous publish response." >&2
+              echo "Expected: $EXPECTED_INTEGRITY" >&2
+              echo "Observed: $existing_integrity" >&2
+              exit 1
+            fi
+            if [ "$attempt" -lt 6 ]; then
+              sleep 5
+            fi
+          done
+          sed -n '1,120p' npm-view-after-publish.log >&2
+          exit "$publish_status"
+
+  npm-verify:
+    if: vars.PUBLISH_NPM == 'true'
+    needs: npm-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      PACKAGE_NAME: ${{ needs.npm-publish.outputs.package_name }}
+      PACKAGE_VERSION: ${{ needs.npm-publish.outputs.package_version }}
+      NPM_TAG: ${{ needs.npm-publish.outputs.npm_tag }}
+      EXPECTED_INTEGRITY: ${{ needs.npm-publish.outputs.integrity }}
+      PUBLISHED_NOW: ${{ needs.npm-publish.outputs.published_now }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package
+          path: release
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install verification npm CLI
+        run: npm install --global --ignore-scripts npm@11.18.0
+      - name: Verify registry package, provenance, and installed CLI
+        run: |
+          (cd release && sha256sum --check SHA256SUMS)
+          package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$package_file"
+          test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          artifact_integrity="$(node -e 'const crypto = require("node:crypto"); const fs = require("node:fs"); process.stdout.write(`sha512-${crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64")}`);' "$package_file")"
+          test "$artifact_integrity" = "$EXPECTED_INTEGRITY"
+
+          package_spec="$PACKAGE_NAME@$PACKAGE_VERSION"
+          registry_integrity=""
+          registry_tag=""
+          provenance_type=""
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
+            registry_integrity="$(npm view "$package_spec" dist.integrity --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
+            registry_tag="$(npm view "$PACKAGE_NAME" "dist-tags.$NPM_TAG" --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
+            provenance_type="$(npm view "$package_spec" dist.attestations.provenance.predicateType --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
+            if [ "$registry_integrity" = "$EXPECTED_INTEGRITY" ] && \
+               [ "$provenance_type" = "https://slsa.dev/provenance/v1" ] && \
+               { [ "$PUBLISHED_NOW" != "true" ] || [ "$registry_tag" = "$PACKAGE_VERSION" ]; }; then
+              break
+            fi
+            if [ "$attempt" -lt 24 ]; then
+              sleep 5
+            fi
+          done
+          if [ "$registry_integrity" != "$EXPECTED_INTEGRITY" ] || \
+             [ "$provenance_type" != "https://slsa.dev/provenance/v1" ] || \
+             { [ "$PUBLISHED_NOW" = "true" ] && [ "$registry_tag" != "$PACKAGE_VERSION" ]; }; then
+            echo "Registry verification timed out." >&2
+            echo "Expected integrity: $EXPECTED_INTEGRITY" >&2
+            echo "Observed integrity: $registry_integrity" >&2
+            echo "Expected $NPM_TAG on a new publish: $PACKAGE_VERSION" >&2
+            echo "Observed $NPM_TAG: $registry_tag" >&2
+            echo "Observed provenance predicate: $provenance_type" >&2
+            npm view "$package_spec" dist.integrity dist.attestations --json --registry=https://registry.npmjs.org/ >&2 || true
+            npm view "$PACKAGE_NAME" dist-tags --json --registry=https://registry.npmjs.org/ >&2 || true
+            exit 1
+          fi
+          test "$registry_integrity" = "$EXPECTED_INTEGRITY"
+          test "$provenance_type" = "https://slsa.dev/provenance/v1"
+
+          install_dir="$(mktemp -d)"
+          trap 'rm -rf "$install_dir"' EXIT
+          npm install --prefix "$install_dir" --ignore-scripts --omit=dev --no-audit --no-fund "$package_spec"
+          test "$("$install_dir/node_modules/.bin/hermes-live" --version)" = "$PACKAGE_VERSION"
+          "$install_dir/node_modules/.bin/hermes-live" --help | grep -q 'provider-smoke'
+          npm audit signatures --prefix "$install_dir"

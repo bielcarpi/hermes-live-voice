@@ -26,6 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://www.npmjs.com/package/hermes-live-voice"><img alt="npm version" src="https://img.shields.io/npm/v/hermes-live-voice"></a>
   <a href="https://github.com/bielcarpi/hermes-live-voice/releases"><img alt="Release" src="https://img.shields.io/github/v/release/bielcarpi/hermes-live-voice?display_name=tag"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
   <img alt="Node 20+" src="https://img.shields.io/badge/node-%3E%3D20-339933">
@@ -55,7 +56,7 @@ Ask it to inspect a repository, use memory, research something current, or run a
 
 Try a request that makes the agent do real work: *“Inspect this repository, run the tests, and tell me whether it is safe to release.”*
 
-> **Approval safety:** Hermes Agent v0.18.2, tested for this release, does not expose stable approval IDs. Hermes Live Voice never guesses: it attempts denial, stops the run, and closes the voice session. Interactive decisions enable only after Hermes negotiates targeted approval identity. See the [security model](docs/security.md).
+> **Approval safety:** The most recently integration-tested Hermes Agent version, v0.18.2, does not expose stable approval IDs. Hermes Live Voice never guesses: it attempts denial, stops the run, and closes the voice session. Interactive decisions enable only after Hermes negotiates targeted approval identity. See the [security model](docs/security.md).
 
 ## Why Not Just Use Hermes Voice Mode?
 
@@ -93,23 +94,19 @@ An OpenAI-compatible chat endpoint alone does not provide this realtime audio an
 - A running [Hermes Agent API Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/) with its `API_SERVER_KEY` configured.
 - A Gemini or OpenAI key for real speech. No provider key is needed for mock mode.
 
-### 1. Install and build
-
-Until the first npm publication, install from GitHub:
+### 1. Install
 
 ```sh
-git clone --branch v0.3.1 --depth 1 https://github.com/bielcarpi/hermes-live-voice.git
-cd hermes-live-voice
-npm ci
-npm run build
+npm install --global hermes-live-voice
+hermes-live --version
 ```
 
 ### 2. Install the Hermes plugin
 
-Install the plugin from the tagged checkout you just built:
+Install the matching packaged plugin:
 
 ```sh
-node dist/cli.js plugin install --force
+hermes-live plugin install --force
 hermes plugins enable hermes-live
 ```
 
@@ -123,7 +120,7 @@ Use the same value for `HERMES_AGENT_API_SERVER_KEY` that Hermes uses for `API_S
 HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
 HERMES_LIVE_PROVIDER=mock \
-npm run dev
+hermes-live serve
 ```
 
 Start or restart Hermes Dashboard after enabling the plugin:
@@ -134,7 +131,7 @@ hermes dashboard
 
 Open **Live Voice**, connect, and send a text message. Mock mode verifies the Dashboard proxy, gateway, client protocol, and Hermes run bridge without spending realtime-provider credits. It intentionally disables microphone input and audio output.
 
-The standalone development UI remains available at <http://127.0.0.1:8788>. Use it when developing the gateway or debugging an installation without the Dashboard.
+The bundled browser demo remains available at <http://127.0.0.1:8788>. Use it when developing the gateway or debugging an installation without the Dashboard.
 
 ### 4. Turn on live speech
 
@@ -144,7 +141,7 @@ Gemini Live:
 HERMES_LIVE_PROVIDER=gemini \
 GEMINI_API_KEY=your-gemini-key \
 HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
-npm run dev
+hermes-live serve
 ```
 
 OpenAI Realtime:
@@ -154,15 +151,15 @@ HERMES_LIVE_PROVIDER=openai \
 OPENAI_API_KEY=your-openai-key \
 OPENAI_REALTIME_MODEL=gpt-realtime-2.1 \
 HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
-npm run dev
+hermes-live serve
 ```
 
 Before calling a real-provider deployment ready, repeat the provider selection and credential in a second shell for an actual connect/close smoke test:
 
 ```sh
-HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=your-gemini-key npm run check:live-provider
+HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=your-gemini-key hermes-live provider-smoke
 # or
-HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=your-openai-key npm run check:live-provider
+HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=your-openai-key hermes-live provider-smoke
 ```
 
 Then complete the audio and negative-case checklist in [live provider testing](docs/live-provider-testing.md).
@@ -174,10 +171,10 @@ For local terminal microphone use, run `hermes` and press **Ctrl+B**. For a remo
 ```sh
 HERMES_LIVE_URL=https://voice.example.com \
 HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
-node dist/cli.js terminal
+hermes-live terminal
 ```
 
-The console shows transcripts and Hermes progress, with separate `/interrupt` and `/stop` controls. It is intentionally text-only; use the Dashboard or browser client for gateway audio. Scripts can use `node dist/cli.js client "What is the current status?"`. See [UI integration](docs/ui-integration.md#terminal).
+The console shows transcripts and Hermes progress, with separate `/interrupt` and `/stop` controls. It is intentionally text-only; use the Dashboard or browser client for gateway audio. Scripts can use `hermes-live client "What is the current status?"`. See [UI integration](docs/ui-integration.md#terminal).
 
 ## Supported Providers
 
@@ -220,18 +217,16 @@ Read the [architecture](docs/architecture.md) and [client protocol](docs/client-
 
 ## Configuration
 
-The gateway reads the process environment. npm scripts do **not** load a local `.env` automatically, so export variables or pass them inline as shown in Quick Start. Docker Compose can consume one explicitly with `--env-file`.
+The gateway reads the process environment and does **not** load a local `.env` automatically, so export variables or pass them inline as shown in Quick Start. Docker Compose can consume one explicitly with `--env-file`.
 
-At minimum, set `HERMES_AGENT_API_SERVER_KEY` to Hermes Agent's `API_SERVER_KEY`, then select `mock` or provide the chosen realtime-provider credential. [.env.example](.env.example) is the complete reference; [local setup](docs/local-setup.md) explains every runtime path.
+At minimum, set `HERMES_AGENT_API_SERVER_KEY` to Hermes Agent's `API_SERVER_KEY`, then select `mock` or provide the chosen realtime-provider credential. [.env.example](.env.example) is the complete reference; [plugin usage](docs/plugin.md#runtime-usage) covers packaged operation and [local setup](docs/local-setup.md) covers checkout development.
 
 A network-accessible bind requires a strong `HERMES_LIVE_AUTH_TOKEN` and should use an exact `HERMES_LIVE_ALLOW_ORIGIN`. This developer preview is not a turnkey public multi-user service; review the [deployment security model](docs/security.md) before exposing it beyond localhost.
 
 ## Build A Custom UI
 
-Until npm publishing is enabled, install the exact GitHub release tarball:
-
 ```sh
-npm install https://github.com/bielcarpi/hermes-live-voice/releases/download/v0.3.1/hermes-live-voice-0.3.1.tgz
+npm install hermes-live-voice
 ```
 
 The dependency-free browser client is the same one used by the Hermes Dashboard integration and bundled demo:
@@ -253,17 +248,17 @@ The client also provides microphone capture, bounded playback, interruption, req
 ## Commands
 
 ```sh
-npm run dev                       # run the gateway from source
-npm run build                     # compile the distributable CLI/library
-node dist/cli.js client "..."     # one-shot text client
-node dist/cli.js terminal         # persistent text-control console
-node dist/cli.js chat             # alias for terminal
-node dist/cli.js check            # gateway + Hermes + provider config
-node dist/cli.js provider-smoke   # real provider connect/close test
-node dist/cli.js plugin install   # install the Hermes plugin
-node dist/cli.js plugin status    # inspect the plugin installation
-npm run verify                    # complete local release gate
+hermes-live serve                 # start the gateway and bundled demo
+hermes-live client "..."          # one-shot text client
+hermes-live terminal              # persistent text-control console
+hermes-live chat                  # alias for terminal
+hermes-live check                 # gateway + Hermes + provider config
+hermes-live provider-smoke        # real provider connect/close test
+hermes-live plugin install        # install the Hermes plugin
+hermes-live plugin status         # inspect the plugin installation
 ```
+
+Contributors working from a repository checkout can use `npm run dev`, `npm run build`, and `npm run verify`; see [local setup](docs/local-setup.md) and [contributing](CONTRIBUTING.md).
 
 Docker users can start from [examples/docker-compose.yml](examples/docker-compose.yml). It binds to host loopback and runs read-only, capability-free, and non-root by default. Use an authenticated TLS proxy for remote access.
 
@@ -271,7 +266,7 @@ Docker users can start from [examples/docker-compose.yml](examples/docker-compos
 
 Hermes Live Voice is a **developer preview for self-hosted, trusted-client use**. Long-lived credentials stay server-side; network binds and ambiguous approvals fail closed. Before remote exposure, add TLS, a high-entropy auth token, an exact origin allowlist, edge rate and cost limits, and keep Hermes/provider endpoints private. Review [the security model](docs/security.md) and [vulnerability reporting policy](SECURITY.md).
 
-The release gate covers 354 tests plus type, docs, browser, Dashboard, plugin, CLI, gateway, package, dependency, CodeQL, and Docker checks. v0.3.1 was also exercised against the official Hermes v0.18.2 image and a real Gemini Live connection.
+The release gate covers 354 tests plus type, docs, browser, Dashboard, plugin, CLI, gateway, package, dependency, CodeQL, and Docker checks. The v0.3.2 package was also exercised against the official Hermes v0.18.2 image and a real `gemini-3.1-flash-live-preview` connection.
 
 What deterministic CI does **not** prove:
 

@@ -1,6 +1,6 @@
 {
   "name": "hermes-live-voice",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Give Hermes Agent a realtime voice with interruptible conversation, tool-powered work, live progress, and Dashboard, browser, and terminal clients.",
   "type": "module",
   "main": "./dist/index.js",

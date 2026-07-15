@@ -10,13 +10,13 @@ It registers:
 - a Hermes Dashboard **Live Voice** integration;
 - an authenticated same-origin Dashboard proxy that keeps gateway credentials out of browser code.
 
-The plugin does not run the audio gateway inside Hermes. From a built repository checkout, start the Node.js companion runtime separately:
+The plugin does not run the audio gateway inside Hermes. Start the installed Node.js companion runtime separately:
 
 ```sh
-node dist/cli.js serve
+hermes-live serve
 ```
 
-After installing the npm package, the equivalent command is `hermes-live serve`.
+From a built repository checkout, the equivalent command is `node dist/cli.js serve`.
 
 Set `HERMES_LIVE_URL` when the gateway is not at `http://127.0.0.1:8788`. Set `HERMES_LIVE_AUTH_TOKEN` in the Hermes process when the gateway requires authentication. The status tool reports whether a token is configured but never returns its value.
 
