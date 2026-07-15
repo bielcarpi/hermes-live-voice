@@ -76,6 +76,21 @@ describe("readiness", () => {
     expect(hermes.assertRunsSupported).toHaveBeenCalledOnce();
   });
 
+  it("never exposes base URL userinfo or query credentials", async () => {
+    const report = await buildReadinessReport(
+      loadConfig({
+        HERMES_LIVE_PROVIDER: "openai",
+        OPENAI_REALTIME_BASE_URL:
+          "wss://realtime.example/tenant/readiness-path-secret?api-version=2026-07-01&api-key=query-secret",
+      }),
+    );
+
+    expect(report.realtime.baseUrl).toBe("wss://realtime.example/[redacted-path]?[redacted]");
+    expect(JSON.stringify(report)).not.toContain("query-secret");
+    expect(JSON.stringify(report)).not.toContain("readiness-path-secret");
+    expect(JSON.stringify(report)).not.toContain("api-version");
+  });
+
   it("reports interactive approvals only when Hermes advertises targeted responses", async () => {
     const hermes = {
       baseUrl: "http://targeted-hermes.local",

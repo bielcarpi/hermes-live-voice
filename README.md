@@ -5,18 +5,19 @@
 <h1 align="center">Hermes Live Voice</h1>
 
 <p align="center">
-  <strong>Talk to Hermes like a live call.</strong>
+  <strong>Hermes already has the brain. Give it a realtime voice.</strong><br>
+  Talk naturally. Watch Hermes work. Stay in control.
 </p>
 
 <p align="center">
-  The open-source realtime voice layer for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.<br>
-  Gemini Live or OpenAI Realtime handles natural conversation and interruption;<br>
+  The self-hosted realtime voice gateway and client SDK for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.<br>
+  Gemini Live or OpenAI Realtime handles speech and interruption;<br>
   Hermes keeps the memory, tools, skills, and work.
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a>
-  · <a href="#why-not-just-use-hermes-voice-mode">Why this exists</a>
+  · <a href="#choose-your-voice-path">Why this exists</a>
   · <a href="docs/plugin.md">Plugin</a>
   · <a href="docs/ui-integration.md">UI integration</a>
   · <a href="docs/client-protocol.md">Client protocol</a>
@@ -36,55 +37,45 @@
 <p align="center">
   <img src="assets/dashboard-live-voice.jpg" alt="Hermes Live Voice running inside Hermes Dashboard in deterministic mock mode" width="100%">
   <br>
-  <sub>Hermes Dashboard integration shown in safe mock mode; Gemini and OpenAI modes support microphone input and audio playback.</sub>
+  <sub>Type, watch Hermes work, and stop the task in deterministic mock mode; live providers add microphone, playback, and speech interruption.</sub>
 </p>
 
-## Give Your Hermes Agent A Realtime Voice
+## Give your Hermes Agent a realtime voice
 
-Hermes Live Voice is a Hermes plugin, a self-hosted voice gateway, and a small client protocol. It turns an existing Hermes Agent into the action-taking brain behind an interruptible speech-to-speech conversation.
+Hermes Live Voice is a Hermes plugin, a self-hosted voice gateway, and a small client protocol. It turns an existing Hermes Agent into the action-taking brain behind an interruptible speech-to-speech conversation—without giving the speech provider direct access to Hermes's memory store, credentials, or tool APIs.
 
-Ask it to inspect a repository, use memory, research something current, or run a command. The realtime model handles the speech loop; Hermes performs the tool-using work, while clients keep progress and stop controls visible.
+Speak naturally, interrupt provider playback, watch Hermes work, and stop a long-running task from the Dashboard, a custom client, or a remote terminal. The realtime model handles the speech loop; Hermes performs the tool-using work.
 
 ### What you get
 
-- **Natural realtime speech** with persistent sessions, interruption, and separate controls for provider playback and Hermes work.
+- **Action-taking realtime speech** through a long-lived provider session while connected, with interruption and separate controls for provider playback and Hermes work.
 - **The Hermes you already configured** with its memory, terminal access, skills, MCP servers, and model setup.
-- **A first-class Dashboard experience** with microphone and playback, transcripts, task progress, stop controls, and negotiated safety status.
-- **Browser, custom UI, and terminal surfaces** backed by one authenticated JSON/WebSocket gateway.
+- **A polished Hermes Dashboard plugin experience** with microphone and playback, provider-emitted transcripts, task lifecycle, stop controls, and negotiated safety status.
+- **Browser, custom UI, and terminal surfaces** backed by one auth-capable JSON/WebSocket gateway.
 - **Gemini Live and OpenAI Realtime**, plus a deterministic mock provider for setup and CI.
-- **A narrow security boundary**: the realtime model gets only three gateway tools—not Hermes credentials, session keys, or approval authority. Provider credentials stay server-side and out of client and tool payloads.
+- **A narrow provider-facing boundary**: the realtime model gets only three gateway tools—not Hermes credentials, session keys, or approval authority. Delegated runs still use the tools and policies configured in Hermes.
 
-Try a request that makes the agent do real work: *“Inspect this repository, run the tests, and tell me whether it is safe to release.”*
+It earns its keep when voice is more than dictation: a hands-free research or coding session, an operations task whose progress must stay visible and cancellable, or a community app that needs Hermes behind its own realtime UI. Try: *“Inspect this repository, run the tests, and tell me whether it is safe to release.”*
+
+> **Current preview limitation:** while Hermes executes a delegated task, provider conversation pauses until the run finishes. Clients still receive the sanitized task lifecycle and can stop the task.
 
 > **Approval safety:** The most recently integration-tested Hermes Agent version, v0.18.2, does not expose stable approval IDs. Hermes Live Voice never guesses: it attempts denial, stops the run, and closes the voice session. Interactive decisions enable only after Hermes negotiates targeted approval identity. See the [security model](docs/security.md).
 
-## Why Not Just Use Hermes Voice Mode?
+## Choose Your Voice Path
 
-Hermes includes an excellent built-in [Voice Mode](https://hermes-agent.nousresearch.com/docs/user-guide/features/voice-mode/) for speaking directly with the Hermes CLI. Start there when you want the shortest local path.
+Hermes includes an excellent built-in [Voice Mode](https://hermes-agent.nousresearch.com/docs/user-guide/features/voice-mode/) for its CLI/TUI, messaging voice replies, and Discord voice channels; Hermes Desktop also has its own voice surface. Start there when an official Hermes client already fits the job.
 
-Use Hermes Live Voice when the product itself needs a persistent realtime conversation or a custom client:
+Use Hermes Live Voice when you need a long-lived realtime provider connection, a custom client, and a public task-control protocol:
 
-| | Hermes Voice Mode | Hermes Live Voice |
+| Need | Best path | What it gives you |
 | --- | --- | --- |
-| Best for | Speaking with the Hermes CLI | Building browser, mobile, desktop, or device voice clients |
-| Voice architecture | Hermes-managed speech pipeline | Persistent provider speech-to-speech session |
-| Interruption | CLI voice interaction | Client-controlled barge-in, playback truncation, and run stop |
-| Client protocol | Built into Hermes | Public JSON/WebSocket protocol |
-| Providers | Hermes voice configuration | Gemini Live, OpenAI Realtime, or mock |
-| Agent actions | Hermes | Hermes, through three gateway tools |
-| Deployment shape | Local Hermes feature | Separate self-hosted gateway and optional Hermes plugin |
+| First-party local or messaging voice | **Hermes Voice Mode or Desktop** | The shortest supported path inside Hermes |
+| Daily browser voice | **Hermes Dashboard + Live Voice — recommended** | Microphone, playback, provider transcripts, task lifecycle, interrupt, and stop |
+| A custom or community web app | **`hermes-live-voice/browser` + backend relay** | Framework-independent audio/client SDK without browser-side installation credentials |
+| Gateway development or troubleshooting | **Bundled browser demo** | A direct local protocol and audio test surface |
+| SSH, accessibility, or remote diagnostics | **`hermes-live terminal`** | Persistent text control with transcript, task state, `/interrupt`, and `/stop` |
 
-## Choose How You Use It
-
-| Surface | Best for | Audio |
-| --- | --- | --- |
-| **Hermes Dashboard + Live Voice — recommended** | Daily use with transcript, progress, interruption, stop, and negotiated safety status | Browser microphone and playback |
-| **Bundled browser demo** | Local development and gateway troubleshooting | Browser microphone and playback |
-| **`hermes-live-voice/browser`** | Community web UIs and custom React, Vue, Svelte, vanilla, or Electron clients | Host-integrated microphone and playback |
-| **`hermes-live terminal`** | SSH, headless systems, automation, and remote text control | Text only |
-| **Hermes Ctrl+B Voice Mode** | The fastest local terminal voice experience | Hermes-managed voice |
-
-An OpenAI-compatible chat endpoint alone does not provide this realtime audio and run-event contract. Community UIs should follow the [UI integration guide](docs/ui-integration.md).
+The Dashboard tab is supplied by this community plugin; it is not bundled with Hermes Agent. Hermes WebUI and Open WebUI need explicit adapters today, and an OpenAI-compatible chat connection alone is not plug-and-play. See [community UI compatibility](docs/ui-integration.md#community-ui-compatibility).
 
 ## Quick Start
 
@@ -93,6 +84,15 @@ An OpenAI-compatible chat endpoint alone does not provide this realtime audio an
 - Node.js 20 or newer.
 - A running [Hermes Agent API Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/) with its `API_SERVER_KEY` configured.
 - A Gemini or OpenAI key for real speech. No provider key is needed for mock mode.
+
+If the Hermes API Server is not already enabled, add these values to `~/.hermes/.env`, then keep the foreground gateway running:
+
+```sh
+API_SERVER_ENABLED=true
+API_SERVER_KEY=your-hermes-api-server-key
+
+hermes gateway run
+```
 
 ### 1. Install
 
@@ -110,7 +110,7 @@ hermes-live plugin install --force
 hermes plugins enable hermes-live
 ```
 
-`--force` replaces an older installed copy so the gateway and plugin stay on the same release. The repository/package name is `hermes-live-voice`; the short CLI command and plugin id are `hermes-live`. See [plugin installation](docs/plugin.md#install-in-hermes) for the one-line latest-source option and symlinked development installs.
+`--force` replaces an older installed copy so the gateway and plugin stay on the same release. The repository/package name is `hermes-live-voice`; the short CLI command and plugin id are `hermes-live`. See [plugin installation](docs/plugin.md#install-in-hermes) for development alternatives.
 
 ### 3. Start safely in mock mode
 
@@ -154,19 +154,11 @@ HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
 hermes-live serve
 ```
 
-Before calling a real-provider deployment ready, repeat the provider selection and credential in a second shell for an actual connect/close smoke test:
-
-```sh
-HERMES_LIVE_PROVIDER=gemini GEMINI_API_KEY=your-gemini-key hermes-live provider-smoke
-# or
-HERMES_LIVE_PROVIDER=openai OPENAI_API_KEY=your-openai-key hermes-live provider-smoke
-```
-
-Then complete the audio and negative-case checklist in [live provider testing](docs/live-provider-testing.md).
+Before calling a real-provider deployment ready, run `hermes-live provider-smoke` with the same provider and credential, then complete the audio and negative-case checklist in [live provider testing](docs/live-provider-testing.md). The smoke command proves only a provider connect/close handshake—not audio or tool use.
 
 ## Use It From A Terminal
 
-For local terminal microphone use, run `hermes` and press **Ctrl+B**. For a remote gateway, automation host, or headless machine, use the persistent text-control console:
+For the official local terminal microphone path, run `hermes` and use Voice Mode. For a remote or headless gateway, use the persistent text-control console:
 
 ```sh
 HERMES_LIVE_URL=https://voice.example.com \
@@ -174,32 +166,21 @@ HERMES_LIVE_AUTH_TOKEN=your-gateway-token \
 hermes-live terminal
 ```
 
-The console shows transcripts and Hermes progress, with separate `/interrupt` and `/stop` controls. It is intentionally text-only; use the Dashboard or browser client for gateway audio. Scripts can use `hermes-live client "What is the current status?"`. See [UI integration](docs/ui-integration.md#terminal).
+The console shows transcripts and sanitized Hermes task state, with separate `/interrupt` and `/stop` controls. It is intentionally text-only, but it still opens a realtime-provider session and can incur provider usage. Treat it as interactive remote control or a diagnostic/accessibility fallback, not deterministic automation. Use `hermes-live client "What is the current status?"` for a one-shot smoke test. See [UI integration](docs/ui-integration.md#terminal).
 
 ## Supported Providers
 
 | Provider | Default model | Notes |
 | --- | --- | --- |
-| Gemini Live | `gemini-3.1-flash-live-preview` | Uses the Google Gen AI SDK. Vertex/Enterprise configuration is supported. |
-| OpenAI Realtime | `gpt-realtime-2.1` | Server-side WebSocket integration with speech, tool calls, VAD or push-to-talk, and reasoning effort. |
+| Gemini Live | [`gemini-3.1-flash-live-preview`](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview) | Uses the Google Gen AI SDK. Vertex/Enterprise configuration is supported. |
+| OpenAI Realtime | [`gpt-realtime-2.1`](https://developers.openai.com/api/docs/models/gpt-realtime-2.1) | Server-side WebSocket integration with speech, tool calls, VAD or push-to-talk, and reasoning effort. Assistant transcripts are surfaced; separate spoken-input transcription is not enabled. |
 | Mock | `mock-live` | Text-only local development and deterministic CI. |
 
 Model ids are configuration, not hardcoded provider forks. Override `GEMINI_MODEL` or `OPENAI_REALTIME_MODEL` when validating a compatible model.
 
 ## How It Works
 
-```mermaid
-flowchart LR
-  C["Voice client<br/>browser · mobile · desktop · device"]
-  G["Hermes Live Voice<br/>auth · sessions · audio · policy"]
-  R["Realtime provider<br/>Gemini Live or OpenAI Realtime"]
-  H["Hermes Agent<br/>memory · tools · skills · MCP"]
-
-  C <-->|"JSON + PCM16 over WebSocket"| G
-  G <-->|"persistent realtime session"| R
-  R -->|"3 gateway tool calls"| G
-  G <-->|"Runs API + SSE"| H
-```
+![Hermes Live Voice architecture: a client connects to the gateway, which keeps separate realtime-provider and Hermes Agent connections](assets/architecture.svg)
 
 The realtime model is the **ears, mouth, and turn-taking layer**. Hermes is the **brain and action layer**. The gateway is the **translator and security boundary**.
 
@@ -209,9 +190,9 @@ The provider can ask the gateway to:
 - `get_hermes_run_status`
 - `stop_hermes_run`
 
-It cannot call arbitrary Hermes tools or submit approvals. Human choices come only from an authenticated client and must match the negotiated identity; legacy uncorrelated requests trigger the fail-closed containment described above.
+It cannot call arbitrary Hermes tools directly or submit approvals. A delegated Hermes run can use whatever tools and policies that Hermes installation already exposes. Human choices come only from an authenticated client and must match the negotiated identity; legacy uncorrelated requests trigger the fail-closed containment described above.
 
-In v0.3 the realtime provider waits for a delegated Hermes run to finish, while clients continue receiving progress and stop controls. Continuous provider-side conversation during that work remains a [roadmap](docs/roadmap.md) item.
+Currently, the realtime provider waits for a delegated Hermes run to finish, while clients continue receiving progress and stop controls. Continuous provider-side conversation during that work remains a [roadmap](docs/roadmap.md) item.
 
 Read the [architecture](docs/architecture.md) and [client protocol](docs/client-protocol.md) for the full lifecycle.
 
@@ -219,7 +200,7 @@ Read the [architecture](docs/architecture.md) and [client protocol](docs/client-
 
 The gateway reads the process environment and does **not** load a local `.env` automatically, so export variables or pass them inline as shown in Quick Start. Docker Compose can consume one explicitly with `--env-file`.
 
-At minimum, set `HERMES_AGENT_API_SERVER_KEY` to Hermes Agent's `API_SERVER_KEY`, then select `mock` or provide the chosen realtime-provider credential. [.env.example](.env.example) is the complete reference; [plugin usage](docs/plugin.md#runtime-usage) covers packaged operation and [local setup](docs/local-setup.md) covers checkout development.
+At minimum, set `HERMES_AGENT_API_SERVER_KEY` to Hermes Agent's `API_SERVER_KEY`, then select `mock` or provide the chosen realtime-provider credential. [.env.example](.env.example) is the primary deployment template; [plugin usage](docs/plugin.md#runtime-usage) covers packaged operation and [local setup](docs/local-setup.md) covers checkout development.
 
 A network-accessible bind requires a strong `HERMES_LIVE_AUTH_TOKEN` and should use an exact `HERMES_LIVE_ALLOW_ORIGIN`. This developer preview is not a turnkey public multi-user service; review the [deployment security model](docs/security.md) before exposing it beyond localhost.
 
@@ -260,23 +241,17 @@ hermes-live plugin status         # inspect the plugin installation
 
 Contributors working from a repository checkout can use `npm run dev`, `npm run build`, and `npm run verify`; see [local setup](docs/local-setup.md) and [contributing](CONTRIBUTING.md).
 
-Docker users can start from [examples/docker-compose.yml](examples/docker-compose.yml). It binds to host loopback and runs read-only, capability-free, and non-root by default. Use an authenticated TLS proxy for remote access.
+From a repository checkout, Docker users can start from [examples/docker-compose.yml](examples/docker-compose.yml). It binds to host loopback and runs read-only, capability-free, and non-root by default. Use an authenticated TLS proxy for remote access.
 
 ## Security And Maturity
 
 Hermes Live Voice is a **developer preview for self-hosted, trusted-client use**. Long-lived credentials stay server-side; network binds and ambiguous approvals fail closed. Before remote exposure, add TLS, a high-entropy auth token, an exact origin allowlist, edge rate and cost limits, and keep Hermes/provider endpoints private. Review [the security model](docs/security.md) and [vulnerability reporting policy](SECURITY.md).
 
-The release gate covers 354 tests plus type, docs, browser, Dashboard, plugin, CLI, gateway, package, dependency, CodeQL, and Docker checks. The v0.3.2 package was also exercised against the official Hermes v0.18.2 image and a real `gemini-3.1-flash-live-preview` connection.
+The selected realtime provider receives user audio/text and the bounded final Hermes response returned to the voice session; that response can contain information Hermes obtained from memory, files, or tools. Credentials, Hermes session keys, and raw tool APIs stay server-side, but content does not magically stay local. Do not ask Hermes to return data the selected provider should not receive.
 
-What deterministic CI does **not** prove:
+Clients share a server-owned Hermes profile/user scope by default. This is not per-user authentication or a turnkey multi-tenant service; keep the default identity policy unless every client is trusted and independently authenticated.
 
-- valid external provider credentials or model entitlement;
-- real microphone and speaker behavior;
-- provider latency or cost under load;
-- public multi-user safety;
-- long-duration session reliability.
-
-See [live-provider testing](docs/live-provider-testing.md) and the [roadmap](docs/roadmap.md). Never paste secrets into an issue; report vulnerabilities privately through [SECURITY.md](SECURITY.md).
+The release gate covers 350+ tests plus type, docs, browser, Dashboard, plugin, CLI, gateway, package, dependency, CodeQL, and Docker checks. Deterministic CI does not prove real credentials, microphone/speaker behavior, provider latency or cost, public multi-user safety, or long-session reliability. Exact Hermes/provider evidence lives in the [UI integration matrix](docs/ui-integration.md#hermes-dashboard), [live-provider checklist](docs/live-provider-testing.md), and release notes. Never paste secrets into an issue; report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 
 ## Contributing
 

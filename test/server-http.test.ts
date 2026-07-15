@@ -475,7 +475,13 @@ function testConfig(
       ...overrides.server,
       allowUnauthenticated: overrides.server?.allowUnauthenticated ?? false,
     },
-    hermes: { baseUrl: "http://127.0.0.1:8642", model: "hermes-agent", timeoutMs: 30_000, ...overrides.hermes },
+    hermes: {
+      baseUrl: "http://127.0.0.1:8642",
+      model: "hermes-agent",
+      timeoutMs: 30_000,
+      streamIdleTimeoutMs: 120_000,
+      ...overrides.hermes,
+    },
     realtime: { provider: "openai", model: "gpt-realtime-2.1", ...overrides.realtime },
     gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1", ...overrides.gemini },
     openai: {

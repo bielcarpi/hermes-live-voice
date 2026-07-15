@@ -109,6 +109,39 @@
       : "Speak naturally. You can interrupt Hermes at any time.";
   }
 
+  function connectedSessionNotice(inputAudio, browserMicSupported) {
+    if (browserMicSupported) {
+      return "Live Voice is connected. You can speak or type to Hermes.";
+    }
+    return inputAudio && inputAudio.enabled === false
+      ? "Live Voice is connected in text mode. Type a message to Hermes."
+      : "Live Voice is connected. Type a message to Hermes; microphone capture is unavailable for this session.";
+  }
+
+  function connectedSessionGuidance(browserMicSupported) {
+    return browserMicSupported
+      ? "Start the microphone or type a message below."
+      : "Type a message below.";
+  }
+
+  function negotiatedInputAudio(snapshot, fallback) {
+    const realtime = snapshot && snapshot.session && snapshot.session.realtime;
+    const audio = realtime && realtime.audio;
+    return audio && audio.input ? audio.input : (fallback || {});
+  }
+
+  function supportsBrowserMicrophone(inputAudio) {
+    const mimeType = inputAudio && inputAudio.mimeType || "";
+    return (!inputAudio || inputAudio.enabled !== false) &&
+      (!mimeType || /^audio\/pcm(?:;|$)/i.test(mimeType));
+  }
+
+  function supportsBrowserPlayback(outputAudio) {
+    const mimeType = outputAudio && outputAudio.mimeType || "";
+    return (!outputAudio || outputAudio.enabled !== false) &&
+      (!mimeType || /^audio\/pcm(?:;|$)/i.test(mimeType));
+  }
+
   async function disconnectSession(audio, client, onAudioError) {
     void Promise.resolve()
       .then(function () {
@@ -564,6 +597,7 @@
       const createAudio = ensureAudioRef.current;
       if (!createAudio) return null;
       const audio = createAudio();
+      if (!supportsBrowserPlayback(outputAudio)) return audio;
       void audio.primePlayback().catch(function (error) {
         setNotice({
           tone: "warning",
@@ -581,7 +615,14 @@
       runAction("connect", function () {
         return client.connect().then(function () {
           if (ensureAudioRef.current) ensureAudioRef.current();
-          setNotice({ tone: "success", text: "Live Voice is connected. You can speak or type to Hermes." });
+          const connectedInputAudio = negotiatedInputAudio(client.getSnapshot(), inputAudio);
+          setNotice({
+            tone: "success",
+            text: connectedSessionNotice(
+              connectedInputAudio,
+              supportsBrowserMicrophone(connectedInputAudio),
+            ),
+          });
           refreshStatus();
         });
       });
@@ -708,7 +749,7 @@
     const inputAudio = audioCapabilities.input || {};
     const outputAudio = audioCapabilities.output || {};
     const inputMime = inputAudio.mimeType || "";
-    const browserMicSupported = inputAudio.enabled !== false && (!inputMime || /^audio\/pcm(?:;|$)/i.test(inputMime));
+    const browserMicSupported = supportsBrowserMicrophone(inputAudio);
     const provider = realtime.provider || gateway.provider || "\u2014";
     const model = realtime.model || gateway.model || "\u2014";
     const protocolVersion = session && session.protocolVersion ? session.protocolVersion : gateway.protocolVersion || "\u2014";
@@ -914,7 +955,7 @@
             h("span", null,
               microphone.active ? microphoneActiveGuidance(audioCapabilities.turnDetection) :
               playback.active ? "Use Interrupt Speech to cut off this response without stopping the task." :
-              connected ? "Start the microphone or type a message below." : gatewayState.detail,
+              connected ? connectedSessionGuidance(browserMicSupported) : gatewayState.detail,
             ),
           ),
           h("div", { className: "hlv-connect-row" },

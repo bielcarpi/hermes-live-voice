@@ -5,6 +5,7 @@ import {
   assertRuntimeConfig,
   loadConfig,
   makeSessionKey,
+  publicBaseUrl,
   realtimeProviderConfigured,
   sanitizeSessionComponent,
 } from "../src/config.js";
@@ -26,6 +27,7 @@ describe("config", () => {
     expect(config.server.providerReadyTimeoutMs).toBe(15_000);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
     expect(config.hermes.timeoutMs).toBe(30_000);
+    expect(config.hermes.streamIdleTimeoutMs).toBe(120_000);
     expect(config.realtime.provider).toBe("gemini");
     expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
     expect(config.realtime.model).toBe(config.gemini.model);
@@ -46,6 +48,77 @@ describe("config", () => {
   it("rejects disabled or negative Hermes request timeouts", () => {
     expect(() => loadConfig({ HERMES_LIVE_HERMES_TIMEOUT_MS: "0" })).toThrow();
     expect(() => loadConfig({ HERMES_LIVE_HERMES_TIMEOUT_MS: "-1" })).toThrow();
+  });
+
+  it("configures a positive Hermes event-stream idle timeout", () => {
+    expect(loadConfig({ HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS: "45000" }).hermes.streamIdleTimeoutMs)
+      .toBe(45_000);
+    expect(() => loadConfig({ HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS: "0" })).toThrow();
+    expect(() => loadConfig({ HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS: "-1" })).toThrow();
+  });
+
+  it("requires a credential-free HTTP(S) root origin for Hermes", () => {
+    expect(loadConfig({ HERMES_BASE_URL: "HTTPS://hermes.example/" }).hermes.baseUrl)
+      .toBe("HTTPS://hermes.example");
+    for (const baseUrl of [
+      "ws://hermes.example",
+      "ftp://hermes.example",
+      "http://user:secret@hermes.example",
+      "http://hermes.example/base",
+      "http://hermes.example?token=secret",
+      "http://hermes.example#fragment",
+      " http://hermes.example",
+      "http://hermes.example\\@attacker.example",
+      `http://${"x".repeat(2_048)}`,
+    ]) {
+      expect(() => loadConfig({ HERMES_BASE_URL: baseUrl })).toThrow();
+    }
+  });
+
+  it("requires a credential-free WS(S) URL for OpenAI while preserving custom path and query", () => {
+    const baseUrl = "wss://realtime.example/custom/path/?api-version=2026-07-01/";
+    expect(loadConfig({ OPENAI_REALTIME_BASE_URL: baseUrl }).openai.baseUrl).toBe(baseUrl);
+    for (const configured of [
+      "https://realtime.example/v1/realtime",
+      "ftp://realtime.example/v1/realtime",
+      "wss://user:secret@realtime.example/v1/realtime",
+      "wss://realtime.example/v1/realtime#fragment",
+      " wss://realtime.example/v1/realtime",
+      "wss://realtime.example\\@attacker.example/v1/realtime",
+      `wss://${"x".repeat(2_048)}`,
+    ]) {
+      expect(() => loadConfig({ OPENAI_REALTIME_BASE_URL: configured })).toThrow();
+    }
+  });
+
+  it("accepts only canonical Google Cloud endpoint and API-version inputs", () => {
+    expect(loadConfig({
+      GOOGLE_CLOUD_PROJECT: "demo-project",
+      GOOGLE_CLOUD_LOCATION: "us-central1",
+      GOOGLE_GENAI_API_VERSION: "v1beta1",
+    }).gemini).toMatchObject({
+      project: "demo-project",
+      location: "us-central1",
+      apiVersion: "v1beta1",
+    });
+    expect(loadConfig({ GOOGLE_CLOUD_PROJECT: "" }).gemini.project).toBeUndefined();
+    for (const project of ["abcde", "Demo-project", "demo-project-", "demo.example/project"]) {
+      expect(() => loadConfig({ GOOGLE_CLOUD_PROJECT: project })).toThrow();
+    }
+    for (const location of ["US-central1", "us.central1", "us-central1/../../target", "us-central1@target"]) {
+      expect(() => loadConfig({ GOOGLE_CLOUD_LOCATION: location })).toThrow();
+    }
+    for (const apiVersion of ["v0", "../v1beta", "v1/beta", "v1beta?key=secret", `v1${"a".repeat(32)}`]) {
+      expect(() => loadConfig({ GOOGLE_GENAI_API_VERSION: apiVersion })).toThrow();
+    }
+  });
+
+  it("removes URL userinfo, path text, and query values from public configuration output", () => {
+    expect(publicBaseUrl("wss://user:password@realtime.example/tenant/path-secret?api-key=secret&name=private"))
+      .toBe("wss://realtime.example/[redacted-path]?[redacted]");
+    expect(publicBaseUrl("http://user:password@hermes.example"))
+      .toBe("http://hermes.example");
+    expect(publicBaseUrl("not a URL")).toBe("[invalid-url]");
   });
 
   it("configures the text size limit", () => {

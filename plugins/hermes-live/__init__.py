@@ -8,7 +8,6 @@ public WebSocket/audio server inside Hermes core.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from os import getenv
 from typing import Any
 
 from . import schemas, tools
@@ -54,4 +53,4 @@ def _slash_command(raw_args: str = "") -> str:
 
 
 def _gateway_url() -> str:
-    return (getenv("HERMES_LIVE_URL") or tools.DEFAULT_GATEWAY_URL).rstrip("/")
+    return tools.configured_gateway_url()

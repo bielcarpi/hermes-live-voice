@@ -18,6 +18,7 @@ export type LiveModelEvent =
   | { type: "text"; text: string; speaker?: "user" | "assistant" | "system"; final?: boolean }
   | { type: "response"; status: "started" | "completed" | "cancelled" | "failed"; responseId?: string; error?: string }
   | { type: "tool_call"; call: LiveToolCall }
+  | { type: "tool_call_cancelled"; callIds: string[] }
   | { type: "input_speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number };
 
 export interface LiveModelCallbacks {

@@ -2,6 +2,30 @@ import { z } from "zod";
 
 export const MAX_COMPATIBLE_AUDIO_FRAME_BYTES = 5_900_000;
 export const MAX_COMPATIBLE_TEXT_CHARS = 1_000_000;
+export const DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS = 120_000;
+const MAX_OUTBOUND_BASE_URL_CHARS = 2_048;
+
+const HermesBaseUrlSchema = z.string().url().refine(isSafeHermesBaseUrl, {
+  message: "HERMES_BASE_URL must be a credential-free HTTP(S) root origin.",
+});
+const OpenAIRealtimeBaseUrlSchema = z.string().url().refine(isSafeOpenAIRealtimeBaseUrl, {
+  message: "OPENAI_REALTIME_BASE_URL must be a credential-free WS(S) URL without a fragment.",
+});
+const GoogleCloudProjectSchema = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().min(6).max(30).refine(isSafeGoogleCloudProject, {
+    message: "GOOGLE_CLOUD_PROJECT must be a canonical Google Cloud project id.",
+  }).optional(),
+);
+const GoogleCloudLocationSchema = z.string().min(1).max(63).refine(isSafeGoogleCloudLocation, {
+  message: "GOOGLE_CLOUD_LOCATION must be a canonical Google Cloud location.",
+});
+const GoogleGenAiApiVersionSchema = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().min(2).max(32).refine(isSafeGoogleGenAiApiVersion, {
+    message: "GOOGLE_GENAI_API_VERSION must be a bounded v1/v1beta/v1alpha-style token.",
+  }).optional(),
+);
 
 const EnvSchema = z.object({
   NODE_ENV: z.string().optional(),
@@ -32,24 +56,30 @@ const EnvSchema = z.object({
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   HERMES_LIVE_DEMO_ENABLED: z.string().optional(),
 
-  HERMES_BASE_URL: z.string().url().default("http://127.0.0.1:8642"),
+  HERMES_BASE_URL: HermesBaseUrlSchema.default("http://127.0.0.1:8642"),
   HERMES_AGENT_API_SERVER_KEY: z.string().optional(),
   HERMES_API_KEY: z.string().optional(),
   HERMES_MODEL: z.string().default("hermes-agent"),
   HERMES_LIVE_RUN_INSTRUCTIONS: z.string().optional(),
   HERMES_LIVE_HERMES_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(2_147_483_647)
+    .default(DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS),
 
   HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "mock"]).default("gemini"),
   GEMINI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-3.1-flash-live-preview"),
   GOOGLE_GENAI_USE_ENTERPRISE: z.string().optional(),
-  GOOGLE_CLOUD_PROJECT: z.string().optional(),
-  GOOGLE_CLOUD_LOCATION: z.string().default("us-central1"),
-  GOOGLE_GENAI_API_VERSION: z.string().optional(),
+  GOOGLE_CLOUD_PROJECT: GoogleCloudProjectSchema,
+  GOOGLE_CLOUD_LOCATION: GoogleCloudLocationSchema.default("us-central1"),
+  GOOGLE_GENAI_API_VERSION: GoogleGenAiApiVersionSchema,
 
   OPENAI_API_KEY: z.string().optional(),
-  OPENAI_REALTIME_BASE_URL: z.string().url().default("wss://api.openai.com/v1/realtime"),
+  OPENAI_REALTIME_BASE_URL: OpenAIRealtimeBaseUrlSchema.default("wss://api.openai.com/v1/realtime"),
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2.1"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
   OPENAI_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("low"),
@@ -85,6 +115,7 @@ export interface AppConfig {
     model: string;
     instructions?: string;
     timeoutMs: number;
+    streamIdleTimeoutMs?: number;
   };
   realtime: {
     provider: RealtimeProvider;
@@ -144,6 +175,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       model: parsed.HERMES_MODEL,
       ...(parsed.HERMES_LIVE_RUN_INSTRUCTIONS ? { instructions: parsed.HERMES_LIVE_RUN_INSTRUCTIONS } : {}),
       timeoutMs: parsed.HERMES_LIVE_HERMES_TIMEOUT_MS,
+      streamIdleTimeoutMs: parsed.HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS,
     },
     realtime: {
       provider: parsed.HERMES_LIVE_PROVIDER,
@@ -159,7 +191,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     openai: {
       ...(parsed.OPENAI_API_KEY ? { apiKey: parsed.OPENAI_API_KEY } : {}),
-      baseUrl: withoutTrailingSlash(parsed.OPENAI_REALTIME_BASE_URL),
+      baseUrl: parsed.OPENAI_REALTIME_BASE_URL,
       model: parsed.OPENAI_REALTIME_MODEL,
       voice: parsed.OPENAI_REALTIME_VOICE,
       reasoningEffort: parsed.OPENAI_REALTIME_REASONING_EFFORT,
@@ -274,6 +306,75 @@ function parseBool(value: string | undefined): boolean {
 
 function withoutTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+function isSafeHermesBaseUrl(value: string): boolean {
+  const parsed = parseSafeConfiguredUrl(value);
+  return Boolean(
+    parsed &&
+    ["http:", "https:"].includes(parsed.protocol) &&
+    parsed.pathname === "/" &&
+    !value.includes("?") &&
+    !value.includes("#")
+  );
+}
+
+function isSafeOpenAIRealtimeBaseUrl(value: string): boolean {
+  const parsed = parseSafeConfiguredUrl(value);
+  return Boolean(
+    parsed &&
+    ["ws:", "wss:"].includes(parsed.protocol) &&
+    !value.includes("#")
+  );
+}
+
+export function isSafeGoogleCloudProject(value: string): boolean {
+  return /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u.test(value);
+}
+
+export function isSafeGoogleCloudLocation(value: string): boolean {
+  return value.length <= 63 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value);
+}
+
+export function isSafeGoogleGenAiApiVersion(value: string): boolean {
+  return value.length <= 32 && /^v[1-9][0-9]*(?:(?:alpha|beta)[0-9]*)?$/u.test(value);
+}
+
+function parseSafeConfiguredUrl(value: string): URL | undefined {
+  if (
+    !value ||
+    value.length > MAX_OUTBOUND_BASE_URL_CHARS ||
+    value !== value.trim() ||
+    /[\\\u0000-\u001f\u007f\s]/u.test(value)
+  ) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.username || parsed.password || !parsed.hostname ? undefined : parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+export function publicBaseUrl(value: string): string {
+  if (
+    !value ||
+    value.length > MAX_OUTBOUND_BASE_URL_CHARS ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    return "[invalid-url]";
+  }
+  try {
+    const parsed = new URL(value);
+    const origin = `${parsed.protocol}//${parsed.host}`;
+    if (!parsed.hostname || origin.length > 512) return "[invalid-url]";
+    const path = parsed.pathname === "/" ? "" : "/[redacted-path]";
+    const query = value.includes("?") ? "?[redacted]" : "";
+    return `${origin}${path}${query}`;
+  } catch {
+    return "[invalid-url]";
+  }
 }
 
 function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, openaiModel: string): string {

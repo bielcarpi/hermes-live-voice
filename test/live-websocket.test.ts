@@ -76,7 +76,7 @@ describe("live gateway WebSocket", () => {
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "realtime_provider_event_invalid",
       recoverable: false,
-      message: expect.stringContaining("Realtime provider transcript delta exceeds 20000 characters"),
+      message: "Realtime provider emitted an invalid event.",
     });
     await expect(closed).resolves.toMatchObject({ code: 1011 });
   });
@@ -105,7 +105,7 @@ describe("live gateway WebSocket", () => {
     await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
       code: "realtime_provider_event_invalid",
       recoverable: false,
-      message: expect.stringContaining("HERMES_LIVE_MAX_AUDIO_BYTES"),
+      message: "Realtime provider emitted an invalid event.",
     });
     await expect(closed).resolves.toMatchObject({ code: 1011 });
   });
@@ -188,6 +188,44 @@ describe("live gateway WebSocket", () => {
       response: { ok: true, run_id: "run_ws", output: "Terminal result." },
     });
     await iteratorClosed.promise;
+  });
+
+  it("does not reflect Hermes run failure details into gateway logs or provider responses", async () => {
+    const reflectedSecret = "hermes-secret-reflection";
+    const logger = fakeLogger();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        yield { event: "run.failed", error: reflectedSecret };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger,
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Trigger a failed Hermes run" });
+
+    await expect(liveModel.nextToolResponse()).resolves.toMatchObject({
+      response: {
+        ok: false,
+        status: "failed",
+        error: "Hermes run failed. Check the gateway logs for details.",
+      },
+    });
+    expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(reflectedSecret);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Hermes run reported failure",
+      expect.objectContaining({ error: "hermes_run_failed" }),
+    );
   });
 
   it("orders run.started before a provider terminal event emitted during Hermes startup", async () => {
@@ -464,11 +502,14 @@ describe("live gateway WebSocket", () => {
   });
 
   it("reports provider connection failures as session start failures", async () => {
+    const logger = fakeLogger();
     const server = await startServer({
       config: testConfig(),
       hermes: fakeHermes(),
-      liveModel: new FailingConnectAdapter(),
-      logger: fakeLogger(),
+      liveModel: new FailingConnectAdapter(
+        "Realtime provider did not become ready within 15000ms. reflected provider-startup-secret provider-path-secret provider-query-secret",
+      ),
+      logger,
     });
     openServers.push(server);
     const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
@@ -482,6 +523,51 @@ describe("live gateway WebSocket", () => {
       message: "Realtime provider session failed to start. Check the gateway logs.",
       recoverable: true,
     });
+    const logged = JSON.stringify(vi.mocked(logger.warn).mock.calls);
+    expect(logged).toContain("realtime_provider_startup_failed");
+    expect(logged).not.toContain("provider-startup-secret");
+    expect(logged).not.toContain("provider-path-secret");
+    expect(logged).not.toContain("provider-query-secret");
+  });
+
+  it("never logs provider-controlled errors after readiness", async () => {
+    const liveModel = new ManualProviderEventAdapter();
+    const logger = fakeLogger();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel,
+      logger,
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    liveModel.emitError(new Error("reflected provider-error-secret provider-url-secret"));
+
+    await expect(waitForMessage(socket, "session.error")).resolves.toMatchObject({
+      code: "realtime_provider_error",
+      message: "Realtime provider reported an error. Check the gateway logs.",
+    });
+    const responseFailed = waitForMessage(socket, "response.failed");
+    liveModel.emit({
+      type: "response",
+      status: "failed",
+      error: "reflected provider-response-secret provider-response-url-secret",
+    });
+    await expect(responseFailed).resolves.toMatchObject({
+      error: "Realtime provider response failed. Check the gateway logs.",
+    });
+    const logged = JSON.stringify(vi.mocked(logger.warn).mock.calls);
+    expect(logged).toContain("realtime_provider_error");
+    expect(logged).toContain("realtime_provider_response_failed");
+    expect(logged).not.toContain("provider-error-secret");
+    expect(logged).not.toContain("provider-url-secret");
+    expect(logged).not.toContain("provider-response-secret");
+    expect(logged).not.toContain("provider-response-url-secret");
   });
 
   it("reports provider errors before readiness as session start failures", async () => {
@@ -781,8 +867,17 @@ describe("live gateway WebSocket", () => {
     await waitForOpen(socket);
     send(socket, { type: "session.start" });
     await waitForMessage(socket, "session.ready");
+    const runEventPromise = waitForMessage(socket, "run.event");
+    const approvalPromise = waitForMessage(socket, "approval.request");
     send(socket, { type: "text.input", text: "Delete the stale build" });
-    const approval = await waitForMessage(socket, "approval.request");
+    const runEvent = await runEventPromise;
+    const approval = await approvalPromise;
+    expect(runEvent).toEqual({
+      type: "run.event",
+      runId: "run_ws",
+      event: { event: "approval.request", run_id: "run_ws" },
+    });
+    expect(approval.event).toEqual({ event: "approval.request", run_id: "run_ws" });
     expect(approval).toMatchObject({
       approval: {
         command: "git push origin feature",
@@ -793,6 +888,7 @@ describe("live gateway WebSocket", () => {
       },
     });
     expect(approval.approval.approvalId).toMatch(/^approval_[a-f0-9]{32}$/);
+    expect(approval.approval.approvalId).not.toBe("approval_1");
     const approvalResponded = waitForMessage(socket, "approval.responded");
     const completed = waitForMessage(socket, "run.completed");
     sendApprovalResponse(socket, approval, "once", "approval_response_1");
@@ -2383,6 +2479,424 @@ describe("live gateway WebSocket", () => {
     expect(hermes.startRun).toHaveBeenCalledTimes(1);
   });
 
+  it("stops an owned Hermes run and suppresses its late result when the provider cancels the start tool call", async () => {
+    const stopObserved = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      stopRun: vi.fn(async (runId: string) => {
+        stopObserved.resolve();
+        return { run_id: runId, status: "stopping" };
+      }),
+      streamEvents: async function* () {
+        await stopObserved.promise;
+        yield { event: "run.cancelled", run_id: "run_ws" };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Run until Gemini interrupts" });
+    await waitForMessage(socket, "run.started");
+
+    const cancellationLog = waitForMessage(socket, "log");
+    const runStopped = waitForMessage(socket, "run.stopped");
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["manual_start"] });
+
+    await expect(cancellationLog).resolves.toMatchObject({
+      level: "info",
+      message: "Realtime provider cancelled tool call",
+    });
+    await expect(runStopped).resolves.toMatchObject({ runId: "run_ws", status: "cancelled" });
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(liveModel.toolResponses()).toEqual([]);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["manual_start", "manual_start"] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+    expect(liveModel.toolResponses()).toEqual([]);
+  });
+
+  it("fails closed when a completed Hermes start tool call is cancelled too late", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Complete before cancellation arrives" });
+    await expect(liveModel.nextToolResponse()).resolves.toMatchObject({
+      call: { id: "manual_start" },
+      response: { ok: true, run_id: "run_ws" },
+    });
+
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["manual_start"] });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_tool_cancellation_too_late",
+      recoverable: false,
+      message: expect.stringContaining("Side effects may already have occurred"),
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopRun).not.toHaveBeenCalled();
+    expect(liveModel.toolResponses()).toHaveLength(1);
+  });
+
+  it("fails closed when cancellation lands in the pending-but-terminal Hermes boundary", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      streamEvents: async function* () {
+        try {
+          yield { event: "run.completed", output: "Terminal side effect result." };
+        } finally {
+          liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["manual_start"] });
+        }
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    send(socket, { type: "text.input", text: "Cancel at the terminal boundary" });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_tool_cancellation_too_late",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", expect.any(Object));
+    expect(liveModel.toolResponses()).toEqual([]);
+  });
+
+  it("fails closed when cancellation overlaps an in-flight provider tool-result send", async () => {
+    const liveModel = new StalledToolResponseAdapter();
+    const server = await startServer({
+      config: testConfig(),
+      hermes: fakeHermes(),
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Stall the provider result send" });
+    await liveModel.sendEntered.promise;
+
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    liveModel.emitCancellation();
+
+    await expect(failed).resolves.toMatchObject({
+      code: "realtime_tool_cancellation_delivery_indeterminate",
+      recoverable: false,
+      message: expect.stringContaining("cannot be recalled"),
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(liveModel.session.sendToolResponse).toHaveBeenCalledTimes(1);
+    expect(liveModel.session.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips a provider tool call cancelled while queued behind the concurrency limit", async () => {
+    const finishRun = deferred<void>();
+    const statusRelease = deferred<void>();
+    const threeStatusesEntered = deferred<void>();
+    let statusCalls = 0;
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      getRun: vi.fn(async () => {
+        statusCalls += 1;
+        if (statusCalls === 3) threeStatusesEntered.resolve();
+        await statusRelease.promise;
+        return { run_id: "run_ws", status: "running" };
+      }),
+      streamEvents: async function* () {
+        await finishRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Keep the start operation active" });
+    await waitForMessage(socket, "run.started");
+    for (const id of ["status_1", "status_2", "status_3"]) {
+      liveModel.emitToolCall({ id, name: "get_hermes_run_status", args: { run_id: "run_ws" } });
+    }
+    await threeStatusesEntered.promise;
+    liveModel.emitToolCall({ id: "status_queued", name: "get_hermes_run_status", args: { run_id: "run_ws" } });
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["status_queued"] });
+
+    statusRelease.resolve();
+    const statusResponses = await Promise.all([
+      liveModel.nextToolResponse(),
+      liveModel.nextToolResponse(),
+      liveModel.nextToolResponse(),
+    ]);
+    expect(statusResponses.map(({ call }) => call.id).sort()).toEqual(["status_1", "status_2", "status_3"]);
+    expect(hermes.getRun).toHaveBeenCalledTimes(3);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+
+    finishRun.resolve();
+    await liveModel.nextToolResponse();
+    expect(liveModel.toolResponses().some(({ call }) => call.id === "status_queued")).toBe(false);
+  });
+
+  it("fails closed when an acknowledged provider cancellation cannot stop its owned Hermes run", async () => {
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      stopRun: vi.fn(async () => {
+        throw new Error("Hermes stop unavailable");
+      }),
+      streamEvents: async function* (_runId, options) {
+        await new Promise<void>((resolve) => {
+          if (options?.signal?.aborted) resolve();
+          else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Start work whose stop will fail" });
+    await waitForMessage(socket, "run.started");
+
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["manual_start"] });
+
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_outcome_indeterminate",
+      recoverable: false,
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopRun.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(liveModel.toolResponses()).toEqual([]);
+  });
+
+  it("fails closed when Hermes completes after accepting the provider-cancellation stop request", async () => {
+    const stopObserved = deferred<void>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      stopRun: vi.fn(async (runId: string) => {
+        stopObserved.resolve();
+        return { run_id: runId, status: "stopping" };
+      }),
+      streamEvents: async function* () {
+        await stopObserved.promise;
+        yield { event: "run.completed", run_id: "run_ws", output: "Completed despite stop." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Race completion against cancellation" });
+    await waitForMessage(socket, "run.started");
+
+    const completed = waitForMessage(socket, "run.completed");
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["manual_start"] });
+
+    await expect(completed).resolves.toMatchObject({ runId: "run_ws", output: "Completed despite stop." });
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_tool_cancellation_too_late",
+      recoverable: false,
+      message: expect.stringContaining("completed after its provider tool call was cancelled"),
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopRun).toHaveBeenCalledTimes(1);
+    expect(liveModel.toolResponses()).toEqual([]);
+  });
+
+  it("fails closed when provider cancellation races an unconfirmed Hermes run start", async () => {
+    const startEntered = deferred<void>();
+    const startResult = deferred<{ runId: string; status: string }>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      startRun: vi.fn(async () => {
+        startEntered.resolve();
+        return await startResult.promise;
+      }),
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Start with a delayed acknowledgement" });
+    await startEntered.promise;
+
+    const failed = waitForMessage(socket, "session.error");
+    const closed = waitForClose(socket);
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["manual_start"] });
+    await expect(failed).resolves.toMatchObject({
+      code: "hermes_run_start_cancellation_indeterminate",
+      recoverable: false,
+      message: expect.stringContaining("before Hermes confirmed its run id"),
+    });
+
+    startResult.resolve({ runId: "run_ws", status: "started" });
+    await expect(closed).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopRun).toHaveBeenCalledWith("run_ws", {
+      signal: expect.any(AbortSignal),
+      sessionKey: defaultSessionKey,
+    });
+    expect(liveModel.toolResponses()).toEqual([]);
+  });
+
+  it("suppresses a cancelled read-only provider tool outcome without closing the voice session", async () => {
+    const finishRun = deferred<void>();
+    const statusEntered = deferred<void>();
+    const statusResult = deferred<Record<string, unknown>>();
+    const liveModel = new ManualToolAdapter();
+    const hermes = fakeHermes({
+      getRun: vi.fn(async () => {
+        statusEntered.resolve();
+        return await statusResult.promise;
+      }),
+      streamEvents: async function* () {
+        await finishRun.promise;
+        yield { event: "run.completed", output: "Finished." };
+      },
+    });
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+    openSockets.push(socket);
+
+    await waitForOpen(socket);
+    send(socket, { type: "session.start" });
+    await waitForMessage(socket, "session.ready");
+    send(socket, { type: "text.input", text: "Keep one run active" });
+    await waitForMessage(socket, "run.started");
+    liveModel.emitToolCall({ id: "status_cancelled", name: "get_hermes_run_status", args: { run_id: "run_ws" } });
+    await statusEntered.promise;
+    liveModel.emitEvent({ type: "tool_call_cancelled", callIds: ["status_cancelled"] });
+    statusResult.reject(new Error("late status failure after provider cancellation"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(liveModel.toolResponses()).toEqual([]);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    finishRun.resolve();
+    await waitForMessage(socket, "run.completed");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(liveModel.toolResponses()).toHaveLength(1);
+    expect(liveModel.toolResponses()[0]).toMatchObject({ call: { id: "manual_start" } });
+  });
+
+  it("fails closed on uncorrelated or malformed provider tool cancellations", async () => {
+    for (const callIds of [["unknown_call"], []]) {
+      const liveModel = new ManualToolAdapter();
+      const hermes = fakeHermes();
+      const server = await startServer({
+        config: testConfig(),
+        hermes,
+        liveModel,
+        logger: fakeLogger(),
+      });
+      openServers.push(server);
+      const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
+      openSockets.push(socket);
+
+      await waitForOpen(socket);
+      send(socket, { type: "session.start" });
+      await waitForMessage(socket, "session.ready");
+      const failed = waitForMessage(socket, "session.error");
+      const closed = waitForClose(socket);
+      liveModel.emitEvent({ type: "tool_call_cancelled", callIds });
+
+      await expect(failed).resolves.toMatchObject({
+        code: callIds.length === 0 ? "realtime_provider_event_invalid" : "realtime_tool_cancellation_unknown",
+        recoverable: false,
+      });
+      await expect(closed).resolves.toMatchObject({ code: 1011 });
+      expect(hermes.startRun).not.toHaveBeenCalled();
+    }
+  });
+
   it("routes realtime response cancellation to the provider session", async () => {
     const liveModel = new CancelTrackingAdapter();
     const server = await startServer({
@@ -2734,11 +3248,15 @@ describe("live gateway WebSocket", () => {
 
   it("closes the client session when the realtime provider closes unexpectedly", async () => {
     const providerClosed = deferred<void>();
+    const logger = fakeLogger();
     const server = await startServer({
       config: testConfig(),
       hermes: fakeHermes(),
-      liveModel: new ProviderCloseAdapter(providerClosed),
-      logger: fakeLogger(),
+      liveModel: new ProviderCloseAdapter(
+        providerClosed,
+        "reflected provider-close-secret provider-url-query-secret",
+      ),
+      logger,
     });
     openServers.push(server);
     const socket = new WebSocket(toWebSocketUrl(server.url), { headers: { origin: server.url } });
@@ -2755,6 +3273,10 @@ describe("live gateway WebSocket", () => {
       recoverable: true,
     });
     await expect(closed).resolves.toMatchObject({ code: 1011 });
+    const logged = JSON.stringify(vi.mocked(logger.info).mock.calls);
+    expect(logged).toContain("providerCode");
+    expect(logged).not.toContain("provider-close-secret");
+    expect(logged).not.toContain("provider-url-query-secret");
   });
 
   it("reports unconfirmed Hermes cleanup when an automatic fatal close cannot stop the owned run", async () => {
@@ -3575,6 +4097,7 @@ function testConfig(overrides: {
       baseUrl: "http://127.0.0.1:8642",
       model: "hermes-agent",
       timeoutMs: 30_000,
+      streamIdleTimeoutMs: 120_000,
       ...overrides.hermes,
     },
     realtime: { provider: "mock", model: "mock-live" },
@@ -3706,11 +4229,17 @@ class ManualProviderEventAdapter implements LiveModelAdapter {
   emit(event: Parameters<LiveModelCallbacks["onEvent"]>[0]): void {
     this.callbacks?.onEvent(event);
   }
+
+  emitError(error: unknown): void {
+    this.callbacks?.onError?.(error);
+  }
 }
 
 class FailingConnectAdapter implements LiveModelAdapter {
+  constructor(private readonly message = "Provider did not connect") {}
+
   async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
-    throw new Error("Provider did not connect");
+    throw new Error(this.message);
   }
 }
 
@@ -3855,6 +4384,7 @@ class OversizedToolCallSession implements LiveModelSession {
 class ManualToolAdapter implements LiveModelAdapter {
   private callbacks?: LiveModelCallbacks;
   private readonly responses: Array<{ call: LiveToolCall; response: Record<string, unknown> }> = [];
+  private readonly recordedResponses: Array<{ call: LiveToolCall; response: Record<string, unknown> }> = [];
   private readonly responseWaiters: Array<(value: { call: LiveToolCall; response: Record<string, unknown> }) => void> = [];
 
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
@@ -3879,7 +4409,12 @@ class ManualToolAdapter implements LiveModelAdapter {
     return new Promise((resolve) => this.responseWaiters.push(resolve));
   }
 
+  toolResponses(): ReadonlyArray<{ call: LiveToolCall; response: Record<string, unknown> }> {
+    return this.recordedResponses;
+  }
+
   private recordToolResponse(call: LiveToolCall, response: Record<string, unknown>): void {
+    this.recordedResponses.push({ call, response });
     const waiter = this.responseWaiters.shift();
     if (waiter) {
       waiter({ call, response });
@@ -3915,6 +4450,61 @@ class ManualToolSession implements LiveModelSession {
   }
 
   async close(): Promise<void> {}
+}
+
+class StalledToolResponseAdapter implements LiveModelAdapter {
+  private callbacks?: LiveModelCallbacks;
+  readonly sendEntered = deferred<void>();
+  readonly releaseSend = deferred<void>();
+  readonly session = new StalledToolResponseSession(this.sendEntered, this.releaseSend);
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    this.callbacks = params.callbacks;
+    this.session.setCallbacks(params.callbacks);
+    queueMicrotask(() => params.callbacks.onOpen?.());
+    return this.session;
+  }
+
+  emitCancellation(): void {
+    this.callbacks?.onEvent({ type: "tool_call_cancelled", callIds: ["stalled_delivery_start"] });
+  }
+}
+
+class StalledToolResponseSession implements LiveModelSession {
+  private callbacks?: LiveModelCallbacks;
+
+  constructor(
+    private readonly sendEntered: ReturnType<typeof deferred<void>>,
+    private readonly releaseSend: ReturnType<typeof deferred<void>>,
+  ) {}
+
+  setCallbacks(callbacks: LiveModelCallbacks): void {
+    this.callbacks = callbacks;
+  }
+
+  async sendRealtimeAudio(_audio: LiveModelAudio): Promise<void> {}
+
+  async sendText(text: string): Promise<void> {
+    this.callbacks?.onEvent({
+      type: "tool_call",
+      call: { id: "stalled_delivery_start", name: "start_hermes_run", args: { message: text } },
+    });
+  }
+
+  async sendAudioStreamEnd(): Promise<void> {}
+
+  async cancelResponse(): Promise<boolean> {
+    return false;
+  }
+
+  readonly sendToolResponse = vi.fn(async () => {
+    this.sendEntered.resolve();
+    await this.releaseSend.promise;
+  });
+
+  readonly close = vi.fn(async () => {
+    this.releaseSend.resolve();
+  });
 }
 
 class CancelTrackingAdapter implements LiveModelAdapter {
@@ -3995,11 +4585,14 @@ class SpeechStartedAdapter implements LiveModelAdapter {
 }
 
 class ProviderCloseAdapter implements LiveModelAdapter {
-  constructor(private readonly providerClosed: ReturnType<typeof deferred<void>>) {}
+  constructor(
+    private readonly providerClosed: ReturnType<typeof deferred<void>>,
+    private readonly reason = "provider closed",
+  ) {}
 
   async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
     queueMicrotask(() => params.callbacks.onOpen?.());
-    this.providerClosed.promise.then(() => params.callbacks.onClose?.({ code: 1006, reason: "provider closed" }));
+    this.providerClosed.promise.then(() => params.callbacks.onClose?.({ code: 1006, reason: this.reason }));
     return new ToolEchoSession(params.callbacks);
   }
 }

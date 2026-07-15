@@ -142,6 +142,48 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.microphoneActiveGuidance("semantic_vad")).toContain("Speak naturally");
   });
 
+  it("describes mock and other microphone-disabled sessions as text-only", () => {
+    const utilities = loadDashboardUtilities();
+
+    const mockNotice = utilities.connectedSessionNotice({ enabled: false }, false);
+    expect(mockNotice).toBe("Live Voice is connected in text mode. Type a message to Hermes.");
+    expect(mockNotice).not.toMatch(/speak|microphone/i);
+    expect(utilities.connectedSessionGuidance(false)).toBe("Type a message below.");
+    expect(utilities.connectedSessionGuidance(false)).not.toMatch(/microphone/i);
+
+    expect(utilities.connectedSessionNotice({ enabled: true }, true)).toContain("speak or type");
+    expect(utilities.connectedSessionGuidance(true)).toContain("Start the microphone");
+    expect(utilities.supportsBrowserPlayback({ enabled: false })).toBe(false);
+    expect(utilities.supportsBrowserPlayback({
+      enabled: true,
+      mimeType: "audio/pcm;rate=24000",
+    })).toBe(true);
+    expect(utilities.supportsBrowserPlayback({
+      enabled: true,
+      mimeType: "audio/opus",
+    })).toBe(false);
+  });
+
+  it("does not prime browser playback for text-only provider sessions", () => {
+    const source = readFileSync(new URL("dist/index.js", dashboardUrl), "utf8");
+
+    expect(source).toContain("if (!supportsBrowserPlayback(outputAudio)) return audio;");
+  });
+
+  it("uses freshly negotiated audio capabilities for the connected notice", () => {
+    const utilities = loadDashboardUtilities();
+    const staleStatusInput = { enabled: true, mimeType: "audio/pcm;rate=16000" };
+    const negotiated = {
+      session: { realtime: { audio: { input: { enabled: false } } } },
+    };
+
+    const inputAudio = utilities.negotiatedInputAudio(negotiated, staleStatusInput);
+    expect(inputAudio).toMatchObject({ enabled: false });
+    expect(utilities.supportsBrowserMicrophone(inputAudio)).toBe(false);
+    expect(utilities.connectedSessionNotice(inputAudio, false)).toContain("text mode");
+    expect(utilities.negotiatedInputAudio({}, staleStatusInput)).toMatchObject(staleStatusInput);
+  });
+
   it("replaces stale connected notices when the gateway socket closes", () => {
     const source = readFileSync(new URL("dist/index.js", dashboardUrl), "utf8");
 
@@ -155,9 +197,14 @@ function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
     "  function LiveVoicePage() {",
     `  window.__HERMES_LIVE_TEST_UTILITIES__ = {
       approvalSupportPresentation,
+      connectedSessionGuidance,
+      connectedSessionNotice,
       connectionClosedNotice,
       disconnectSession,
       microphoneActiveGuidance,
+      negotiatedInputAudio,
+      supportsBrowserPlayback,
+      supportsBrowserMicrophone,
       supportsTargetedApprovalResponses,
     };
 

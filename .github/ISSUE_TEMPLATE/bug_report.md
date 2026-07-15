@@ -23,16 +23,18 @@ Please include the smallest reproducible sequence and whether mock mode reproduc
 - Hermes version or commit:
 - Operating system:
 - Install method: GitHub clone / release tarball / Docker / npm
-- Client: browser demo / terminal / custom client
+- Client: Hermes Dashboard / browser demo / terminal / custom client
 
 ## Diagnostics
 
 Include redacted output from:
 
 ```sh
-node dist/cli.js print-config
-node dist/cli.js check
+hermes-live print-config
+hermes-live check
 ```
+
+From a built source checkout, replace `hermes-live` with `node dist/cli.js`.
 
 ## Logs
 

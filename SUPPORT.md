@@ -17,13 +17,15 @@ Run:
 
 ```sh
 node --version
-npm run verify
-node dist/cli.js print-config
-node dist/cli.js check
+hermes-live --version
+hermes-live print-config
+hermes-live check
 ```
 
 `print-config` redacts configured secrets. Review the output again before publishing it.
 
-For provider problems, also run `node dist/cli.js provider-smoke` with the same environment. This opens a real provider session but does not send audio or start a Hermes run.
+For provider problems, also run `hermes-live provider-smoke` with the same environment. This opens a real provider session but does not send audio or start a Hermes run.
+
+From a source checkout, run `npm run verify` and replace `hermes-live` with `node dist/cli.js` in the diagnostics above.
 
 Hermes Agent, Gemini, and OpenAI have their own support channels for upstream behavior outside this gateway.

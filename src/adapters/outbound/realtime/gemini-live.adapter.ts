@@ -1,6 +1,11 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import { GEMINI_LIVE_INPUT_SAMPLE_RATE, normalizePcm16Audio } from "../../../domain/audio/pcm.js";
-import type { AppConfig } from "../../../config.js";
+import {
+  isSafeGoogleCloudLocation,
+  isSafeGoogleCloudProject,
+  isSafeGoogleGenAiApiVersion,
+  type AppConfig,
+} from "../../../config.js";
 import { HERMES_LIVE_TOOL_DECLARATIONS } from "../../../application/live-gateway/tool-definitions.js";
 import type {
   LiveModelAdapter,
@@ -12,6 +17,9 @@ import type {
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 
 const DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS = 4_000;
+const GEMINI_DEVELOPER_API_BASE_URL = "https://generativelanguage.googleapis.com/";
+const VERTEX_GLOBAL_API_BASE_URL = "https://aiplatform.googleapis.com/";
+const VERTEX_MULTI_REGIONAL_LOCATIONS = new Set(["us", "eu"]);
 
 interface ProviderCloseConfirmation {
   readonly promise: Promise<void>;
@@ -47,27 +55,62 @@ export class GeminiLiveAdapter implements LiveModelAdapter {
   }
 
   private assertConfigured(): void {
-    if (this.config.enterprise && !this.config.project) {
-      throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
-    }
+    assertSafeGeminiEndpointConfig(this.config);
     if (!this.config.enterprise && !this.config.apiKey) {
       throw new Error("GEMINI_API_KEY or GOOGLE_API_KEY is required when HERMES_LIVE_PROVIDER=gemini.");
     }
   }
 
   private createClient(): GoogleGenAI {
-    if (this.config.enterprise) {
-      return new GoogleGenAI({
-        enterprise: true,
-        project: this.config.project,
-        location: this.config.location,
-        ...(this.config.apiVersion ? { apiVersion: this.config.apiVersion } : {}),
-      } as any);
-    }
-    return new GoogleGenAI({
-      apiKey: this.config.apiKey,
-      ...(this.config.apiVersion ? { apiVersion: this.config.apiVersion } : {}),
-    } as any);
+    return new GoogleGenAI(buildGeminiClientOptions(this.config) as any);
+  }
+}
+
+export function buildGeminiClientOptions(config: AppConfig["gemini"]): Record<string, unknown> {
+  assertSafeGeminiEndpointConfig(config);
+  const common = {
+    httpOptions: { baseUrl: officialGeminiApiBaseUrl(config) },
+    ...(config.apiVersion ? { apiVersion: config.apiVersion } : {}),
+  };
+  if (config.enterprise) {
+    return {
+      ...common,
+      enterprise: true,
+      project: config.project,
+      location: config.location,
+    };
+  }
+  return {
+    ...common,
+    enterprise: false,
+    apiKey: config.apiKey,
+  };
+}
+
+export function officialGeminiApiBaseUrl(config: Pick<AppConfig["gemini"], "enterprise" | "location">): string {
+  if (!config.enterprise) return GEMINI_DEVELOPER_API_BASE_URL;
+  if (!isSafeGoogleCloudLocation(config.location)) {
+    throw new Error("GOOGLE_CLOUD_LOCATION must be a canonical Google Cloud location.");
+  }
+  if (config.location === "global") return VERTEX_GLOBAL_API_BASE_URL;
+  if (VERTEX_MULTI_REGIONAL_LOCATIONS.has(config.location)) {
+    return `https://aiplatform.${config.location}.rep.googleapis.com/`;
+  }
+  return `https://${config.location}-aiplatform.googleapis.com/`;
+}
+
+function assertSafeGeminiEndpointConfig(config: AppConfig["gemini"]): void {
+  if (config.enterprise && !config.project) {
+    throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
+  }
+  if (config.enterprise && !isSafeGoogleCloudProject(config.project!)) {
+    throw new Error("GOOGLE_CLOUD_PROJECT must be a canonical Google Cloud project id.");
+  }
+  if (!isSafeGoogleCloudLocation(config.location)) {
+    throw new Error("GOOGLE_CLOUD_LOCATION must be a canonical Google Cloud location.");
+  }
+  if (config.apiVersion && !isSafeGoogleGenAiApiVersion(config.apiVersion)) {
+    throw new Error("GOOGLE_GENAI_API_VERSION must be a bounded v1/v1beta/v1alpha-style token.");
   }
 }
 
@@ -246,6 +289,10 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
   for (const call of extractFunctionCalls(root)) {
     events.push({ type: "tool_call", call });
   }
+  const cancelledToolCallIds = extractToolCallCancellationIds(root);
+  if (cancelledToolCallIds) {
+    events.push({ type: "tool_call_cancelled", callIds: cancelledToolCallIds });
+  }
   const data = root?.data;
   if (typeof data === "string") {
     events.push({
@@ -328,6 +375,13 @@ function extractFunctionCalls(root: any): LiveToolCall[] {
       args: normalizeArgs(call.args ?? call.arguments ?? {}),
     }))
     .filter((call: LiveToolCall) => call.name.length > 0);
+}
+
+function extractToolCallCancellationIds(root: any): string[] | undefined {
+  const cancellation = root?.toolCallCancellation ?? root?.tool_call_cancellation;
+  if (cancellation === undefined) return undefined;
+  const ids = cancellation?.ids;
+  return Array.isArray(ids) && ids.every((id) => typeof id === "string") ? ids : [];
 }
 
 function extractParts(root: any): any[] {

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-15
+
+- Handle Gemini Live `toolCallCancellation` as an explicit exported provider event, correlate every cancellation to the bounded tool-call ledger, stop owned active runs, suppress queued and not-yet-sent results, and fail closed when Hermes side effects or provider delivery become indeterminate.
+- Add a separate 120-second Hermes run-event SSE idle watchdog that is refreshed by upstream events and keepalive bytes while preserving the existing 30-second initial-response deadline.
+- Remove upstream approval IDs from summary-mode run events; authenticated clients continue to receive only the gateway-owned approval identity used for decisions.
+- Reject redirects and suppress untrusted error bodies on credentialed Hermes JSON/SSE calls; require credential-free, protocol-scoped Hermes/OpenAI endpoints; redact provider URL path/query text and provider-controlled error/close text from logs and diagnostics; prevent second-attempt OpenAI WebSocket authentication; pin Gemini/Vertex to validated official Google endpoints despite ambient SDK overrides; exact-pin the credentialed realtime transport dependencies; and harden the Hermes status tool and Dashboard bridge against unsafe origins and tokens, HTTP/WebSocket redirects, environment proxies, oversized/non-JSON responses, reflected credentials, untrusted fields, and inconsistent readiness claims.
+- Correct the comparison with current Hermes Voice Mode and Desktop voice surfaces, document the synchronous delegation and provider-data boundaries, clarify community UI and terminal roles, avoid browser-playback warnings in text-only sessions, and make installed CLI diagnostics the primary support path.
+- Slim the npm artifact by excluding contributor-only scripts, add a static package-renderable architecture diagram, and remove the obsolete completed migration plan and speculative model watchlist.
+- Re-verify the packed CLI/plugin, Dashboard proxy, mock and real Hermes runs, and a real Gemini Live connection against the official Hermes Agent v0.18.2 image.
+
 ## 0.3.2 - 2026-07-15
 
 - Publish `hermes-live-voice` on npm and make the installed `hermes-live` CLI the primary setup path for the gateway, Hermes plugin, terminal, and custom browser clients.

@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from plugin_tools_smoke import run_status_probe_smoke
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "hermes-live"
@@ -56,6 +58,8 @@ def main() -> None:
 
     command = one(ctx.commands, "command")
     assert_equal(command["name"], "hermes-live", "registered slash command")
+
+    run_status_probe_smoke(plugin.tools)
 
     manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
@@ -111,7 +115,7 @@ def main() -> None:
 
     print(
         "Plugin smoke ok: Hermes and Dashboard manifests, register(ctx), API syntax, synced assets, "
-        "tool handler, and slash command verified"
+        "tool handler security probes, and slash command verified"
     )
 
 

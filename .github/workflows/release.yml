@@ -73,6 +73,20 @@ jobs:
       - run: npm audit --audit-level=moderate
       - run: mkdir -p release
       - run: npm pack --pack-destination release
+      - name: Extract exact changelog release notes
+        run: |
+          package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$package_file"
+          test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          packaged_changelog="$(mktemp)"
+          trap 'rm -f "$packaged_changelog"' EXIT
+          tar -xOf "$package_file" package/CHANGELOG.md > "$packaged_changelog"
+          test -s "$packaged_changelog"
+          node scripts/extract-release-notes.mjs \
+            --version "${RELEASE_TAG#v}" \
+            --input "$packaged_changelog" \
+            --output release/RELEASE_NOTES.md
+          test -s release/RELEASE_NOTES.md
       - run: sha256sum -- *.tgz > SHA256SUMS
         working-directory: release
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -98,6 +112,8 @@ jobs:
       - name: Verify packaged checksum
         run: sha256sum --check SHA256SUMS
         working-directory: release
+      - name: Verify release notes artifact
+        run: test -s release/RELEASE_NOTES.md
       - name: Verify packaged metadata
         id: package
         run: |
@@ -123,7 +139,41 @@ jobs:
           package_basename="$(basename "$package_file")"
           expected_prerelease="${{ steps.package.outputs.prerelease }}"
 
-          if release_json="$(gh release view "$RELEASE_TAG" --json databaseId,name,isDraft,isPrerelease,assets 2>/dev/null)"; then
+          verify_release_notes_prefix() {
+            local release_json="$1"
+            local observed_body
+            observed_body="$(mktemp)"
+            jq -r '.body // ""' <<< "$release_json" > "$observed_body"
+            node -e '
+              const fs = require("node:fs");
+              const expected = fs.readFileSync(process.argv[1], "utf8").trimEnd();
+              const observed = fs.readFileSync(process.argv[2], "utf8").trimEnd();
+              if (observed !== expected && !observed.startsWith(expected + "\n")) {
+                throw new Error("GitHub release body does not start with the verified changelog section.");
+              }
+            ' release/RELEASE_NOTES.md "$observed_body"
+            rm -f "$observed_body"
+          }
+
+          verify_draft_assets() {
+            local assets_json
+            assets_json="$(gh release view "$RELEASE_TAG" --json assets)"
+            test "$(jq '.assets | length' <<< "$assets_json")" -eq 2
+            test "$(jq --arg name "$package_basename" '[.assets[] | select(.name == $name)] | length' <<< "$assets_json")" -eq 1
+            test "$(jq '[.assets[] | select(.name == "SHA256SUMS")] | length' <<< "$assets_json")" -eq 1
+
+            rm -rf draft-release-verification
+            mkdir draft-release-verification
+            gh release download "$RELEASE_TAG" \
+              --pattern "$package_basename" \
+              --pattern SHA256SUMS \
+              --dir draft-release-verification
+            test "$(find draft-release-verification -maxdepth 1 -type f | wc -l)" -eq 2
+            cmp "$package_file" "draft-release-verification/$package_basename"
+            cmp release/SHA256SUMS draft-release-verification/SHA256SUMS
+          }
+
+          if release_json="$(gh release view "$RELEASE_TAG" --json databaseId,name,isDraft,isPrerelease,assets,body 2>/dev/null)"; then
             test "$(jq -r '.name' <<< "$release_json")" = "$RELEASE_TAG"
             test "$(jq -r '.isPrerelease' <<< "$release_json")" = "${{ steps.package.outputs.prerelease }}"
             is_draft="$(jq -r '.isDraft' <<< "$release_json")"
@@ -150,6 +200,8 @@ jobs:
             done
 
             if [ "$is_draft" = "true" ]; then
+              verify_release_notes_prefix "$release_json"
+              verify_draft_assets
               if [ "$expected_prerelease" = "true" ]; then
                 make_latest=false
               else
@@ -161,14 +213,42 @@ jobs:
                 -f make_latest="$make_latest" >/dev/null
               echo "Recovered and published the matching draft release."
             else
+              verify_release_notes_prefix "$release_json"
               echo "Existing published release matches the verified artifacts."
             fi
           elif [ "$expected_prerelease" = "true" ]; then
             gh release create "$RELEASE_TAG" release/*.tgz release/SHA256SUMS \
-              --title "$RELEASE_TAG" --generate-notes --verify-tag --prerelease --latest=false
+              --title "$RELEASE_TAG" \
+              --draft \
+              --generate-notes \
+              --notes "$(cat release/RELEASE_NOTES.md)" \
+              --verify-tag \
+              --prerelease
+            release_json="$(gh release view "$RELEASE_TAG" --json databaseId,isDraft,body)"
+            test "$(jq -r '.isDraft' <<< "$release_json")" = "true"
+            verify_release_notes_prefix "$release_json"
+            verify_draft_assets
+            release_id="$(jq -r '.databaseId' <<< "$release_json")"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -F draft=false \
+              -F prerelease=true \
+              -f make_latest=false >/dev/null
           else
             gh release create "$RELEASE_TAG" release/*.tgz release/SHA256SUMS \
-              --title "$RELEASE_TAG" --generate-notes --verify-tag --latest
+              --title "$RELEASE_TAG" \
+              --draft \
+              --generate-notes \
+              --notes "$(cat release/RELEASE_NOTES.md)" \
+              --verify-tag
+            release_json="$(gh release view "$RELEASE_TAG" --json databaseId,isDraft,body)"
+            test "$(jq -r '.isDraft' <<< "$release_json")" = "true"
+            verify_release_notes_prefix "$release_json"
+            verify_draft_assets
+            release_id="$(jq -r '.databaseId' <<< "$release_json")"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -F draft=false \
+              -F prerelease=false \
+              -f make_latest=true >/dev/null
           fi
 
           final_release="$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable,isPrerelease)"
@@ -198,7 +278,6 @@ jobs:
       package_version: ${{ steps.package.outputs.version }}
       npm_tag: ${{ steps.package.outputs.npm_tag }}
       integrity: ${{ steps.package.outputs.integrity }}
-      published_now: ${{ steps.publish.outputs.published_now }}
     permissions:
       id-token: write
     steps:
@@ -260,7 +339,6 @@ jobs:
           echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
           echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
       - name: Publish verified package with OIDC
-        id: publish
         run: |
           package_spec="$PACKAGE_NAME@$PACKAGE_VERSION"
           set +e
@@ -271,7 +349,6 @@ jobs:
           if [ "$view_status" -eq 0 ]; then
             test "$existing_integrity" = "$EXPECTED_INTEGRITY"
             echo "$package_spec already exists with the verified integrity; treating this as an idempotent rerun."
-            echo "published_now=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -291,7 +368,6 @@ jobs:
           set -e
 
           if [ "$publish_status" -eq 0 ]; then
-            echo "published_now=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -303,7 +379,6 @@ jobs:
             set -e
             if [ "$view_status" -eq 0 ] && [ "$existing_integrity" = "$EXPECTED_INTEGRITY" ]; then
               echo "$package_spec exists with the verified integrity after an ambiguous publish response."
-              echo "published_now=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if [ "$view_status" -eq 0 ] && [ -n "$existing_integrity" ]; then
@@ -330,7 +405,6 @@ jobs:
       PACKAGE_VERSION: ${{ needs.npm-publish.outputs.package_version }}
       NPM_TAG: ${{ needs.npm-publish.outputs.npm_tag }}
       EXPECTED_INTEGRITY: ${{ needs.npm-publish.outputs.integrity }}
-      PUBLISHED_NOW: ${{ needs.npm-publish.outputs.published_now }}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -362,7 +436,7 @@ jobs:
             provenance_type="$(npm view "$package_spec" dist.attestations.provenance.predicateType --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
             if [ "$registry_integrity" = "$EXPECTED_INTEGRITY" ] && \
                [ "$provenance_type" = "https://slsa.dev/provenance/v1" ] && \
-               { [ "$PUBLISHED_NOW" != "true" ] || [ "$registry_tag" = "$PACKAGE_VERSION" ]; }; then
+               [ "$registry_tag" = "$PACKAGE_VERSION" ]; then
               break
             fi
             if [ "$attempt" -lt 24 ]; then
@@ -371,11 +445,11 @@ jobs:
           done
           if [ "$registry_integrity" != "$EXPECTED_INTEGRITY" ] || \
              [ "$provenance_type" != "https://slsa.dev/provenance/v1" ] || \
-             { [ "$PUBLISHED_NOW" = "true" ] && [ "$registry_tag" != "$PACKAGE_VERSION" ]; }; then
+             [ "$registry_tag" != "$PACKAGE_VERSION" ]; then
             echo "Registry verification timed out." >&2
             echo "Expected integrity: $EXPECTED_INTEGRITY" >&2
             echo "Observed integrity: $registry_integrity" >&2
-            echo "Expected $NPM_TAG on a new publish: $PACKAGE_VERSION" >&2
+            echo "Expected $NPM_TAG: $PACKAGE_VERSION" >&2
             echo "Observed $NPM_TAG: $registry_tag" >&2
             echo "Observed provenance predicate: $provenance_type" >&2
             npm view "$package_spec" dist.integrity dist.attestations --json --registry=https://registry.npmjs.org/ >&2 || true

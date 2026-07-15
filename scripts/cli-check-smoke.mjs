@@ -44,6 +44,49 @@ assertIncludes(report.realtime?.error, "OPENAI_API_KEY", "realtime.error");
 
 console.log("CLI check smoke ok: missing Hermes/OpenAI credentials are reported without provider startup.");
 
+const printConfig = spawnSync(process.execPath, ["dist/cli.js", "print-config"], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    HERMES_BASE_URL: "https://hermes.example",
+    HERMES_AGENT_API_SERVER_KEY: "print-hermes-secret",
+    HERMES_API_KEY: "",
+    HERMES_LIVE_AUTH_TOKEN: "print-gateway-secret",
+    HERMES_LIVE_PROVIDER: "openai",
+    OPENAI_API_KEY: "print-openai-secret",
+    OPENAI_REALTIME_BASE_URL:
+      "wss://realtime.example/tenant/print-path-secret?api-version=2026-07-01&api-key=print-query-secret",
+  },
+});
+if (printConfig.error) {
+  throw printConfig.error;
+}
+if (printConfig.status !== 0) {
+  throw new Error(`Expected print-config to succeed.\n${printConfig.stdout}\n${printConfig.stderr}`);
+}
+const printed = JSON.parse(printConfig.stdout);
+assertEqual(printed.hermes?.baseUrl, "https://hermes.example", "print-config.hermes.baseUrl");
+assertEqual(printed.hermes?.apiKey, "***", "print-config.hermes.apiKey");
+assertEqual(
+  printed.openai?.baseUrl,
+  "wss://realtime.example/[redacted-path]?[redacted]",
+  "print-config.openai.baseUrl",
+);
+assertEqual(printed.openai?.apiKey, "***", "print-config.openai.apiKey");
+assertEqual(printed.server?.authToken, "***", "print-config.server.authToken");
+for (const secret of [
+  "print-hermes-secret",
+  "print-gateway-secret",
+  "print-openai-secret",
+  "print-path-secret",
+  "print-query-secret",
+  "api-version",
+]) {
+  assertNotIncludes(printConfig.stdout, secret, "print-config output");
+}
+
+console.log("CLI print-config smoke ok: URL path/query values and configured credentials are redacted.");
+
 const pluginDir = mkdtempSync(join(tmpdir(), "hermes-live-cli-plugin-"));
 const invalidRuntimeEnv = {
   ...process.env,
@@ -99,5 +142,11 @@ function assertEqual(actual, expected, label) {
 function assertIncludes(actual, expected, label) {
   if (typeof actual !== "string" || !actual.includes(expected)) {
     throw new Error(`${label} mismatch. Expected it to include ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}.`);
+  }
+}
+
+function assertNotIncludes(actual, unexpected, label) {
+  if (typeof actual !== "string" || actual.includes(unexpected)) {
+    throw new Error(`${label} unexpectedly included ${JSON.stringify(unexpected)}.`);
   }
 }

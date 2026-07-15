@@ -33,17 +33,20 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
   const sessionId = `live_provider_smoke_${Date.now()}`;
   const startedAt = Date.now();
   const safetyIdentifier = createHash("sha256").update(`hermes-live-provider-smoke:${sessionId}`).digest("hex");
-  const errors: string[] = [];
   const events: Array<Record<string, unknown>> = [];
   let session: Awaited<ReturnType<typeof adapter.connect>> | undefined;
   let pendingConnect: ReturnType<typeof adapter.connect> | undefined;
   let openCallback = false;
+  let providerError = false;
   let closeEvent: Record<string, unknown> | undefined;
   let closing = false;
   let resolveOpen: () => void = () => undefined;
   const openSignal = new Promise<void>((resolve) => {
     resolveOpen = resolve;
   });
+  const connectTimeoutMessage =
+    `${config.realtime.provider} realtime session did not connect within ${timeoutMs}ms.`;
+  const callbackErrorMessage = `${config.realtime.provider} provider emitted an error during startup.`;
 
   try {
     pendingConnect = adapter.connect({
@@ -59,9 +62,9 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
         onClose: (event) => {
           closeEvent = summarizeCloseEvent(event);
         },
-        onError: (error) => {
+        onError: (_error) => {
           if (!closing) {
-            errors.push(errorToMessage(error));
+            providerError = true;
           }
         },
         onEvent: (event) => {
@@ -72,14 +75,14 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
     session = await withTimeout(
       pendingConnect,
       timeoutMs,
-      `${config.realtime.provider} realtime session did not connect within ${timeoutMs}ms.`,
+      connectTimeoutMessage,
     );
 
     if (!openCallback) {
       await Promise.race([openSignal, delay(Math.min(1_000, timeoutMs))]);
     }
-    if (errors.length > 0) {
-      throw new Error(`${config.realtime.provider} provider emitted an error during startup: ${errors[0]}`);
+    if (providerError) {
+      throw new Error(callbackErrorMessage);
     }
 
     closing = true;
@@ -102,7 +105,11 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
       void pendingConnect.then((lateSession) => lateSession.close()).catch(() => undefined);
     }
     await session?.close().catch(() => undefined);
-    throw error;
+    const message = errorToMessage(error);
+    if (message === connectTimeoutMessage || message === callbackErrorMessage) {
+      throw new Error(message);
+    }
+    throw new Error(`${config.realtime.provider} realtime provider smoke failed. Provider details were suppressed.`);
   }
 }
 
@@ -129,11 +136,13 @@ function delay(ms: number): Promise<void> {
 function summarizeLiveEvent(event: LiveModelEvent): Record<string, unknown> {
   switch (event.type) {
     case "audio":
-      return { type: "audio", mimeType: event.audio.mimeType };
+      return { type: "audio" };
     case "text":
       return { type: "text" };
     case "tool_call":
-      return { type: "tool_call", name: event.call.name };
+      return { type: "tool_call" };
+    case "tool_call_cancelled":
+      return { type: "tool_call_cancelled", callCount: event.callIds.length };
     case "input_speech_started":
       return { type: "input_speech_started", provider: event.provider };
     case "response":
@@ -142,11 +151,9 @@ function summarizeLiveEvent(event: LiveModelEvent): Record<string, unknown> {
 }
 
 function summarizeCloseEvent(event: unknown): Record<string, unknown> | undefined {
-  if (!event || typeof event !== "object") {
-    return event === undefined ? undefined : { value: String(event) };
-  }
-  return {
-    ...(typeof (event as { code?: unknown }).code === "number" ? { code: (event as { code: number }).code } : {}),
-    ...(typeof (event as { reason?: unknown }).reason === "string" ? { reason: (event as { reason: string }).reason } : {}),
-  };
+  if (!event || typeof event !== "object" || Array.isArray(event)) return undefined;
+  const code = (event as { code?: unknown }).code;
+  return typeof code === "number" && Number.isInteger(code) && code >= 1_000 && code <= 4_999
+    ? { code }
+    : undefined;
 }

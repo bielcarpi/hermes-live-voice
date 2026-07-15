@@ -41,6 +41,30 @@ class _AsyncClient:
         return None
 
 
+class _StreamResponse:
+    def __init__(self, *, status: int, content_type: str | None, body: bytes) -> None:
+        self.status_code = status
+        self.headers = {"content-type": content_type} if content_type is not None else {}
+        self.body = body
+
+    async def __aenter__(self) -> "_StreamResponse":
+        return self
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+    async def aiter_bytes(self) -> AsyncIterator[bytes]:
+        yield self.body
+
+
+class _StreamClient:
+    def __init__(self, response: _StreamResponse) -> None:
+        self.response = response
+
+    def stream(self, *_args: Any, **_kwargs: Any) -> _StreamResponse:
+        return self.response
+
+
 def _install_import_stubs() -> None:
     try:
         __import__("fastapi")
@@ -126,6 +150,39 @@ class _ConnectContext:
         return None
 
 
+class _RedirectError(Exception):
+    def __init__(self, location: str) -> None:
+        super().__init__("redirect")
+        self.location = location
+
+
+class _RedirectingConnectContext:
+    """Minimal model of websockets' credential-preserving redirect loop."""
+
+    def __init__(
+        self,
+        url: str,
+        options: dict[str, Any],
+        attempts: list[tuple[str, dict[str, str] | None]],
+    ) -> None:
+        self.url = url
+        self.options = options
+        self.attempts = attempts
+
+    def process_redirect(self, error: _RedirectError) -> Exception | str:
+        return error.location
+
+    async def __aenter__(self) -> _Upstream:
+        outcome = self.process_redirect(_RedirectError("wss://attacker.example/v1/live"))
+        if isinstance(outcome, str):
+            self.attempts.append((outcome, self.options.get("additional_headers")))
+            return _Upstream()
+        raise outcome
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+
 def _set_hermes_auth(*, auth: bool = True, request: bool = True, calls: list[str] | None = None) -> None:
     call_log = calls if calls is not None else []
 
@@ -170,6 +227,9 @@ def test_url_and_payload_guards(plugin: Any) -> None:
         "http://voice.example/#fragment",
         "http://voice.example\\@attacker.example",
         "http://voice.example:99999",
+        "http://voice.example\x01",
+        "http://voice.example\x07",
+        "http://" + ("x" * plugin.MAX_GATEWAY_URL_CHARS),
         "",
     ]
     for value in invalid_urls:
@@ -178,6 +238,21 @@ def test_url_and_payload_guards(plugin: Any) -> None:
         except plugin.GatewayConfigurationError:
             continue
         raise AssertionError(f"unsafe gateway URL accepted: {value!r}")
+
+    old_token = os.environ.get("HERMES_LIVE_AUTH_TOKEN")
+    try:
+        for token in ("unsafe\x01token", "unsafe\x07token", "x" * (plugin.MAX_TOKEN_BYTES + 1)):
+            os.environ["HERMES_LIVE_AUTH_TOKEN"] = token
+            try:
+                plugin._gateway_token()
+            except plugin.GatewayConfigurationError:
+                continue
+            raise AssertionError(f"unsafe gateway token accepted: {token!r}")
+    finally:
+        if old_token is None:
+            os.environ.pop("HERMES_LIVE_AUTH_TOKEN", None)
+        else:
+            os.environ["HERMES_LIVE_AUTH_TOKEN"] = old_token
 
     assert plugin._is_bounded_json_message('{"type":"session.start","protocolVersion":2}')
     assert not plugin._is_bounded_json_message("[]")
@@ -219,6 +294,70 @@ def test_capability_sanitizing(plugin: Any) -> None:
     }
     assert "secret" not in json.dumps(audio)
 
+    reflected = "configured-dashboard-bearer"
+    protocol, provider, model, audio = plugin._capabilities_summary(
+        {
+            "protocolVersion": 2,
+            "realtime": {
+                "provider": f"provider-{reflected}-suffix",
+                "model": f"prefix-{reflected}",
+                "audio": {
+                    "input": {"enabled": True, "mimeType": f"audio/{reflected};rate=16000"},
+                    "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
+                    "turnDetection": f"provider-{reflected}",
+                },
+            },
+        },
+        sensitive_values=(reflected,),
+    )
+    assert protocol == 2
+    assert provider is None
+    assert model is None
+    assert audio == {
+        "input": {"enabled": True},
+        "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
+    }
+    assert reflected not in json.dumps(audio)
+
+
+def test_readiness_requires_every_check(plugin: Any) -> None:
+    healthy = {
+        "status": "ready",
+        "checks": {"gateway": {"ok": True}, "hermes": {"ok": True}, "realtime": {"ok": True}},
+    }
+    assert plugin._readiness_is_ready(plugin._Probe(status=200, body=healthy))
+    assert not plugin._readiness_is_ready(
+        plugin._Probe(
+            status=200,
+            body={
+                "status": "ready",
+                "checks": {"gateway": {"ok": True}, "hermes": {"ok": False}, "realtime": {"ok": True}},
+            },
+        )
+    )
+    assert not plugin._readiness_is_ready(plugin._Probe(status=200, body={"status": "ready"}))
+    assert not plugin._readiness_is_ready(plugin._Probe(status=503, body=healthy))
+
+
+def test_capabilities_require_hermes_live_identity(plugin: Any) -> None:
+    valid = {
+        "object": "hermes_live.capabilities",
+        "service": "hermes-live",
+        "protocolVersion": 2,
+    }
+    assert plugin._capabilities_identity_is_valid(plugin._Probe(status=200, body=valid))
+    for changed in (
+        {"object": "other.capabilities"},
+        {"service": "other-service"},
+        {"protocolVersion": 0},
+        {"protocolVersion": 1_001},
+        {"protocolVersion": True},
+        {"protocolVersion": "2"},
+    ):
+        assert not plugin._capabilities_identity_is_valid(plugin._Probe(status=200, body={**valid, **changed}))
+    assert not plugin._capabilities_identity_is_valid(plugin._Probe(status=503, body=valid))
+    assert not plugin._capabilities_identity_is_valid(plugin._Probe(status=200, body=valid, error="invalid_json"))
+
 
 def test_auth_order_and_fail_closed(plugin: Any) -> None:
     calls: list[str] = []
@@ -248,6 +387,7 @@ def test_auth_order_and_fail_closed(plugin: Any) -> None:
 async def test_status(plugin: Any) -> None:
     original_fetch = plugin._fetch_json
     calls: list[tuple[str, dict[str, str] | None]] = []
+    wrong_service = False
 
     async def fake_fetch(_client: Any, url: str, headers: dict[str, str] | None = None) -> Any:
         calls.append((url, headers))
@@ -257,6 +397,8 @@ async def test_status(plugin: Any) -> None:
             return plugin._Probe(
                 status=200,
                 body={
+                    "object": "hermes_live.capabilities",
+                    "service": "wrong-service" if wrong_service else "hermes-live",
                     "protocolVersion": 2,
                     "realtime": {
                         "provider": "gemini",
@@ -269,7 +411,13 @@ async def test_status(plugin: Any) -> None:
                     },
                 },
             )
-        return plugin._Probe(status=200, body={"status": "ready"})
+        return plugin._Probe(
+            status=200,
+            body={
+                "status": "ready",
+                "checks": {"gateway": {"ok": True}, "hermes": {"ok": True}, "realtime": {"ok": True}},
+            },
+        )
 
     plugin._fetch_json = fake_fetch
     old_url = os.environ.get("HERMES_LIVE_URL")
@@ -278,6 +426,8 @@ async def test_status(plugin: Any) -> None:
     os.environ["HERMES_LIVE_AUTH_TOKEN"] = "dashboard-gateway-secret"
     try:
         status = await plugin.gateway_status()
+        wrong_service = True
+        wrong_service_status = await plugin.gateway_status()
     finally:
         plugin._fetch_json = original_fetch
         if old_url is None:
@@ -308,6 +458,137 @@ async def test_status(plugin: Any) -> None:
     assert calls[1][1] == {"Authorization": "Bearer dashboard-gateway-secret"}
     assert calls[2][1] == {"Authorization": "Bearer dashboard-gateway-secret"}
     assert "dashboard-gateway-secret" not in json.dumps(status)
+    assert wrong_service_status == {
+        "configured": True,
+        "reachable": True,
+        "ready": False,
+        "gateway": {"mode": "server-proxied"},
+        "protocolVersion": None,
+        "provider": None,
+        "model": None,
+        "audio": None,
+        "error": "capabilities_unavailable",
+    }
+
+
+async def test_status_suppresses_reflected_bearer_and_failed_readiness(plugin: Any) -> None:
+    original_fetch = plugin._fetch_json
+    secret = "dashboard-reflection-secret"
+
+    async def fake_fetch(_client: Any, url: str, headers: dict[str, str] | None = None) -> Any:
+        del headers
+        if url.endswith("/health"):
+            return plugin._Probe(status=200, body={"status": "ok"})
+        if url.endswith("/v1/capabilities"):
+            return plugin._Probe(
+                status=200,
+                body={
+                    "object": "hermes_live.capabilities",
+                    "service": "hermes-live",
+                    "protocolVersion": 2,
+                    "realtime": {
+                        "provider": "openai",
+                        "model": f"prefix-{secret}-suffix",
+                        "audio": {
+                            "input": {"enabled": True, "mimeType": f"audio/{secret}"},
+                            "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
+                            "turnDetection": f"provider-{secret}",
+                        },
+                    },
+                },
+            )
+        return plugin._Probe(
+            status=200,
+            body={
+                "status": "ready",
+                "checks": {"gateway": {"ok": True}, "hermes": {"ok": False}, "realtime": {"ok": True}},
+            },
+        )
+
+    plugin._fetch_json = fake_fetch
+    old_url = os.environ.get("HERMES_LIVE_URL")
+    old_token = os.environ.get("HERMES_LIVE_AUTH_TOKEN")
+    os.environ["HERMES_LIVE_URL"] = "https://voice.example:9443"
+    os.environ["HERMES_LIVE_AUTH_TOKEN"] = secret
+    try:
+        status = await plugin.gateway_status()
+    finally:
+        plugin._fetch_json = original_fetch
+        if old_url is None:
+            os.environ.pop("HERMES_LIVE_URL", None)
+        else:
+            os.environ["HERMES_LIVE_URL"] = old_url
+        if old_token is None:
+            os.environ.pop("HERMES_LIVE_AUTH_TOKEN", None)
+        else:
+            os.environ["HERMES_LIVE_AUTH_TOKEN"] = old_token
+
+    assert status == {
+        "configured": True,
+        "reachable": True,
+        "ready": False,
+        "gateway": {"mode": "server-proxied"},
+        "protocolVersion": 2,
+        "provider": "openai",
+        "model": None,
+        "audio": {
+            "input": {"enabled": True},
+            "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
+        },
+        "error": "gateway_not_ready",
+    }
+    assert secret not in json.dumps(status)
+
+
+async def test_status_fetch_requires_json_media_type(plugin: Any) -> None:
+    good = await plugin._fetch_json(
+        _StreamClient(
+            _StreamResponse(
+                status=200,
+                content_type="application/json; charset=utf-8",
+                body=b'{"status":"ok"}',
+            )
+        ),
+        "http://gateway.test/health",
+    )
+    assert good == plugin._Probe(status=200, body={"status": "ok"})
+
+    problem_json = await plugin._fetch_json(
+        _StreamClient(
+            _StreamResponse(
+                status=503,
+                content_type="application/problem+json",
+                body=b'{"status":"not_ready"}',
+            )
+        ),
+        "http://gateway.test/ready",
+    )
+    assert problem_json == plugin._Probe(status=503, body={"status": "not_ready"})
+
+    for content_type in ("text/plain", None):
+        rejected = await plugin._fetch_json(
+            _StreamClient(
+                _StreamResponse(
+                    status=200,
+                    content_type=content_type,
+                    body=b'{"status":"ok"}',
+                )
+            ),
+            "http://gateway.test/health",
+        )
+        assert rejected == plugin._Probe(status=200, error="invalid_content_type")
+
+    non_standard = await plugin._fetch_json(
+        _StreamClient(
+            _StreamResponse(
+                status=200,
+                content_type="application/json",
+                body=b'{"status":"ok","value":NaN}',
+            )
+        ),
+        "http://gateway.test/health",
+    )
+    assert non_standard == plugin._Probe(status=200, error="invalid_json")
 
 
 async def test_relay_and_route(plugin: Any) -> None:
@@ -367,13 +648,65 @@ async def test_relay_and_route(plugin: Any) -> None:
         raise AssertionError("binary browser frame was accepted")
 
 
+async def test_upstream_redirect_cannot_replay_bearer(plugin: Any) -> None:
+    browser = _BrowserSocket()
+    attempts: list[tuple[str, dict[str, str] | None]] = []
+
+    def connect(url: str, **options: Any) -> _RedirectingConnectContext:
+        attempts.append((url, options.get("additional_headers")))
+        return _RedirectingConnectContext(url, options, attempts)
+
+    _set_hermes_auth()
+    _set_websockets_connect(connect)
+    old_url = os.environ.get("HERMES_LIVE_URL")
+    old_token = os.environ.get("HERMES_LIVE_AUTH_TOKEN")
+    old_log_disabled = plugin.log.disabled
+    os.environ["HERMES_LIVE_URL"] = "https://voice.example:9443"
+    os.environ["HERMES_LIVE_AUTH_TOKEN"] = "redirect-sensitive-secret"
+    plugin.log.disabled = True
+    try:
+        await plugin.live_websocket(browser)
+    finally:
+        plugin.log.disabled = old_log_disabled
+        if old_url is None:
+            os.environ.pop("HERMES_LIVE_URL", None)
+        else:
+            os.environ["HERMES_LIVE_URL"] = old_url
+        if old_token is None:
+            os.environ.pop("HERMES_LIVE_AUTH_TOKEN", None)
+        else:
+            os.environ["HERMES_LIVE_AUTH_TOKEN"] = old_token
+
+    assert attempts == [
+        (
+            "wss://voice.example:9443/v1/live",
+            {"Authorization": "Bearer redirect-sensitive-secret"},
+        )
+    ]
+    assert browser.accepted
+    assert browser.closed == [1013]
+    assert len(browser.sent) == 1
+    assert json.loads(browser.sent[0]) == {
+        "type": "session.error",
+        "code": "gateway_unavailable",
+        "message": "The Live Voice gateway is unavailable.",
+        "recoverable": False,
+    }
+    assert "redirect-sensitive-secret" not in browser.sent[0]
+
+
 async def main() -> None:
     plugin = _load_plugin_api()
     test_url_and_payload_guards(plugin)
     test_capability_sanitizing(plugin)
+    test_readiness_requires_every_check(plugin)
+    test_capabilities_require_hermes_live_identity(plugin)
     test_auth_order_and_fail_closed(plugin)
     await test_status(plugin)
+    await test_status_suppresses_reflected_bearer_and_failed_readiness(plugin)
+    await test_status_fetch_requires_json_media_type(plugin)
     await test_relay_and_route(plugin)
+    await test_upstream_redirect_cannot_replay_bearer(plugin)
     print("Dashboard plugin smoke ok: config, status, auth, bearer proxy, bounds, and relay verified")
 
 

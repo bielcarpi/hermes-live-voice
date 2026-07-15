@@ -2,6 +2,12 @@ import type { HermesRunEvent } from "../../../domain/protocol/server-protocol.js
 
 export const MAX_SSE_EVENT_BYTES = 1_000_000;
 
+export interface SseStreamOptions {
+  idleTimeoutMs?: number;
+  idleTimeoutMessage?: string;
+  onIdle?: () => void;
+}
+
 export function parseSseEventBlock(block: string): HermesRunEvent | null {
   assertSseEventSize(block);
   const dataLines: string[] = [];
@@ -35,7 +41,10 @@ export function parseSseEventBlock(block: string): HermesRunEvent | null {
   }
 }
 
-export async function* parseSseStream(stream: ReadableStream<Uint8Array>): AsyncGenerator<HermesRunEvent> {
+export async function* parseSseStream(
+  stream: ReadableStream<Uint8Array>,
+  options: SseStreamOptions = {},
+): AsyncGenerator<HermesRunEvent> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -43,7 +52,7 @@ export async function* parseSseStream(stream: ReadableStream<Uint8Array>): Async
 
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await readSseChunk(reader, options);
       if (done) {
         reachedEof = true;
         break;
@@ -74,6 +83,45 @@ export async function* parseSseStream(stream: ReadableStream<Uint8Array>): Async
       await reader.cancel().catch(() => undefined);
     }
     reader.releaseLock();
+  }
+}
+
+async function readSseChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  options: SseStreamOptions,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  const timeoutMs = options.idleTimeoutMs;
+  if (timeoutMs === undefined || timeoutMs <= 0) {
+    return await reader.read();
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      readUntilActivity(reader),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          try {
+            options.onIdle?.();
+          } catch {
+            // The timeout remains authoritative even if transport cleanup fails.
+          }
+          reject(new Error(options.idleTimeoutMessage ?? `SSE stream was idle for ${timeoutMs}ms.`));
+        }, timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function readUntilActivity(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  while (true) {
+    const result = await reader.read();
+    if (result.done || result.value.byteLength > 0) return result;
   }
 }
 

@@ -26,10 +26,13 @@ From a built source checkout, replace `hermes-live` with `node dist/cli.js`.
 import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";
 
 const client = new HermesLiveClient({
-  url: "wss://voice.example.com/v1/live",
-  token: async () => getShortLivedToken(),
-  profileId: "default",
-  userLabel: "browser",
+  webSocketUrlProvider: async () => {
+    const response = await fetch("/api/hermes-live/socket", {
+      credentials: "same-origin",
+    });
+    if (!response.ok) throw new Error("Live Voice is unavailable");
+    return (await response.json()).url;
+  },
 });
 
 client.on("transcript.delta", ({ speaker, text }) => renderTranscript(speaker, text));
@@ -39,6 +42,8 @@ client.on("error", ({ code, error }) => renderError(code, error.message));
 await client.connect();
 client.sendText("Inspect this repository");
 ```
+
+The host endpoint must authenticate the browser and return a same-origin WebSocket proxy URL or a backend-issued short-lived ticket. The Hermes Live gateway does not mint those tickets itself. Do not put the installation-wide `HERMES_LIVE_AUTH_TOKEN` in a public bundle or browser storage.
 
 Every command method returns its generated request ID. `sendAudio()` returns `undefined` and emits `audio.dropped` when the browser WebSocket exceeds the configured backpressure limit. Unknown future server message types emit `unknownmessage`; malformed known lifecycle messages close the connection instead of corrupting local state.
 
@@ -327,7 +332,7 @@ Hermes run event (safe summary by default):
 }
 ```
 
-`HERMES_LIVE_RUN_EVENT_DETAIL=summary` forwards only allowlisted scalar metadata. `none` suppresses `run.event` messages. `raw` forwards upstream Hermes event payloads up to a 256,000-byte event-payload ceiling and replaces larger events with a bounded summary carrying `truncated: true`. Raw mode should still be used only with trusted developer clients because events below that ceiling can contain tool arguments, output, paths, or error detail.
+`HERMES_LIVE_RUN_EVENT_DETAIL=summary` forwards only the allowlisted scalar fields `event`, `run_id`, `timestamp`, and `status`. It deliberately omits upstream `approval_id`; clients correlate approvals only with the gateway-owned `approval.approvalId` on `approval.request`. `none` suppresses `run.event` messages. `raw` forwards upstream Hermes event payloads up to a 256,000-byte event-payload ceiling and replaces larger events with a bounded summary carrying `truncated: true`. Raw mode should still be used only with trusted developer clients because events below that ceiling can contain tool arguments, output, paths, or error detail.
 
 Hermes completion:
 

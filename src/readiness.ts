@@ -2,6 +2,7 @@ import {
   assertGatewayExposureConfig,
   assertHermesApiConfig,
   assertRealtimeProviderConfig,
+  publicBaseUrl,
   type AppConfig,
 } from "./config.js";
 import type { HermesRunsPort } from "./application/live-gateway/ports/hermes-runs.port.js";
@@ -62,7 +63,7 @@ function checkGatewayConfig(config: AppConfig): ReadinessSection {
 async function checkHermesConfig(config: AppConfig, options: BuildReadinessReportOptions): Promise<ReadinessSection> {
   const hermes = options.hermes ?? new HermesClient(config.hermes);
   const base = {
-    baseUrl: hermes.baseUrl ?? config.hermes.baseUrl,
+    baseUrl: publicBaseUrl(hermes.baseUrl ?? config.hermes.baseUrl),
     approvals: unnegotiatedHermesApprovalCompatibility(),
   };
   if (options.requireHermesApiKey ?? true) {
@@ -118,7 +119,7 @@ function realtimeCheckSummary(config: AppConfig): Record<string, unknown> {
   if (config.realtime.provider === "openai") {
     return {
       ...base,
-      baseUrl: config.openai.baseUrl,
+      baseUrl: publicBaseUrl(config.openai.baseUrl),
       voice: config.openai.voice,
       reasoningEffort: config.openai.reasoningEffort,
       turnDetection: config.openai.turnDetection,

@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -147,6 +148,54 @@ describe("OpenAI Realtime adapter helpers", () => {
     await expect(new OpenAIRealtimeAdapter(testOpenAIConfig({ apiKey: undefined })).connect(testConnectParams())).rejects.toThrow(
       /OPENAI_API_KEY/,
     );
+  });
+
+  it("never follows a provider redirect or makes a second authenticated connection", async () => {
+    const target = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(target, "listening");
+    const targetPort = portOf(target);
+    let targetConnections = 0;
+    let targetAuthorization: string | undefined;
+    target.on("connection", (socket, request) => {
+      targetConnections += 1;
+      targetAuthorization = request.headers.authorization;
+      socket.terminate();
+    });
+
+    const redirector = createServer();
+    let redirectRequests = 0;
+    let initialAuthorization: string | undefined;
+    redirector.on("upgrade", (request, socket) => {
+      redirectRequests += 1;
+      initialAuthorization = request.headers.authorization;
+      socket.end([
+        "HTTP/1.1 302 Found",
+        `Location: ws://127.0.0.1:${targetPort}/v1/realtime`,
+        "Connection: close",
+        "Content-Length: 0",
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    redirector.listen(0, "127.0.0.1");
+    await once(redirector, "listening");
+    const redirectPort = portOfHttp(redirector);
+    const adapter = new OpenAIRealtimeAdapter(testOpenAIConfig({
+      apiKey: "redirect-sensitive-key",
+      baseUrl: `ws://127.0.0.1:${redirectPort}/v1/realtime`,
+    }), 500, 500);
+
+    try {
+      await expect(adapter.connect(testConnectParams())).rejects.toThrow();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(redirectRequests).toBe(1);
+      expect(initialAuthorization).toBe("Bearer redirect-sensitive-key");
+      expect(targetConnections).toBe(0);
+      expect(targetAuthorization).toBeUndefined();
+    } finally {
+      await closeHttpServer(redirector);
+      await closeServer(target);
+    }
   });
 
   it("closes the provider socket when OpenAI rejects the initial session update", async () => {
@@ -780,7 +829,21 @@ function portOf(server: WebSocketServer): number {
   return address.port;
 }
 
+function portOfHttp(server: ReturnType<typeof createServer>): number {
+  const address = server.address();
+  if (!address || typeof address !== "object") {
+    throw new Error("HTTP server did not expose a TCP port.");
+  }
+  return address.port;
+}
+
 function closeServer(server: WebSocketServer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function closeHttpServer(server: ReturnType<typeof createServer>): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });

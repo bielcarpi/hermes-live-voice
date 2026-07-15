@@ -37,6 +37,7 @@ try {
     "README.md",
     "LICENSE",
     ".env.example",
+    "assets/architecture.svg",
     "assets/banner.svg",
     "dist/index.js",
     "dist/cli.js",
@@ -80,11 +81,6 @@ try {
     "plugins/hermes-live/dashboard/dist/style.css",
     "plugins/hermes-live/dashboard/dist/hermes-live-client.js",
     "plugins/hermes-live/dashboard/dist/mic-worklet.js",
-    "scripts/dashboard-plugin-smoke.py",
-    "scripts/gateway-smoke.mjs",
-    "scripts/live-provider-cli-smoke.mjs",
-    "scripts/plugin-smoke.py",
-    "scripts/sync-dashboard-assets.mjs",
   ];
 
   const missing = required.filter((file) => !files.has(file));
@@ -98,6 +94,7 @@ try {
       (file) =>
         file.startsWith("node_modules/") ||
         file.startsWith("src/") ||
+        file.startsWith("scripts/") ||
         file.startsWith("test/") ||
         (/(^|\/)\.[^/]+/.test(file) && file !== ".env.example") ||
         / \d+\.[^/]+$/.test(file) ||

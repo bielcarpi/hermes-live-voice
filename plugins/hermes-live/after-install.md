@@ -4,19 +4,18 @@ The Hermes plugin, Dashboard tab, and server-side Dashboard proxy are now availa
 
 ## 1. Start the companion gateway
 
-From the installed `hermes-live-voice` package:
+Start in deterministic, no-provider-cost mock mode:
 
 ```sh
 HERMES_BASE_URL=http://127.0.0.1:8642 \
 HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
-HERMES_LIVE_PROVIDER=gemini \
-GEMINI_API_KEY=your-gemini-key \
+HERMES_LIVE_PROVIDER=mock \
 hermes-live serve
 ```
 
-From a built source checkout, the equivalent command is `node dist/cli.js serve`.
+The `hermes-live` command comes from the matching `hermes-live-voice` npm package. A plugin installed directly from GitHub does not install that CLI and follows unpinned `main`; use it only with a gateway built from the same checkout. From a built checkout, replace `hermes-live` with `node dist/cli.js`.
 
-Use `HERMES_LIVE_PROVIDER=openai` with `OPENAI_API_KEY` for OpenAI Realtime, or `HERMES_LIVE_PROVIDER=mock` for a text-only, no-provider-cost integration check.
+After mock mode completes a Hermes run, restart with `HERMES_LIVE_PROVIDER=gemini` plus `GEMINI_API_KEY`, or `HERMES_LIVE_PROVIDER=openai` plus `OPENAI_API_KEY`, for live speech.
 
 If the gateway requires authentication, give the gateway and the Hermes Dashboard process the same strong value:
 
@@ -38,7 +37,7 @@ The Dashboard browser never receives the gateway credential or upstream gateway 
 
 ## 3. Know the controls
 
-- **Interrupt speech** cancels the current spoken response while leaving an active Hermes task running.
+- **Interrupt speech** clears queued local playback and requests provider cancellation/truncation when supported, while leaving an active Hermes task running. Provider-side cancellation semantics differ; test the selected provider with real audio.
 - **Stop Hermes task** requests cancellation of the active tool-using run while leaving the voice session connected. Keep watching until Hermes reports a terminal state.
 - **Disconnect** requests cleanup of the provider session and any active Hermes task, then waits for gateway confirmation. If confirmation fails or the page is closed before it arrives, verify the task directly in Hermes.
 - Approval buttons appear only when Hermes advertises targeted response IDs. An older uncorrelated request triggers deny/stop/session-close containment; permanent targeted choices additionally require an inspectable permission pattern and a second confirmation.
