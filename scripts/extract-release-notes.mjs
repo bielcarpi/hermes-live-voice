@@ -45,9 +45,12 @@ export function extractReleaseNotes(changelog, version) {
     sectionLines.pop();
   }
 
-  const body = sectionLines.slice(1).join("\n").replace(/<!--[\s\S]*?-->/g, "").trim();
+  const body = sectionLines.slice(1).join("\n").trim();
   if (body.length === 0) {
     throw new Error(`CHANGELOG.md section for ${version} is empty.`);
+  }
+  if (body.includes("<!--") || body.includes("-->")) {
+    throw new Error(`CHANGELOG.md section for ${version} must not contain HTML comments.`);
   }
 
   return `${sectionLines.join("\n")}\n`;

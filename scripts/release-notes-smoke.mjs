@@ -32,7 +32,18 @@ assert.equal(
   "## 1.0.0-beta.1\n\nPreview.\n",
 );
 assert.throws(() => extractReleaseNotes(sample, "0.4"), /no exact section/);
-assert.throws(() => extractReleaseNotes("## 0.4.0\n\n<!-- placeholder -->\n", "0.4.0"), /is empty/);
+assert.throws(
+  () => extractReleaseNotes("## 0.4.0\n\n<!-- placeholder -->\n", "0.4.0"),
+  /must not contain HTML comments/,
+);
+assert.throws(
+  () => extractReleaseNotes("## 0.4.0\n\nShipped.\n<!-- hidden -->\n", "0.4.0"),
+  /must not contain HTML comments/,
+);
+assert.throws(
+  () => extractReleaseNotes("## 0.4.0\n\nShipped.\n-->\n", "0.4.0"),
+  /must not contain HTML comments/,
+);
 assert.throws(
   () => extractReleaseNotes("## 0.4.0\n\nOne.\n\n## 0.4.0 - 2026-07-15\n\nTwo.\n", "0.4.0"),
   /multiple exact sections/,
