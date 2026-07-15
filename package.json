@@ -111,7 +111,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.11.0",
-    "ws": "^8.18.3",
+    "ws": "^8.21.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
