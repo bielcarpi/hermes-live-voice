@@ -93,6 +93,18 @@ for (const file of markdownFiles) {
   }
 }
 
+const anchorSanitizationCases = [
+  { heading: "<span>Release notes</span>", expected: "release-notes" },
+  { heading: "<<script>alert(1)</script> Release", expected: "alert1-release" },
+  { heading: "2 < 3", expected: "2-3" },
+];
+for (const testCase of anchorSanitizationCases) {
+  const actual = githubAnchor(testCase.heading);
+  if (actual !== testCase.expected) {
+    failures.push(`anchor sanitization mismatch: expected ${testCase.expected}, received ${actual}`);
+  }
+}
+
 if (failures.length > 0) {
   console.error("Documentation checks failed:\n" + failures.map((failure) => `- ${failure}`).join("\n"));
   process.exitCode = 1;
@@ -136,14 +148,31 @@ async function markdownAnchors(file) {
 }
 
 function githubAnchor(heading) {
-  return heading
-    .replace(/<[^>]*>/g, "")
+  return stripHtmlTags(heading)
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[`*_~]/g, "")
     .trim()
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .replace(/\s+/g, "-");
+}
+
+function stripHtmlTags(value) {
+  let output = "";
+  let insideTag = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (!insideTag && character === "<" && /[A-Za-z!/?]/u.test(value[index + 1] ?? "")) {
+      insideTag = true;
+      continue;
+    }
+    if (insideTag) {
+      if (character === ">") insideTag = false;
+      continue;
+    }
+    output += character;
+  }
+  return output;
 }
 
 function removeFencedCode(source) {
