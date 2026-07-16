@@ -183,11 +183,17 @@ describe("config", () => {
     expect(config.tasks).toEqual({
       stateFile: "/tmp/hermes-live/private-tasks.json",
       maxConcurrent: 4,
+      trustDeclaredReadOnly: false,
       maxQueued: 48,
       historyLimit: 300,
       retentionMs: 24 * 60 * 60 * 1_000,
       pollIntervalMs: 750,
     });
+  });
+
+  it("requires an explicit trust opt-in for declared read-only parallelism", () => {
+    expect(loadConfig().tasks.trustDeclaredReadOnly).toBe(false);
+    expect(loadConfig({ HERMES_LIVE_TRUST_DECLARED_READ_ONLY: "true" }).tasks.trustDeclaredReadOnly).toBe(true);
   });
 
   it("rejects unsafe or unbounded background-task configuration", () => {

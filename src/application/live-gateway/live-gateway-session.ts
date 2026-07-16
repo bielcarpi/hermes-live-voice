@@ -45,6 +45,8 @@ const MAX_PROVIDER_IO_WAIT_MS = 10_000;
 const MAX_PROVIDER_CLOSE_WAIT_MS = 5_000;
 const MAX_PROVIDER_CANCEL_WAIT_MS = 1_000;
 const MAX_PROVIDER_NOTIFICATION_RESPONSE_WAIT_MS = 30_000;
+const MAX_NOTIFICATION_DELIVERY_ATTEMPTS = 3;
+const NOTIFICATION_RETRY_BASE_MS = 250;
 const MAX_PENDING_CLIENT_MESSAGES = 256;
 const MAX_PENDING_CLIENT_BYTES = 8 * 1024 * 1024;
 const MAX_CLIENT_MESSAGE_ERRORS = 16;
@@ -92,10 +94,14 @@ export class LiveGatewaySession {
   private unsubscribeTasks?: () => void;
   private readonly pendingTaskRecords = new Map<string, TaskRecord>();
   private readonly pendingNotifications = new Map<string, TaskRecord>();
+  private readonly claimedNotifications = new Map<string, TaskRecord>();
+  private readonly notificationDeliveryAttempts = new Map<string, number>();
   private notificationFlushRunning = false;
+  private notificationRetryTimer?: ReturnType<typeof setTimeout>;
   private notificationResponsePending = false;
   private notificationResponseTimer?: ReturnType<typeof setTimeout>;
   private providerResponseActive = false;
+  private providerTurnResponseExpected = false;
   private userSpeaking = false;
   private messageQueue: Promise<void> = Promise.resolve();
   private pendingClientMessages = 0;
@@ -169,7 +175,10 @@ export class LiveGatewaySession {
 
       const connect = this.deps.liveModel.connect({
         sessionId: this.id,
-        systemInstruction: buildSystemInstruction(this.notificationToken),
+        systemInstruction: buildSystemInstruction(
+          this.notificationToken,
+          this.deps.config.tasks.trustDeclaredReadOnly === true,
+        ),
         safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey),
         callbacks: {
           onOpen: () => {
@@ -273,7 +282,9 @@ export class LiveGatewaySession {
           sequence: "per_task",
           reconnect: "snapshot",
           durable: true,
-          parallel: this.deps.config.tasks.maxConcurrent > 1,
+          parallel:
+            this.deps.config.tasks.maxConcurrent > 1
+            && this.deps.config.tasks.trustDeclaredReadOnly === true,
           maxConcurrent: this.deps.config.tasks.maxConcurrent,
           maxRetained: this.deps.config.tasks.historyLimit,
           supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
@@ -534,8 +545,13 @@ export class LiveGatewaySession {
         if (recentContext) validateText(recentContext, this.deps.config.server.maxTextChars, "Recent voice context");
         const title = optionalStringArg(call, "title");
         if (title && title.length > 256) throw new Error("Background task title exceeds 256 characters.");
-        const executionMode = executionModeArg(call);
-        const resourceKeys = resourceKeysArg(call);
+        const requestedExecutionMode = executionModeArg(call);
+        const executionMode = this.deps.config.tasks.trustDeclaredReadOnly === true
+          ? requestedExecutionMode
+          : "exclusive";
+        const resourceKeys = this.deps.config.tasks.trustDeclaredReadOnly === true
+          ? resourceKeysArg(call)
+          : undefined;
         const input = recentContext ? `${message}\n\nRecent voice context:\n${recentContext}` : message;
         return this.runTaskOperation(() => this.deps.taskSupervisor.submit({
           ownerIdentity: this.sessionKey!,
@@ -548,6 +564,7 @@ export class LiveGatewaySession {
           ok: true,
           task_id: task.taskId,
           status: task.status,
+          execution_mode: task.executionMode,
           message: "Background task accepted. The user can keep talking or disconnect.",
         }));
       }
@@ -583,7 +600,7 @@ export class LiveGatewaySession {
         ).then((task) => ({
           ok: true,
           task_id: task.taskId,
-          status: task.status,
+          status: projectTaskSnapshot(task).state,
         }));
       }
       default:
@@ -833,6 +850,7 @@ export class LiveGatewaySession {
       }
       if ((event.speaker ?? "assistant") === "user" && event.final) {
         this.userSpeaking = false;
+        this.scheduleNotificationFlush();
       }
       this.send({
         type: "transcript.delta",
@@ -862,7 +880,16 @@ export class LiveGatewaySession {
       });
       return;
     }
+    if (event.type === "input_speech_stopped") {
+      this.userSpeaking = false;
+      // The OpenAI adapter schedules the normal conversational response after
+      // this event. Keep completion speech gated during the protocol gap before
+      // the provider emits response.created.
+      this.providerTurnResponseExpected = true;
+      return;
+    }
     if (event.status === "started") {
+      if (event.scope !== "task_notification") this.providerTurnResponseExpected = false;
       this.providerResponseActive = true;
       const responseId = publicProviderIdentifier(event.responseId);
       this.send({ type: "response.started", ...(responseId ? { responseId } : {}) });
@@ -870,7 +897,7 @@ export class LiveGatewaySession {
     }
 
     this.providerResponseActive = false;
-    this.clearNotificationResponsePending();
+    if (event.scope !== "conversation") this.clearNotificationResponsePending();
     const responseId = publicProviderIdentifier(event.responseId);
     if (event.status === "failed") {
       this.send({
@@ -920,6 +947,7 @@ export class LiveGatewaySession {
       this.pendingNotifications.set(record.taskId, structuredClone(record));
     } else {
       this.pendingNotifications.delete(record.taskId);
+      this.notificationDeliveryAttempts.delete(record.taskId);
     }
     this.scheduleNotificationFlush();
   }
@@ -931,7 +959,9 @@ export class LiveGatewaySession {
       this.notificationFlushRunning ||
       this.notificationResponsePending ||
       this.providerResponseActive ||
+      this.providerTurnResponseExpected ||
       this.userSpeaking ||
+      this.notificationRetryTimer !== undefined ||
       this.pendingNotifications.size === 0
     ) {
       return;
@@ -947,6 +977,7 @@ export class LiveGatewaySession {
       this.notificationFlushRunning ||
       this.notificationResponsePending ||
       this.providerResponseActive ||
+      this.providerTurnResponseExpected ||
       this.userSpeaking ||
       !this.liveSession?.sendTaskNotification ||
       !this.ownerId
@@ -956,17 +987,33 @@ export class LiveGatewaySession {
     const candidates = [...this.pendingNotifications.values()];
     if (candidates.length === 0) return;
     this.notificationFlushRunning = true;
+    const records: TaskRecord[] = [];
     try {
-      const records: TaskRecord[] = [];
       for (const candidate of candidates) {
         try {
           const claim = await this.deps.taskSupervisor.claimNotificationAnnouncement(
             this.ownerId,
             candidate.taskId,
+            this.id,
           );
-          this.pendingNotifications.delete(candidate.taskId);
-          if (claim.claimed) records.push(claim.task);
+          if (claim.claimed) {
+            this.claimedNotifications.set(claim.task.taskId, claim.task);
+            if (this.closing) {
+              this.releaseNotificationClaim(claim.task.taskId);
+              continue;
+            }
+            this.pendingNotifications.delete(candidate.taskId);
+            records.push(claim.task);
+          } else if (!claim.task.notification.unread || claim.task.notification.announcedAt !== undefined) {
+            this.pendingNotifications.delete(candidate.taskId);
+          } else {
+            // Another owner session currently holds the in-memory lease. Keep
+            // the durable item eligible in this session in case that claimant
+            // disconnects or its provider handoff fails.
+            this.scheduleNotificationRetry(NOTIFICATION_RETRY_BASE_MS);
+          }
         } catch (error) {
+          this.retryNotification(candidate);
           this.deps.logger.warn("failed to claim task notification announcement", {
             sessionId: this.id,
             taskId: candidate.taskId,
@@ -975,6 +1022,24 @@ export class LiveGatewaySession {
         }
       }
       if (records.length === 0) return;
+
+      // A claim is asynchronous. Speech or a normal provider response can
+      // begin while it is in flight, so recheck immediately before handing an
+      // announcement to the provider. Released claims remain unread and can be
+      // retried when the conversation becomes idle.
+      if (
+        this.closing ||
+        this.userSpeaking ||
+        this.providerResponseActive ||
+        this.providerTurnResponseExpected ||
+        this.notificationResponsePending
+      ) {
+        for (const record of records) {
+          if (this.claimedNotifications.has(record.taskId)) this.releaseNotificationClaim(record.taskId);
+          this.pendingNotifications.set(record.taskId, structuredClone(record));
+        }
+        return;
+      }
 
       this.notificationResponsePending = true;
       const announcement = notificationDigest(records);
@@ -985,9 +1050,42 @@ export class LiveGatewaySession {
         MAX_PROVIDER_IO_WAIT_MS,
         "Realtime provider task notification did not settle before the safety deadline.",
       );
-      this.armNotificationResponseWatchdog();
+      for (const record of records) {
+        try {
+          await this.deps.taskSupervisor.completeNotificationAnnouncement(
+            this.ownerId,
+            record.taskId,
+            this.id,
+          );
+          this.claimedNotifications.delete(record.taskId);
+          this.notificationDeliveryAttempts.delete(record.taskId);
+        } catch (error) {
+          this.releaseNotificationClaim(record.taskId);
+          if (!this.closing) {
+            // Provider delivery succeeded, but without the durable marker a
+            // restart cannot distinguish this from an unsent notification.
+            // Preserve at-least-once delivery and retry within the same
+            // bounded budget instead of silently waiting for a reconnect.
+            this.retryNotification(record);
+            this.deps.logger.warn("failed to persist task notification announcement", {
+              sessionId: this.id,
+              taskId: record.taskId,
+              error: errorToMessage(error),
+            });
+          }
+        }
+      }
+      // A mock or fast provider can emit completion before the send promise
+      // settles. In that case the event handler already cleared this flag and
+      // no stale watchdog should be armed.
+      if (this.notificationResponsePending) this.armNotificationResponseWatchdog();
     } catch (error) {
       this.notificationResponsePending = false;
+      for (const record of records) {
+        if (!this.claimedNotifications.has(record.taskId)) continue;
+        this.releaseNotificationClaim(record.taskId);
+        this.retryNotification(record);
+      }
       if (!this.closing) {
         this.deps.logger.warn("task notification speech delivery failed", {
           sessionId: this.id,
@@ -997,6 +1095,53 @@ export class LiveGatewaySession {
     } finally {
       this.notificationFlushRunning = false;
     }
+  }
+
+  private releaseNotificationClaim(taskId: string): void {
+    if (!this.claimedNotifications.delete(taskId) || !this.ownerId) return;
+    try {
+      this.deps.taskSupervisor.releaseNotificationAnnouncement(this.ownerId, taskId, this.id);
+    } catch (error) {
+      if (!this.closing) {
+        this.deps.logger.warn("failed to release task notification announcement claim", {
+          sessionId: this.id,
+          taskId,
+          error: errorToMessage(error),
+        });
+      }
+    }
+  }
+
+  private retryNotification(record: TaskRecord): void {
+    if (this.closing) return;
+    const attempt = (this.notificationDeliveryAttempts.get(record.taskId) ?? 0) + 1;
+    if (attempt >= MAX_NOTIFICATION_DELIVERY_ATTEMPTS) {
+      this.notificationDeliveryAttempts.delete(record.taskId);
+      // Stop automatic retries for this live session while leaving the durable
+      // unread inbox item untouched. A reconnect receives a fresh snapshot and
+      // may try again with a fresh bounded budget.
+      this.pendingNotifications.delete(record.taskId);
+      return;
+    }
+    this.notificationDeliveryAttempts.set(record.taskId, attempt);
+    this.pendingNotifications.set(record.taskId, structuredClone(record));
+    this.scheduleNotificationRetry(NOTIFICATION_RETRY_BASE_MS * (2 ** (attempt - 1)));
+  }
+
+  private scheduleNotificationRetry(delayMs: number): void {
+    if (this.closing || this.notificationRetryTimer !== undefined) return;
+    this.notificationRetryTimer = setTimeout(() => {
+      this.notificationRetryTimer = undefined;
+      // A claim batch can legitimately outlive the backoff (for example when
+      // the serialized store is busy). Do not consume the only wake-up while
+      // that batch still owns the flush loop.
+      if (this.notificationFlushRunning) {
+        this.scheduleNotificationRetry(NOTIFICATION_RETRY_BASE_MS);
+        return;
+      }
+      this.scheduleNotificationFlush();
+    }, delayMs);
+    this.notificationRetryTimer.unref?.();
   }
 
   private async forwardRealtimeClientInput(
@@ -1054,7 +1199,13 @@ export class LiveGatewaySession {
     this.unsubscribeTasks?.();
     this.unsubscribeTasks = undefined;
     this.pendingTaskRecords.clear();
+    if (this.notificationRetryTimer !== undefined) {
+      clearTimeout(this.notificationRetryTimer);
+      this.notificationRetryTimer = undefined;
+    }
+    for (const taskId of [...this.claimedNotifications.keys()]) this.releaseNotificationClaim(taskId);
     this.pendingNotifications.clear();
+    this.notificationDeliveryAttempts.clear();
     this.clearNotificationResponsePending();
     this.providerToolOperations.length = 0;
     this.abort.abort(new Error("Voice session detached."));
@@ -1064,7 +1215,22 @@ export class LiveGatewaySession {
     if (this.pendingLiveConnect) {
       const connect = this.pendingLiveConnect;
       this.pendingLiveConnect = undefined;
-      operations.push(connect.then((session) => this.closeProvider(session)).catch(() => undefined));
+      const closeLateSession = connect
+        .then((session) => this.closeProvider(session))
+        .catch(() => undefined);
+      // Some provider SDKs cannot cancel a handshake already in flight. Keep
+      // the late-close continuation attached, but do not let that raw promise
+      // make gateway shutdown unbounded.
+      operations.push(withDeadline(
+        closeLateSession,
+        MAX_PROVIDER_CLOSE_WAIT_MS,
+        "Pending realtime provider connection did not settle before the close deadline.",
+      ).catch((error) => {
+        this.deps.logger.error("failed to confirm pending realtime provider closure", {
+          sessionId: this.id,
+          error: errorToMessage(error),
+        });
+      }));
     }
     await Promise.allSettled(operations);
   }
@@ -1187,15 +1353,7 @@ function publicTaskOperationMessage(error: unknown, fallback: string): string {
 }
 
 function projectTaskList(records: TaskRecord[]): PublicTaskSnapshot[] {
-  const queuePositions = new Map(
-    records
-      .filter((record) => record.status === "queued")
-      .sort((left, right) => left.createdAt - right.createdAt || left.taskId.localeCompare(right.taskId))
-      .map((record, index) => [record.taskId, index + 1]),
-  );
-  return records.map((record) => projectTaskSnapshot(record, {
-    ...(queuePositions.has(record.taskId) ? { queuePosition: queuePositions.get(record.taskId) } : {}),
-  }));
+  return records.map((record) => projectTaskSnapshot(record));
 }
 
 function mergeTaskRecords(records: TaskRecord[]): TaskRecord[] {

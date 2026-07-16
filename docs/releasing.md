@@ -4,9 +4,9 @@ Releases are tag-driven, immutable, and reproducible from protected `main`. Prer
 
 ## Version And Evidence Policy
 
-Use a prerelease such as `0.5.0-beta.1` while a new protocol or durability contract is gathering real-world evidence. Do not promote a beta to `0.5.0` merely because automated tests pass.
+Stable releases require the deterministic suite, a clean packed-package install, Docker runtime proof, and real Hermes integration. Run a live provider check whenever a release changes that provider's handshake, session configuration, tool delivery, or default model. A change that only normalizes a documented provider event may instead use the official event contract plus a deterministic adapter fixture. Record live attempts and external blockers; a quota or account failure is not a passing provider check.
 
-For the v0.5 task-supervisor line, release notes must distinguish:
+Release notes must distinguish:
 
 - client/provider disconnect continuation;
 - gateway-restart recovery while the same Hermes process remains alive;
@@ -34,26 +34,26 @@ For the v0.5 task-supervisor line, release notes must distinguish:
    docker build -t hermes-live-voice:release .
    ```
 
-5. Run `npm run check:live-provider` for each changed provider/default model and record provider, model, region when relevant, and date.
+5. Run `npm run check:live-provider` for each changed provider handshake/default model and record provider, model, region when relevant, date, and outcome. For event-only adapter changes, record the official contract and deterministic fixture instead.
 6. Install the packed tarball in a clean temporary directory and run CLI/plugin/mock smokes.
 7. Confirm `git status --short` is empty and every required GitHub check is green.
 
-## v0.5 Proof Gate
+## Release Proof Gate
 
-Before tagging a v0.5 beta, record evidence for:
+Before tagging a stable release, record evidence for:
 
 - real Hermes submission, SSE completion, retained result, and exact stop;
 - immediate receipt and a second conversation turn while a task remains active;
-- exclusive serialization and disjoint read-only concurrency;
+- default exclusive serialization plus opt-in disjoint read-only concurrency;
 - client detach/reconnect with snapshot and notification deduplication;
 - gateway restart using the same state file while Hermes stays alive;
 - Hermes restart producing `unknown`, not a fabricated terminal result;
 - fail-closed approval deny-all plus exact stop, with no approval UI;
 - a persistent Docker state volume with non-root/read-only hardening;
-- real OpenAI/Gemini session smoke for each advertised provider;
+- live session smoke for each changed provider handshake/default, plus official event fixtures and deterministic adapter coverage for event-only normalization changes;
 - browser/Dashboard/terminal and clean-package installation smokes.
 
-Before promoting the stable v0.5 tag, repeat the gate on the final commit and complete an appropriate soak window. Document any manual audio/device coverage; tests cannot prove microphones, autoplay, perceived latency, or provider speech quality on untested hardware.
+Repeat the gate on the final commit and complete an appropriate soak window. Keep recent live evidence for every advertised provider, and record any account, quota, region, or model-access blocker without relabeling it as a pass. Document manual audio/device coverage; tests cannot prove microphones, autoplay, perceived latency, or provider speech quality on untested hardware.
 
 ## Tag And GitHub Release
 
@@ -130,4 +130,4 @@ The recovery path checks out the immutable tag, requires it in protected `main` 
 - Verify GitHub asset checksums and that the release body begins with the exact changelog section.
 - Verify npm version, dist-tag, integrity, provenance, signatures, repository URL, README rendering, and executable.
 - Confirm GitHub and npm point to the same semantic version before announcing it.
-- Recheck `/v1/capabilities` from the released container/package and archive the v0.5 proof matrix with release notes.
+- Recheck `/v1/capabilities` from the released container/package and archive the proof matrix with release notes.

@@ -55,10 +55,11 @@ The store:
 - rejects a symlinked file or directory and a directory owned by another Unix user;
 - bounds document and record counts;
 - writes through a private exclusive temporary file, `fsync`, atomic rename, and directory `fsync`;
+- holds an exclusive lifetime lock so two gateway processes cannot write the same file;
 - refuses to reset invalid JSON or schema-corrupt state;
 - freezes further mutation if durability after rename cannot be confirmed.
 
-Back up the state file as sensitive data. Stop the gateway before copying or moving it. Do not edit task status, owner, run id, or revision fields by hand. In Docker, persist `/var/lib/hermes-live` on a private volume; otherwise gateway restart recovery and the task inbox are lost.
+Back up the state file as sensitive data. Stop the gateway before copying or moving it. Do not edit task status, owner, run id, or revision fields by hand. If an unclean exit leaves a lock, confirm that no gateway is running before using `hermes-live tasks unlock --confirm-no-gateway`; locks are never reclaimed by age. In Docker, persist `/var/lib/hermes-live` on a private volume, or gateway restart recovery and the task inbox are lost.
 
 ## Provider Data Boundary
 
@@ -80,7 +81,7 @@ Task titles, summaries, and results are untrusted data. The realtime instruction
 
 The provider can request only the gateway's four task operations. Task access remains owner-scoped and exact-id based.
 
-Mutating or uncertain work must use `exclusive`; only provably read-only work may use `parallel_read_only`, and then only across disjoint resource keys. Resource modes are model-supplied policy metadata, not a sandbox. Hermes permissions, container isolation, filesystem permissions, network controls, and tool policy remain necessary.
+Mutating or uncertain work must use `exclusive`. By default, the gateway clamps every provider request to that mode. `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true` opts into `parallel_read_only` work across model-declared disjoint resource keys. This metadata is policy input, not a sandbox; Hermes permissions, container isolation, filesystem permissions, network controls, and tool policy remain necessary.
 
 Queue and session limits control accidental load, not hostile traffic. Keep `HERMES_LIVE_MAX_SESSIONS`, task concurrency, and queue bounds aligned with provider quota, Hermes capacity, and cost limits; add rate limiting before public exposure.
 
@@ -88,7 +89,7 @@ Queue and session limits control accidental load, not hostile traffic. Keep `HER
 
 Hermes does not currently accept an idempotency key for run creation. The gateway automatically retries only definitive `429 rate_limit_exceeded` and `503 gateway_draining` rejections. A timeout, connection loss, malformed success, or other ambiguous POST outcome becomes internal `dispatch_unknown` and public `unknown`; it is not retried.
 
-That state remains an admission fence because the original task may be running. Never change it to queued or repeat a mutating task until Hermes has been stopped and the target resources audited. See [operator recovery](background-tasks.md#ambiguous-dispatch-fence).
+That state remains an admission fence because the original task may be running. Never change it to queued or repeat a mutating task until possible upstream work has been contained and the target resources audited. See [operator recovery](background-tasks.md#ambiguous-dispatch-fence).
 
 An ambiguous stop also becomes `unknown`. The gateway never treats “stop requested” as terminal success and never guesses another run id.
 
@@ -96,7 +97,7 @@ An ambiguous stop also becomes `unknown`. The gateway never treats “stop reque
 
 Protocol v3 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
 
-When Hermes reports `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all: true` and requests stop for that exact upstream run. The public projection is non-actionable. This fail-closed rule applies even if Hermes exposes a targeted approval capability: v0.5 does not offer a human approval path.
+When Hermes reports `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all: true` and requests stop for that exact upstream run. The public projection is non-actionable. Hermes exposes a run-scoped response endpoint, but not enough per-request identity for safe concurrent approval from Hermes Live, so there is no human approval path.
 
 Do not work around this boundary by constructing a local approval card from raw Hermes events or calling the Hermes approval endpoint from browser code.
 
@@ -126,6 +127,7 @@ The bundled demo is enabled by default in development and disabled by default wh
 - Keep all Hermes/provider credentials server-side.
 - Use a same-origin authenticated relay for browser/community UIs.
 - Keep `HERMES_LIVE_TRUST_CLIENT_IDENTITY=false` unless every client is trusted.
+- Keep `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=false` unless you accept model-declared concurrency scopes as policy input.
 - Put `HERMES_LIVE_TASK_STATE_FILE` in a private, backed-up, persistent location.
 - Persist `/var/lib/hermes-live` when using Docker.
 - Set session, task concurrency, queue, retention, and request-size limits intentionally.

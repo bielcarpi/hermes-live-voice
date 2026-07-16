@@ -39,6 +39,7 @@ export interface TaskTransitionOptions {
   outputTruncated?: boolean;
   usage?: unknown;
   error?: string;
+  upstreamRunMissing?: boolean;
 }
 
 export interface AppendTaskEventInput {
@@ -74,8 +75,12 @@ export function transitionTask(
 ): TaskRecord {
   const record = parseTaskRecord(value);
   const target = TaskStatusSchema.parse(nextStatus);
-  if (record.status === target) return record;
-  if (!ALLOWED_TASK_TRANSITIONS[record.status].has(target)) {
+  const recordingMissingRun = record.status === target
+    && target === "unknown"
+    && options.upstreamRunMissing === true
+    && record.upstreamRunMissingAt === undefined;
+  if (record.status === target && !recordingMissingRun) return record;
+  if (!recordingMissingRun && !ALLOWED_TASK_TRANSITIONS[record.status].has(target)) {
     throw new TaskTransitionError(record.status, target);
   }
   if (options.output !== undefined && target !== "completed") {
@@ -86,6 +91,9 @@ export function transitionTask(
   }
   if (options.outputTruncated === true && options.output === undefined && record.output === undefined) {
     throw new Error("Truncated task output requires a retained output prefix.");
+  }
+  if (options.upstreamRunMissing === true && target !== "unknown") {
+    throw new Error("A confirmed missing upstream run can be recorded only on an unknown task.");
   }
 
   const now = monotonicTaskTimestamp(record, options.now);
@@ -117,12 +125,14 @@ export function transitionTask(
     ...(options.outputTruncated === undefined ? {} : { outputTruncated: options.outputTruncated }),
     ...(usage ? { usage } : {}),
     ...(options.error === undefined ? {} : { error: sanitizeTaskError(options.error) }),
+    ...(options.upstreamRunMissing === true ? { upstreamRunMissingAt: now } : {}),
     notification: notificationRequired
       ? { unread: true }
       : clearNotification
         ? { unread: false }
         : record.notification,
   };
+  if (target !== "unknown") delete next.upstreamRunMissingAt;
   if (target === "completed") delete next.error;
   return TaskRecordSchema.parse(next);
 }
@@ -199,6 +209,30 @@ export function acknowledgeTaskNotification(value: TaskRecord, now = Date.now())
       unread: false,
       acknowledgedAt: timestamp,
     },
+  });
+}
+
+export function containIndeterminateTask(value: TaskRecord, now = Date.now()): TaskRecord {
+  const record = parseTaskRecord(value);
+  if (record.operatorContainedAt !== undefined) return record;
+  if (record.status !== "unknown" && record.status !== "dispatch_unknown") {
+    throw new Error("Only an unknown task can be contained by an operator.");
+  }
+  const timestamp = monotonicTaskTimestamp(record, now);
+  const event = createNextEvent(
+    record,
+    "operator_contained",
+    "Operator confirmed the indeterminate task is contained.",
+    timestamp,
+  );
+  return TaskRecordSchema.parse({
+    ...record,
+    operatorContainedAt: timestamp,
+    updatedAt: timestamp,
+    revision: record.revision + 1,
+    sequence: event.sequence,
+    events: appendRetainedEvent(record.events, event),
+    notification: { unread: true },
   });
 }
 

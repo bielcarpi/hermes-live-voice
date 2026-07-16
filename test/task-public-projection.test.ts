@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acknowledgeTaskNotification,
   createTaskRecord,
+  markTaskStopRequested,
   markTaskNotificationAnnounced,
   transitionTask,
 } from "../src/domain/tasks/index.js";
@@ -45,6 +46,31 @@ describe("task public projection", () => {
       error: { code: "task_dispatch_unknown", recoverable: false },
     });
     expect(projectTaskSnapshot(uncertain)).toMatchObject({ state: "unknown" });
+  });
+
+  it("projects durable stop intent as stopping without hiding terminal or uncertain truth", () => {
+    const queued = createTaskRecord({ ownerIdentity: "owner", input: "Deploy", now: 10 });
+    const dispatching = transitionTask(queued, "dispatching", { now: 20 });
+    const dispatchStop = markTaskStopRequested(dispatching, { now: 30 });
+
+    expect(projectTaskSnapshot(dispatchStop)).toMatchObject({ state: "stopping" });
+    expect(projectTaskLifecycle(dispatchStop, "stop_dispatch")).toMatchObject({
+      type: "task.stopping",
+      requestId: "stop_dispatch",
+    });
+
+    const dispatchUnknown = transitionTask(dispatchStop, "dispatch_unknown", { now: 40 });
+    expect(projectTaskSnapshot(dispatchUnknown)).toMatchObject({ state: "unknown" });
+    expect(projectTaskLifecycle(dispatchUnknown)).toMatchObject({ type: "task.unknown" });
+
+    const running = transitionTask(dispatching, "running", { now: 30, runId: "run_stop" });
+    const runningStop = markTaskStopRequested(running, { now: 40 });
+    const unknown = transitionTask(runningStop, "unknown", { now: 50 });
+    const completed = transitionTask(runningStop, "completed", { now: 50, output: "Finished before stopping." });
+    expect(projectTaskSnapshot(unknown)).toMatchObject({ state: "unknown" });
+    expect(projectTaskLifecycle(unknown)).toMatchObject({ type: "task.unknown" });
+    expect(projectTaskSnapshot(completed)).toMatchObject({ state: "completed" });
+    expect(projectTaskLifecycle(completed)).toMatchObject({ type: "task.completed" });
   });
 
   it("reports omitted, summarized, and upstream-truncated output truthfully", () => {

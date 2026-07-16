@@ -6,6 +6,7 @@
   const LIVE_ENDPOINT = "/api/plugins/hermes-live/live";
   const MAX_TRANSCRIPT_ENTRIES = 80;
   const MAX_VISIBLE_RECENT_TASKS = 16;
+  const MAX_VISIBLE_UNREAD_TASKS = 2_048;
   const MAX_TASK_DETAIL_CHARS = 12_000;
   const ACTIVE_TASK_STATES = new Set([
     "accepted",
@@ -102,12 +103,34 @@
     const notifications = Array.isArray(snapshot && snapshot.unreadNotifications)
       ? snapshot.unreadNotifications
       : [];
-    const unreadByTask = new Map(notifications.map(function (notification) {
-      return [notification.taskId, notification];
-    }));
-    return activeTasks.concat(recentTasks.slice(0, MAX_VISIBLE_RECENT_TASKS)).map(function (task) {
-      return { task: task, notification: unreadByTask.get(task.taskId) };
+    const taskById = new Map();
+    activeTasks.concat(recentTasks).forEach(function (task) {
+      if (task && task.taskId && !taskById.has(task.taskId)) taskById.set(task.taskId, task);
     });
+    const unreadByTask = new Map();
+    notifications.slice(0, MAX_VISIBLE_UNREAD_TASKS).forEach(function (notification) {
+      if (
+        notification &&
+        notification.taskId &&
+        taskById.has(notification.taskId) &&
+        !unreadByTask.has(notification.taskId)
+      ) {
+        unreadByTask.set(notification.taskId, notification);
+      }
+    });
+
+    const items = [];
+    const seenTaskIds = new Set();
+    function appendTask(task) {
+      if (!task || !task.taskId || seenTaskIds.has(task.taskId)) return;
+      seenTaskIds.add(task.taskId);
+      items.push({ task: task, notification: unreadByTask.get(task.taskId) });
+    }
+
+    activeTasks.forEach(appendTask);
+    unreadByTask.forEach(function (_notification, taskId) { appendTask(taskById.get(taskId)); });
+    recentTasks.slice(0, MAX_VISIBLE_RECENT_TASKS).forEach(appendTask);
+    return items;
   }
 
   function taskProgressText(progress) {
@@ -131,9 +154,7 @@
   function taskInboxSummary(snapshot) {
     const active = Array.isArray(snapshot && snapshot.activeTasks) ? snapshot.activeTasks.length : 0;
     const recent = Array.isArray(snapshot && snapshot.recentTasks) ? snapshot.recentTasks.length : 0;
-    const unread = Array.isArray(snapshot && snapshot.unreadNotifications)
-      ? snapshot.unreadNotifications.length
-      : 0;
+    const unread = taskInboxItems(snapshot).filter(function (item) { return Boolean(item.notification); }).length;
     if (!active && !recent) return "No background tasks yet";
     const counts = active ? active + " active" : "No active tasks";
     return counts + " \u00b7 " + recent + " recent" + (unread ? " \u00b7 " + unread + " unread" : "");
@@ -147,7 +168,7 @@
 
   function connectedSessionNotice(inputAudio, browserMicSupported) {
     if (browserMicSupported) {
-      return "Live Voice is connected. Keep talking while Hermes works in the background.";
+      return "Connected. You can keep talking while tasks run.";
     }
     return inputAudio && inputAudio.enabled === false
       ? "Live Voice is connected in text mode. Type a message to Hermes."
@@ -199,8 +220,8 @@
     return {
       tone: event && !event.clean ? "warning" : "neutral",
       text: event && !event.clean
-        ? "Live Voice connection was lost. Background tasks keep working; reconnect to sync their state."
-        : "Live Voice disconnected. Background tasks keep working; reconnect whenever you are ready.",
+        ? "Live Voice connection was lost. Reconnect to sync task updates."
+        : "Live Voice disconnected.",
     };
   }
 
@@ -575,7 +596,7 @@
         }).then(function () {
           setNotice({
             tone: "neutral",
-            text: "Voice disconnected. Background tasks keep working; reconnect to sync their latest state.",
+            text: "Voice disconnected. Reconnect to sync task updates.",
           });
         });
       });
@@ -720,7 +741,6 @@
           h(StatusPill, { tone: state.tone }, state.label),
         ),
         h("div", { className: "hlv-task-item__meta" },
-          h("span", null, "Revision " + task.sequence),
           h("time", { dateTime: new Date(task.updatedAt).toISOString() }, formatTaskTime(task.updatedAt)),
         ),
         progress ? h("p", { className: "hlv-task-item__progress" }, progress) : null,
@@ -753,8 +773,8 @@
             h("span", { className: "hlv-kicker__wave", "aria-hidden": "true" }, "\u223F"),
             "Hermes Live Voice",
           ),
-          h("h1", null, "Hermes has a voice. Now it keeps working."),
-          h("p", null, "Keep talking. Hermes keeps working. Delegate durable tasks without pausing the conversation."),
+          h("h1", null, "Hermes, now with a real-time voice."),
+          h("p", null, "Speak, delegate, keep talking, and hear back when the work is done."),
         ),
         h("div", { className: "hlv-hero__status", "aria-live": "polite" },
           h(StatusPill, { tone: gatewayState.tone }, "Gateway ", gatewayState.label),
@@ -774,7 +794,7 @@
         h("span", { className: "hlv-durable-strip__icon", "aria-hidden": "true" }, "\u25c9"),
         h("div", null,
           h("strong", null, taskInboxSummary(snapshot)),
-          h("span", null, " Disconnecting ends voice only. Background tasks remain durable and sync when you reconnect."),
+          h("span", null, " Voice can disconnect without cancelling tasks."),
         ),
       ),
 
@@ -879,7 +899,7 @@
                 title: "Send (Command or Control + Enter)",
               }, "\u2191"),
             ),
-            h("span", { className: "hlv-composer__hint" }, "Voice stays responsive while delegated tasks run in parallel."),
+            h("span", { className: "hlv-composer__hint" }, "Voice stays available while tasks run."),
           ),
         ),
 
@@ -887,7 +907,7 @@
           h("section", { className: "hlv-card hlv-session-card" },
             h("div", { className: "hlv-card__header" },
               h("div", null,
-                h("span", { className: "hlv-eyebrow" }, "Session contract"),
+                h("span", { className: "hlv-eyebrow" }, "Connection details"),
                 h("h2", null, "Live status"),
               ),
               h("button", {
@@ -908,7 +928,7 @@
                 label: "Background tasks",
                 value: taskCapabilities.durable === false ? "Session only" : "Durable",
                 detail: taskCapabilities.parallel
-                  ? "Up to " + (taskCapabilities.maxConcurrent || "multiple") + " tasks in parallel"
+                  ? "Up to " + (taskCapabilities.maxConcurrent || "multiple") + " read-only tasks"
                   : "One task at a time",
               }),
               h(Metric, {
@@ -945,7 +965,7 @@
           ),
         ),
         h("p", { className: "hlv-task-inbox__copy" },
-          "This is an inbox, not a queue console. Tasks can finish in any order; each card keeps its stable task ID and latest server revision.",
+          "Tasks can finish in any order. Each card keeps its task ID and latest state.",
         ),
         h("div", {
           className: "hlv-task-list",

@@ -145,6 +145,8 @@ function summarizeLiveEvent(event: LiveModelEvent): Record<string, unknown> {
       return { type: "tool_call_cancelled", callCount: event.callIds.length };
     case "input_speech_started":
       return { type: "input_speech_started", provider: event.provider };
+    case "input_speech_stopped":
+      return { type: "input_speech_stopped", provider: event.provider };
     case "response":
       return { type: "response", status: event.status };
   }

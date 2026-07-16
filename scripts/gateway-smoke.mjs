@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -9,6 +10,10 @@ import WebSocket from "ws";
 const prompt = "hello from gateway smoke";
 const expectedOutput = "gateway smoke ok";
 const runId = "run_gateway_smoke";
+const dockerImage = parseDockerImage(process.argv.slice(2));
+const dockerContainerName = dockerImage
+  ? `hermes-live-gateway-smoke-${process.pid}-${randomUUID().slice(0, 8)}`
+  : undefined;
 const stateDirectory = mkdtempSync(join(tmpdir(), "hermes-live-gateway-smoke-"));
 const observed = {
   capabilities: false,
@@ -26,36 +31,63 @@ const hermesServer = createServer((req, res) => {
   });
 });
 
-await listen(hermesServer, 0, "127.0.0.1");
+await listen(hermesServer, 0, dockerImage ? "0.0.0.0" : "127.0.0.1");
 const hermesPort = portOf(hermesServer);
 const gatewayPort = await reservePort();
-const gateway = spawn(process.execPath, ["dist/cli.js", "serve"], {
-  env: {
-    ...process.env,
-    HERMES_BASE_URL: `http://127.0.0.1:${hermesPort}`,
-    HERMES_MODEL: "hermes-agent",
-    HERMES_AGENT_API_SERVER_KEY: "hermes-smoke-secret",
-    HERMES_LIVE_ALLOW_ORIGIN: "",
-    HERMES_LIVE_AUTH_TOKEN: "",
-    HERMES_LIVE_DEMO_ENABLED: "false",
-    HERMES_LIVE_HERMES_TIMEOUT_MS: "5000",
-    HERMES_LIVE_HOST: "127.0.0.1",
-    HERMES_LIVE_MAX_TEXT_CHARS: "20000",
-    HERMES_LIVE_PROFILE_ID: "default",
-    HERMES_LIVE_USER_LABEL: "voice",
-    HERMES_LIVE_TRUST_CLIENT_IDENTITY: "false",
-    HERMES_LIVE_PORT: String(gatewayPort),
-    HERMES_LIVE_PROVIDER: "mock",
-    HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: "5000",
-    HERMES_LIVE_SESSION_PREFIX: "agent:main:hermes-live",
-    HERMES_LIVE_TASK_POLL_INTERVAL_MS: "250",
-    HERMES_LIVE_TASK_STATE_FILE: join(stateDirectory, "tasks-v1.json"),
-    HERMES_LIVE_LOG_LEVEL: "warn",
-    NODE_ENV: "test",
-    PORT: String(gatewayPort),
-  },
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const gatewayEnvironment = {
+  HERMES_BASE_URL: dockerImage
+    ? `http://host.docker.internal:${hermesPort}`
+    : `http://127.0.0.1:${hermesPort}`,
+  HERMES_MODEL: "hermes-agent",
+  HERMES_AGENT_API_SERVER_KEY: "hermes-smoke-secret",
+  HERMES_LIVE_ALLOW_UNAUTHENTICATED: dockerImage ? "true" : "false",
+  HERMES_LIVE_ALLOW_ORIGIN: "",
+  HERMES_LIVE_AUTH_TOKEN: "",
+  HERMES_LIVE_DEMO_ENABLED: "false",
+  HERMES_LIVE_HERMES_TIMEOUT_MS: "5000",
+  HERMES_LIVE_HOST: dockerImage ? "0.0.0.0" : "127.0.0.1",
+  HERMES_LIVE_MAX_TEXT_CHARS: "20000",
+  HERMES_LIVE_PROFILE_ID: "default",
+  HERMES_LIVE_USER_LABEL: "voice",
+  HERMES_LIVE_TRUST_CLIENT_IDENTITY: "false",
+  HERMES_LIVE_PORT: dockerImage ? "8788" : String(gatewayPort),
+  HERMES_LIVE_PROVIDER: "mock",
+  HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: "5000",
+  HERMES_LIVE_SESSION_PREFIX: "agent:main:hermes-live",
+  HERMES_LIVE_TASK_POLL_INTERVAL_MS: "250",
+  HERMES_LIVE_TASK_STATE_FILE: dockerImage
+    ? "/var/lib/hermes-live/tasks-v1.json"
+    : join(stateDirectory, "tasks-v1.json"),
+  HERMES_LIVE_LOG_LEVEL: "warn",
+  NODE_ENV: "test",
+  PORT: dockerImage ? "8788" : String(gatewayPort),
+};
+const gateway = dockerImage
+  ? spawn(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--init",
+      "--pull",
+      "never",
+      "--name",
+      dockerContainerName,
+      "--add-host",
+      "host.docker.internal:host-gateway",
+      "--publish",
+      `127.0.0.1:${gatewayPort}:8788`,
+      "--tmpfs",
+      "/var/lib/hermes-live:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000",
+      ...Object.entries(gatewayEnvironment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+      dockerImage,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  )
+  : spawn(process.execPath, ["dist/cli.js", "serve"], {
+    env: { ...process.env, ...gatewayEnvironment },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 
 let stdout = "";
 let stderr = "";
@@ -76,7 +108,12 @@ try {
   if (readiness.status !== "ready") {
     throw new Error(`Gateway readiness status mismatch: ${JSON.stringify(readiness)}.`);
   }
-  if (readiness.checks?.gateway?.ok !== true || readiness.checks?.hermes?.ok !== true || readiness.checks?.realtime?.ok !== true) {
+  if (
+    readiness.checks?.gateway?.ok !== true
+    || readiness.checks?.hermes?.ok !== true
+    || readiness.checks?.realtime?.ok !== true
+    || readiness.checks?.tasks?.ok !== true
+  ) {
     throw new Error(`Gateway readiness checks were not all ok: ${JSON.stringify(readiness)}.`);
   }
   if (readiness.checks?.realtime?.provider !== "mock" || readiness.checks?.realtime?.model !== "mock-live") {
@@ -84,6 +121,12 @@ try {
   }
   if (readiness.checks?.realtime?.sessionChecked !== false) {
     throw new Error(`Gateway readiness should disclose that provider sessions are not opened by /ready: ${JSON.stringify(readiness.checks?.realtime)}.`);
+  }
+
+  const healthResponse = await fetch(`http://127.0.0.1:${gatewayPort}/health`);
+  const health = await healthResponse.json();
+  if (!healthResponse.ok || health.status !== "ok" || health.service !== "hermes-live") {
+    throw new Error(`Gateway health response mismatch: HTTP ${healthResponse.status} ${JSON.stringify(health)}.`);
   }
 
   const socket = new WebSocket(`ws://127.0.0.1:${gatewayPort}/v1/live`, {
@@ -131,11 +174,24 @@ try {
     throw observed.hermesError;
   }
 
-  console.log("Gateway smoke ok");
+  console.log(`Gateway smoke ok (${dockerImage ? "Docker image" : "local build"})`);
 } finally {
+  if (dockerContainerName) {
+    await removeDockerContainer(dockerContainerName);
+  }
   await stopChild(gateway, gatewayExit, () => gatewayExited);
   await closeServer(hermesServer);
   rmSync(stateDirectory, { recursive: true, force: true });
+}
+
+function parseDockerImage(args) {
+  if (args.length === 0) {
+    return undefined;
+  }
+  if (args.length !== 2 || args[0] !== "--docker-image" || !args[1]?.trim()) {
+    throw new Error("Usage: node scripts/gateway-smoke.mjs [--docker-image <image>]");
+  }
+  return args[1];
 }
 
 async function handleHermesRequest(req, res) {
@@ -403,6 +459,11 @@ async function stopChild(child, exitPromise, hasExited) {
       await exitPromise.catch(() => undefined);
     }
   }
+}
+
+async function removeDockerContainer(name) {
+  const child = spawn("docker", ["rm", "--force", name], { stdio: "ignore" });
+  await once(child, "exit").catch(() => undefined);
 }
 
 function appendBounded(current, next, max = 20_000) {

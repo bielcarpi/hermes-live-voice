@@ -37,6 +37,7 @@ describe("readiness", () => {
       sessionChecked: false,
       error: "Set OPENAI_API_KEY or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
     });
+    expect(report.tasks).toEqual({ ok: true, checked: false, durable: true });
   });
 
   it("supports injected clients without requiring default provider credentials", async () => {
@@ -77,6 +78,7 @@ describe("readiness", () => {
       },
     });
     expect(report.realtime).toMatchObject({ ok: true, configured: true, injected: true, provider: "openai", sessionChecked: false });
+    expect(report.tasks).toEqual({ ok: true, checked: false, durable: true });
     expect(hermes.assertRunsSupported).toHaveBeenCalledOnce();
   });
 
@@ -127,5 +129,29 @@ describe("readiness", () => {
         negotiated: true,
       },
     });
+  });
+
+  it("fails readiness without exposing task-store internals when runtime state is unavailable", async () => {
+    const health = vi.fn(async () => {
+      throw new Error("lock lost at /private/task-state/tasks-v1.json");
+    });
+    const report = await buildReadinessReport(loadConfig({ HERMES_LIVE_PROVIDER: "mock" }), {
+      hermes: {
+        assertRunsSupported: vi.fn(async () => ({ features: {} })),
+      } as unknown as HermesRunsPort,
+      tasks: { health },
+      requireHermesApiKey: false,
+      requireRealtimeProviderConfig: false,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.tasks).toEqual({
+      ok: false,
+      checked: true,
+      durable: true,
+      error: "Task state is unavailable. Check the gateway logs.",
+    });
+    expect(JSON.stringify(report)).not.toContain("/private/task-state");
+    expect(health).toHaveBeenCalledOnce();
   });
 });

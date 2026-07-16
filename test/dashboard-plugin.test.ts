@@ -59,10 +59,10 @@ describe("Hermes Dashboard plugin", () => {
       ["waiting_for_appro", "val"],
     ].map((parts) => parts.join(""));
 
-    expect(source).toContain("Hermes has a voice. Now it keeps working.");
-    expect(source).toContain("Keep talking. Hermes keeps working.");
+    expect(source).toContain("Hermes, now with a real-time voice.");
+    expect(source).toContain("Speak, delegate, keep talking, and hear back when the work is done.");
     expect(source).toContain("Task inbox");
-    expect(source).toContain("stable task ID");
+    expect(source).toContain("Stable task ID");
     expect(source).toContain('client.stopTask(task.taskId, "stopped from Hermes Dashboard")');
     expect(source).toContain("client.acknowledgeNotification(notification.taskId, notification.notificationId)");
     expect(source).toContain("leaving this page does not cancel background work");
@@ -122,6 +122,37 @@ describe("Hermes Dashboard plugin", () => {
     expect(items.at(-1).task.taskId).toBe("recent_15");
   });
 
+  it("keeps every unread task visible beyond the bounded recent window without duplicates", () => {
+    const utilities = loadDashboardUtilities();
+    const active = [task("active_task", "running", 1, 1)];
+    const recent = Array.from({ length: 30 }, (_, index) =>
+      task(`recent_${index}`, "completed", index + 2, 10_000 - index));
+    const notification = {
+      taskId: "recent_25",
+      notificationId: "note_recent_25",
+      message: "An older task still needs attention.",
+    };
+
+    const items = utilities.taskInboxItems({
+      activeTasks: active,
+      recentTasks: recent,
+      unreadNotifications: [notification],
+    });
+
+    expect(items.map((item: any) => item.task.taskId)).toEqual([
+      "active_task",
+      "recent_25",
+      ...Array.from({ length: 16 }, (_, index) => `recent_${index}`),
+    ]);
+    expect(items.filter((item: any) => item.task.taskId === "recent_25")).toHaveLength(1);
+    expect(items[1]).toMatchObject({ notification });
+    expect(utilities.taskInboxSummary({
+      activeTasks: active,
+      recentTasks: recent,
+      unreadNotifications: [notification],
+    })).toBe("1 active · 30 recent · 1 unread");
+  });
+
   it("summarizes task state, progress, results, errors, and unread counts", () => {
     const utilities = loadDashboardUtilities();
 
@@ -173,11 +204,10 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.connectionClosedNotice({ clean: true }, fatal)).toMatchObject(fatal);
     expect(utilities.connectionClosedNotice({ clean: false }, null)).toMatchObject({
       tone: "warning",
-      text: "Live Voice connection was lost. Background tasks keep working; reconnect to sync their state.",
+      text: "Live Voice connection was lost. Reconnect to sync task updates.",
     });
-    expect(utilities.connectionClosedNotice({ clean: true }, null).text).toContain(
-      "Background tasks keep working",
-    );
+    expect(utilities.connectionClosedNotice({ clean: true }, null).text)
+      .toBe("Live Voice disconnected.");
   });
 
   it("gives accurate microphone and text-only guidance from negotiated capabilities", () => {
@@ -188,7 +218,7 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.connectedSessionNotice({ enabled: false }, false))
       .toBe("Live Voice is connected in text mode. Type a message to Hermes.");
     expect(utilities.connectedSessionGuidance(false)).toBe("Type a message below.");
-    expect(utilities.connectedSessionNotice({ enabled: true }, true)).toContain("Keep talking");
+    expect(utilities.connectedSessionNotice({ enabled: true }, true)).toContain("keep talking");
     expect(utilities.connectedSessionGuidance(true)).toContain("Start the microphone");
     expect(utilities.supportsBrowserPlayback({ enabled: false })).toBe(false);
     expect(utilities.supportsBrowserPlayback({ enabled: true, mimeType: "audio/pcm;rate=24000" })).toBe(true);

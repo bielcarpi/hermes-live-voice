@@ -101,7 +101,6 @@ describe("TerminalGatewaySession protocol v3", () => {
     peer?.send(JSON.stringify({
       ...taskAccepted("task_beta", 1, "Run tests"),
       state: "queued",
-      queuePosition: 1,
     }));
     peer?.send(JSON.stringify({
       type: "task.started",

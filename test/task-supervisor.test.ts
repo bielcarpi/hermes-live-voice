@@ -25,9 +25,11 @@ import type { ApprovalChoice } from "../src/domain/protocol/client-protocol.js";
 import type { HermesRunEvent } from "../src/domain/protocol/server-protocol.js";
 import {
   acknowledgeTaskNotification,
+  containIndeterminateTask,
   createTaskRecord,
   hashTaskOwnerId,
   isTaskTerminal,
+  markTaskStopRequested,
   parseTaskRecord,
   transitionTask,
   type TaskRecord,
@@ -74,10 +76,170 @@ describe("TaskSupervisor", () => {
     await supervisor.close();
   });
 
+  it("never loses a confirmed Hermes run ID when the first post-accept state write fails", async () => {
+    const store = new FailOnceAcceptedRunStore();
+    const hermes = new HermesHarness();
+    hermes.startBehavior = async () => ({ runId: "run_known_after_write_failure", status: "queued" });
+    const supervisor = new TaskSupervisor({ store, hermes });
+    await supervisor.initialize();
+
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Run exactly once",
+    });
+    await waitFor(async () => (await store.load(task.taskId))?.runId === "run_known_after_write_failure");
+
+    expect(hermes.startCalls).toHaveLength(1);
+    expect(await store.load(task.taskId)).toMatchObject({
+      status: "running",
+      runId: "run_known_after_write_failure",
+    });
+    expect(store.writes.some((record) => record.status === "dispatch_unknown")).toBe(false);
+    await waitFor(() => hermes.streamCalls.includes("run_known_after_write_failure"));
+    await supervisor.health();
+    await supervisor.close();
+  });
+
+  it("keeps readiness degraded while an accepted run ID is only in volatile retry state", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new GateAcceptedRunStore();
+    const hermes = new HermesHarness();
+    hermes.startBehavior = async () => ({ runId: "run_gated_persistence", status: "queued" });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      scheduler,
+      now: () => scheduler.now,
+      retryBaseMs: 100,
+      retryMaxMs: 100,
+    });
+    await supervisor.initialize();
+    const ownerId = supervisor.registerOwner("alice", "session-a");
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Persist the exact run before readiness",
+    });
+    await waitFor(() => store.rejectedAcceptedRunWrites > 0);
+
+    const stoppedDuringRetry = await supervisor.stop(ownerId, task.taskId);
+    expect(stoppedDuringRetry).toMatchObject({
+      status: "dispatching",
+      stopRequestedAt: expect.any(Number),
+    });
+    await expect(supervisor.health()).rejects.toThrow("exact run ID is not yet durable");
+
+    store.allowAcceptedRunWrites = true;
+    scheduler.advanceBy(100);
+    await waitFor(() => hermes.stopCalls.includes("run_gated_persistence"));
+    await expect(supervisor.health()).resolves.toBeUndefined();
+    await supervisor.close();
+  });
+
+  it("uses shutdown's final retry to preserve an accepted run ID before closing task state", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new GateAcceptedRunStore();
+    const hermes = new HermesHarness();
+    hermes.startBehavior = async () => ({ runId: "run_preserved_during_close", status: "queued" });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      scheduler,
+      now: () => scheduler.now,
+      retryBaseMs: 100,
+      retryMaxMs: 100,
+    });
+    await supervisor.initialize();
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Preserve the accepted run while shutting down",
+    });
+    await waitFor(() => store.rejectedAcceptedRunWrites > 0);
+
+    store.allowAcceptedRunWrites = true;
+    const firstClose = supervisor.close();
+    expect(supervisor.close()).toBe(firstClose);
+    await expect(firstClose).resolves.toBeUndefined();
+
+    expect(store.closeCalls).toBe(1);
+    expect(await store.load(task.taskId)).toMatchObject({
+      status: "running",
+      runId: "run_preserved_during_close",
+    });
+  });
+
+  it("rejects shutdown when the final accepted-run persistence attempt still fails", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new GateAcceptedRunStore();
+    const hermes = new HermesHarness();
+    hermes.startBehavior = async () => ({ runId: "run_not_durable_at_close", status: "queued" });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      scheduler,
+      now: () => scheduler.now,
+      retryBaseMs: 100,
+      retryMaxMs: 100,
+    });
+    await supervisor.initialize();
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Do not report a clean shutdown",
+    });
+    await waitFor(() => store.rejectedAcceptedRunWrites > 0);
+
+    const firstClose = supervisor.close();
+    expect(supervisor.close()).toBe(firstClose);
+    await expect(firstClose).rejects.toThrow("accepted run persistence remains unavailable");
+
+    expect(store.closeCalls).toBe(1);
+    const durable = await store.load(task.taskId);
+    expect(durable?.status).toBe("dispatching");
+    expect(durable?.runId).toBeUndefined();
+  });
+
+  it("aggregates final accepted-run persistence and task-store close failures", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new GateAcceptedRunStore();
+    const closeFailure = new Error("task-store lock release failed during shutdown");
+    store.closeFailure = closeFailure;
+    const hermes = new HermesHarness();
+    hermes.startBehavior = async () => ({ runId: "run_and_store_close_failed", status: "queued" });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      scheduler,
+      now: () => scheduler.now,
+      retryBaseMs: 100,
+      retryMaxMs: 100,
+    });
+    await supervisor.initialize();
+    await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Surface every shutdown failure",
+    });
+    await waitFor(() => store.rejectedAcceptedRunWrites > 0);
+
+    const failure = await supervisor.close().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "accepted run persistence remains unavailable" }),
+      closeFailure,
+    ]);
+    expect(store.closeCalls).toBe(1);
+  });
+
   it("parallelizes only disjoint read-only tasks and keeps exclusive work alone", async () => {
     const store = new MemoryTaskStore();
     const hermes = new HermesHarness();
-    const supervisor = new TaskSupervisor({ store, hermes, maxConcurrent: 3 });
+    const supervisor = new TaskSupervisor({ store, hermes, maxConcurrent: 3, trustDeclaredReadOnly: true });
     await supervisor.initialize();
 
     const first = await supervisor.submit({
@@ -130,10 +292,46 @@ describe("TaskSupervisor", () => {
     await supervisor.close();
   });
 
+  it("treats persisted read-only records as exclusive when the trust opt-in is disabled", async () => {
+    const store = new MemoryTaskStore();
+    const first = createTaskRecord({
+      ownerIdentity: "alice",
+      input: "Persisted read A",
+      executionMode: "parallel_read_only",
+      resourceKeys: ["repo:a"],
+      now: 1,
+    });
+    const second = createTaskRecord({
+      ownerIdentity: "alice",
+      input: "Persisted read B",
+      executionMode: "parallel_read_only",
+      resourceKeys: ["repo:b"],
+      now: 2,
+    });
+    await store.put(first);
+    await store.put(second);
+    const hermes = new HermesHarness();
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      maxConcurrent: 3,
+      trustDeclaredReadOnly: false,
+    });
+    supervisor.registerOwner("alice", "session-a");
+    await supervisor.initialize();
+
+    await waitFor(() => hermes.startCalls.length === 1);
+    await settle();
+    expect(hermes.startCalls.map((call) => call.input)).toEqual(["Persisted read A"]);
+    expect((await store.load(first.taskId))?.status).toBe("running");
+    expect((await store.load(second.taskId))?.status).toBe("queued");
+    await supervisor.close();
+  });
+
   it("avoids read-only head-of-line blocking while preserving an exclusive FIFO barrier", async () => {
     const store = new MemoryTaskStore();
     const hermes = new HermesHarness();
-    const supervisor = new TaskSupervisor({ store, hermes, maxConcurrent: 3 });
+    const supervisor = new TaskSupervisor({ store, hermes, maxConcurrent: 3, trustDeclaredReadOnly: true });
     await supervisor.initialize();
 
     const activeA = await supervisor.submit({
@@ -236,8 +434,18 @@ describe("TaskSupervisor", () => {
       status: "dispatch_unknown",
       notification: { unread: true },
     });
-    expect(await store.load(running.taskId)).toMatchObject({ status: "unknown", notification: { unread: true } });
+    const missing = (await store.load(running.taskId))!;
+    expect(missing).toMatchObject({
+      status: "unknown",
+      upstreamRunMissingAt: expect.any(Number),
+      notification: { unread: true },
+    });
     expect(hermes.streamCalls).toHaveLength(0);
+    const writesBeforeMissingStop = store.writes.length;
+    await expect(supervisor.stop(hashTaskOwnerId("carol"), running.taskId)).resolves.toEqual(missing);
+    expect(store.writes).toHaveLength(writesBeforeMissingStop);
+    expect(hermes.stopCalls).toEqual([]);
+    expect(hermes.streamCalls).toEqual([]);
 
     supervisor.registerOwner("alice", "session-a");
     await settle();
@@ -246,6 +454,75 @@ describe("TaskSupervisor", () => {
     expect(hermes.startCalls).toHaveLength(0);
     expect((await store.load(queued.taskId))?.status).toBe("queued");
     await supervisor.close();
+  });
+
+  it("reconciles restart state with four bounded workers while admission remains fenced", async () => {
+    const store = new MemoryTaskStore();
+    const runningRecords = Array.from({ length: 7 }, (_, index) => transitionTask(
+      transitionTask(
+        createTaskRecord({ ownerIdentity: "alice", input: `Recovered ${index}`, now: 10 + (index * 3) }),
+        "dispatching",
+        { now: 11 + (index * 3) },
+      ),
+      "running",
+      { now: 12 + (index * 3), runId: `run_recovered_${index}` },
+    ));
+    for (const record of runningRecords) await store.put(record);
+
+    const hermes = new HermesHarness();
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maximumActive = 0;
+    hermes.getBehavior = async (runId) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      try {
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { object: "hermes.run", run_id: runId, status: "running" };
+      } finally {
+        active -= 1;
+      }
+    };
+    const supervisor = new TaskSupervisor({ store, hermes });
+    const initializing = supervisor.initialize();
+
+    await waitFor(() => hermes.getCalls.length === 4);
+    expect(maximumActive).toBe(4);
+    await expect(supervisor.submit({ ownerIdentity: "alice", sessionKey: "session-a", input: "Too early" }))
+      .rejects.toThrow("TaskSupervisor.initialize() must complete before use.");
+    releases.splice(0).forEach((release) => release());
+    await waitFor(() => hermes.getCalls.length === 7);
+    expect(maximumActive).toBe(4);
+    releases.splice(0).forEach((release) => release());
+    await initializing;
+
+    expect(hermes.getCalls).toHaveLength(7);
+    expect(hermes.streamCalls).toHaveLength(7);
+    await supervisor.close();
+  });
+
+  it("waits for startup reconciliation to observe shutdown before closing task state", async () => {
+    const store = new MemoryTaskStore();
+    const running = transitionTask(
+      transitionTask(createTaskRecord({ ownerIdentity: "alice", input: "Recover then close", now: 1 }), "dispatching", { now: 2 }),
+      "running",
+      { now: 3, runId: "run_close_during_startup" },
+    );
+    await store.put(running);
+    const hermes = new HermesHarness();
+    hermes.getBehavior = async (_runId, options) => await new Promise<never>((_resolve, reject) => {
+      const signal = requestSignal(options);
+      signal?.addEventListener("abort", () => {
+        reject(Object.assign(new Error("reconciliation aborted"), { name: "AbortError" }));
+      }, { once: true });
+    });
+    const supervisor = new TaskSupervisor({ store, hermes });
+    const initializing = supervisor.initialize();
+    await waitFor(() => hermes.getCalls.length === 1);
+
+    await supervisor.close();
+    await expect(initializing).resolves.toBeUndefined();
+    expect(hermes.streamCalls).toEqual([]);
   });
 
   it("retries only structured 429/503 rejections and never retries an ambiguous POST", async () => {
@@ -298,6 +575,39 @@ describe("TaskSupervisor", () => {
     await settle();
     expect(ambiguousHermes.startCalls).toHaveLength(1);
     await ambiguous.close();
+  });
+
+  it("does not requeue when stop intent wins a definitive-rejection write race", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new StopBeforeRequeueStore();
+    const hermes = new HermesHarness();
+    hermes.startBehavior = async () => {
+      throw Object.assign(new Error("busy"), { status: 503, errorCode: "gateway_draining" });
+    };
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      scheduler,
+      now: () => scheduler.now,
+      retryBaseMs: 10,
+      retryMaxMs: 10,
+    });
+    await supervisor.initialize();
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Cancel if Hermes is draining",
+    });
+
+    await waitFor(async () => (await store.load(task.taskId))?.status === "cancelled");
+    expect(await store.load(task.taskId)).toMatchObject({
+      status: "cancelled",
+      stopRequestedAt: expect.any(Number),
+    });
+    scheduler.advanceBy(60_000);
+    await settle();
+    expect(hermes.startCalls).toHaveLength(1);
+    await supervisor.close();
   });
 
   it.each([
@@ -409,6 +719,40 @@ describe("TaskSupervisor", () => {
       persistedStatus: "completed",
       output: "final retained output",
     });
+    await supervisor.close();
+  });
+
+  it("retries a transient confirmed-missing state write and clears degraded readiness after persistence", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new FailOnceMissingRunStore();
+    const hermes = new HermesHarness();
+    hermes.getBehavior = async () => {
+      throw Object.assign(new Error("run not found"), { status: 404 });
+    };
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      scheduler,
+      now: () => scheduler.now,
+      pollIntervalMs: 100,
+    });
+    await supervisor.initialize();
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Reconcile a disappearing run",
+    });
+    await waitFor(async () => (await store.load(task.taskId))?.status === "running");
+
+    scheduler.advanceBy(100);
+    await waitFor(() => store.failedMissingRunWrite);
+    await expect(supervisor.health()).rejects.toThrow("Durable task state could not be updated");
+    expect((await store.load(task.taskId))?.status).toBe("running");
+
+    scheduler.advanceBy(100);
+    await waitFor(async () => (await store.load(task.taskId))?.upstreamRunMissingAt !== undefined);
+    await expect(supervisor.health()).resolves.toBeUndefined();
+    expect(hermes.getCalls.length).toBeGreaterThanOrEqual(2);
     await supervisor.close();
   });
 
@@ -589,6 +933,8 @@ describe("TaskSupervisor", () => {
     const otherOwner = supervisor.registerOwner("mallory", "session-m");
     await expect(supervisor.get(otherOwner, task.taskId)).resolves.toBeUndefined();
     await expect(supervisor.stop(otherOwner, task.taskId)).rejects.toBeInstanceOf(TaskNotFoundError);
+    await expect(supervisor.stop(ownerId, `task_${"0".repeat(32)}`)).rejects.toBeInstanceOf(TaskNotFoundError);
+    await expect(supervisor.health()).resolves.toBeUndefined();
     await supervisor.close();
   });
 
@@ -635,7 +981,7 @@ describe("TaskSupervisor", () => {
     await supervisor.close();
   });
 
-  it("atomically awards one notification announcement claim across concurrent owner sessions", async () => {
+  it("leases notification speech to one session and persists it only after provider handoff", async () => {
     const store = new MemoryTaskStore();
     const hermes = new HermesHarness();
     const terminal = transitionTask(
@@ -649,13 +995,21 @@ describe("TaskSupervisor", () => {
     const ownerId = hashTaskOwnerId("alice");
 
     const claims = await Promise.all([
-      supervisor.claimNotificationAnnouncement(ownerId, terminal.taskId),
-      supervisor.claimNotificationAnnouncement(ownerId, terminal.taskId),
+      supervisor.claimNotificationAnnouncement(ownerId, terminal.taskId, "live_11111111111111111111111111111111"),
+      supervisor.claimNotificationAnnouncement(ownerId, terminal.taskId, "live_22222222222222222222222222222222"),
     ]);
 
-    expect(claims.map((claim) => claim.claimed).sort()).toEqual([false, true]);
-    expect(claims[0]!.task.notification.announcedAt).toBe(10);
-    expect(claims[1]!.task.notification.announcedAt).toBe(10);
+    expect(claims.map((claim) => claim.claimed)).toEqual([true, false]);
+    expect(claims[0]!.task.notification.announcedAt).toBeUndefined();
+    expect(claims[1]!.task.notification.announcedAt).toBeUndefined();
+    expect((await store.load(terminal.taskId))!.revision).toBe(terminal.revision);
+
+    const announced = await supervisor.completeNotificationAnnouncement(
+      ownerId,
+      terminal.taskId,
+      "live_11111111111111111111111111111111",
+    );
+    expect(announced.notification.announcedAt).toBe(10);
     const persisted = (await store.load(terminal.taskId))!;
     expect(persisted.events.filter((event) => event.type === "notification.announced")).toHaveLength(1);
     expect(persisted.revision).toBe(terminal.revision + 1);
@@ -663,7 +1017,34 @@ describe("TaskSupervisor", () => {
     await expect(supervisor.claimNotificationAnnouncement(
       hashTaskOwnerId("mallory"),
       terminal.taskId,
+      "live_33333333333333333333333333333333",
     )).rejects.toBeInstanceOf(TaskNotFoundError);
+    await supervisor.close();
+  });
+
+  it("releases an uncompleted notification lease for another live session", async () => {
+    const store = new MemoryTaskStore();
+    const terminal = transitionTask(
+      createTaskRecord({ ownerIdentity: "alice", input: "Retry speech", now: 1 }),
+      "cancelled",
+      { now: 2 },
+    );
+    await store.put(terminal);
+    const supervisor = new TaskSupervisor({ store, hermes: new HermesHarness() });
+    await supervisor.initialize();
+    const ownerId = hashTaskOwnerId("alice");
+    const first = "live_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const second = "live_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    await expect(supervisor.claimNotificationAnnouncement(ownerId, terminal.taskId, first)).resolves
+      .toMatchObject({ claimed: true });
+    await expect(supervisor.claimNotificationAnnouncement(ownerId, terminal.taskId, second)).resolves
+      .toMatchObject({ claimed: false });
+    supervisor.releaseNotificationAnnouncement(ownerId, terminal.taskId, first);
+    await expect(supervisor.claimNotificationAnnouncement(ownerId, terminal.taskId, second)).resolves
+      .toMatchObject({ claimed: true });
+    expect((await store.load(terminal.taskId))!.notification.announcedAt).toBeUndefined();
+
     await supervisor.close();
   });
 
@@ -683,6 +1064,35 @@ describe("TaskSupervisor", () => {
     await supervisor.close();
     expect(hermes.stopCalls).toHaveLength(0);
     expect((await store.load(active.taskId))?.status).toBe("running");
+  });
+
+  it("treats an operator-contained unknown task as operationally closed", async () => {
+    const store = new MemoryTaskStore();
+    const running = transitionTask(
+      transitionTask(createTaskRecord({ ownerIdentity: "alice", input: "Unknown effect", now: 1 }), "dispatching", { now: 2 }),
+      "running",
+      { now: 3, runId: "run_contained" },
+    );
+    const contained = containIndeterminateTask(
+      transitionTask(running, "unknown", { now: 4, summary: "Outcome could not be confirmed." }),
+      5,
+    );
+    await store.put(contained);
+    const hermes = new HermesHarness();
+    const supervisor = new TaskSupervisor({ store, hermes });
+    await supervisor.initialize();
+    const ownerId = hashTaskOwnerId("alice");
+    const writesBeforeStop = store.writes.length;
+
+    await expect(supervisor.stop(ownerId, contained.taskId, "try again")).resolves.toEqual(contained);
+    await expect(supervisor.stop(ownerId, contained.taskId)).resolves.toEqual(contained);
+    expect(store.writes).toHaveLength(writesBeforeStop);
+    expect(hermes.stopCalls).toEqual([]);
+    expect(hermes.getCalls).toEqual([]);
+    expect(hermes.streamCalls).toEqual([]);
+    expect(await supervisor.listActive(ownerId)).toEqual([]);
+
+    await supervisor.close();
   });
 
   it("waits for an in-flight dispatch abort to persist its ambiguous outcome before close returns", async () => {
@@ -761,6 +1171,110 @@ class MemoryTaskStore implements TaskStorePort {
 
   peek(taskId: string): TaskRecord | undefined {
     return this.records.get(taskId);
+  }
+}
+
+class FailOnceAcceptedRunStore extends MemoryTaskStore {
+  private failed = false;
+
+  override async update(
+    taskId: string,
+    updater: (current: TaskRecord) => TaskRecord,
+    options: TaskUpdateOptions = {},
+  ): Promise<TaskRecord> {
+    const current = await this.load(taskId);
+    if (current && !this.failed) {
+      const candidate = updater(current);
+      if (current.status === "dispatching" && candidate.status === "running" && candidate.runId) {
+        this.failed = true;
+        throw new Error("transient pre-rename task-state write failure");
+      }
+    }
+    return super.update(taskId, updater, options);
+  }
+}
+
+class GateAcceptedRunStore extends MemoryTaskStore {
+  allowAcceptedRunWrites = false;
+  rejectedAcceptedRunWrites = 0;
+  closeCalls = 0;
+  closeFailure?: Error;
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    if (this.closeFailure) throw this.closeFailure;
+  }
+
+  override async update(
+    taskId: string,
+    updater: (current: TaskRecord) => TaskRecord,
+    options: TaskUpdateOptions = {},
+  ): Promise<TaskRecord> {
+    const current = await this.load(taskId);
+    if (current) {
+      const candidate = updater(current);
+      if (
+        !this.allowAcceptedRunWrites
+        && current.status === "dispatching"
+        && candidate.status === "running"
+        && candidate.runId
+      ) {
+        this.rejectedAcceptedRunWrites += 1;
+        throw new Error("accepted run persistence remains unavailable");
+      }
+    }
+    return super.update(taskId, updater, options);
+  }
+}
+
+class FailOnceMissingRunStore extends MemoryTaskStore {
+  failedMissingRunWrite = false;
+
+  override async update(
+    taskId: string,
+    updater: (current: TaskRecord) => TaskRecord,
+    options: TaskUpdateOptions = {},
+  ): Promise<TaskRecord> {
+    const current = await this.load(taskId);
+    if (current && !this.failedMissingRunWrite) {
+      const candidate = updater(current);
+      if (candidate.upstreamRunMissingAt !== undefined) {
+        this.failedMissingRunWrite = true;
+        throw new Error("transient confirmed-missing state write failure");
+      }
+    }
+    return super.update(taskId, updater, options);
+  }
+}
+
+class StopBeforeRequeueStore extends MemoryTaskStore {
+  private injected = false;
+
+  override async update(
+    taskId: string,
+    updater: (current: TaskRecord) => TaskRecord,
+    options: TaskUpdateOptions = {},
+  ): Promise<TaskRecord> {
+    const current = await this.load(taskId);
+    if (current && !this.injected) {
+      const candidate = updater(current);
+      if (
+        current.status === "dispatching"
+        && current.stopRequestedAt === undefined
+        && candidate.status === "queued"
+      ) {
+        this.injected = true;
+        await super.update(
+          taskId,
+          (record) => markTaskStopRequested(record, {
+            now: record.updatedAt,
+            summary: "Exact task stop requested while dispatch was in flight.",
+          }),
+          options,
+        );
+      }
+    }
+    return super.update(taskId, updater, options);
   }
 }
 

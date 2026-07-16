@@ -58,10 +58,17 @@ function requireTaskNotificationText(value: unknown, maximumChars: number, field
 export type LiveModelEvent =
   | { type: "audio"; audio: LiveModelAudio }
   | { type: "text"; text: string; speaker?: "user" | "assistant" | "system"; final?: boolean }
-  | { type: "response"; status: "started" | "completed" | "cancelled" | "failed"; responseId?: string; error?: string }
+  | {
+      type: "response";
+      status: "started" | "completed" | "cancelled" | "failed";
+      responseId?: string;
+      scope?: "conversation" | "task_notification";
+      error?: string;
+    }
   | { type: "tool_call"; call: LiveToolCall }
   | { type: "tool_call_cancelled"; callIds: string[] }
-  | { type: "input_speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number };
+  | { type: "input_speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number }
+  | { type: "input_speech_stopped"; provider: "openai"; itemId?: string; audioEndMs?: number };
 
 export interface LiveModelCallbacks {
   onEvent(event: LiveModelEvent): void;

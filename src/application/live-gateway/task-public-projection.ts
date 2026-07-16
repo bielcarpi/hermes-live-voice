@@ -12,11 +12,10 @@ const PUBLIC_SUMMARY_CHARS = 4_000;
 
 export interface ProjectTaskOptions {
   includeOutput?: boolean;
-  queuePosition?: number;
 }
 
 export function projectTaskSnapshot(record: TaskRecord, options: ProjectTaskOptions = {}): PublicTaskSnapshot {
-  const state = publicTaskState(record.status);
+  const state = publicTaskState(record);
   const startedAt = firstEventTimestamp(record, ["dispatching", "running"]);
   const finishedAt = firstEventTimestamp(record, ["completed", "failed", "cancelled"]);
   const snapshot: PublicTaskSnapshot = {
@@ -28,7 +27,6 @@ export function projectTaskSnapshot(record: TaskRecord, options: ProjectTaskOpti
     updatedAt: record.updatedAt,
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(finishedAt === undefined ? {} : { finishedAt }),
-    ...(state === "queued" && options.queuePosition ? { queuePosition: options.queuePosition } : {}),
   };
 
   if (state === "completed") {
@@ -56,6 +54,18 @@ export function projectTaskLifecycle(record: TaskRecord, requestId?: string): Se
     occurredAt: record.updatedAt,
   };
   const summary = latestProgressSummary(record) ?? "Task updated.";
+  if (
+    record.stopRequestedAt !== undefined
+    && publicTaskState(record) === "stopping"
+    && record.status !== "stopping"
+  ) {
+    return {
+      type: "task.stopping",
+      ...base,
+      ...(requestId ? { requestId } : {}),
+      reason: summary.slice(0, 1_000),
+    };
+  }
   switch (record.status) {
     case "queued":
       return {
@@ -161,7 +171,7 @@ export function projectSupersededTaskNotification(record: TaskRecord): TaskNotif
 }
 
 export function notificationIdForTask(
-  record: Pick<TaskRecord, "taskId" | "sequence" | "status" | "events">,
+  record: Pick<TaskRecord, "taskId" | "sequence" | "status" | "events" | "operatorContainedAt">,
 ): string {
   return notificationId(record.taskId, notificationAnchor(record).sequence);
 }
@@ -170,19 +180,25 @@ export function isTaskNotificationState(status: TaskStatus): boolean {
   return notificationKind(status) !== undefined;
 }
 
-function publicTaskState(status: TaskStatus): PublicTaskSnapshot["state"] {
-  switch (status) {
+function publicTaskState(record: TaskRecord): PublicTaskSnapshot["state"] {
+  if (
+    record.stopRequestedAt !== undefined
+    && !["completed", "failed", "cancelled", "unknown", "dispatch_unknown"].includes(record.status)
+  ) {
+    return "stopping";
+  }
+  switch (record.status) {
     case "dispatching":
       return "accepted";
     case "waiting_for_approval":
-      // v0.5 deliberately has no interactive approval surface: current Hermes
+      // The public protocol has no interactive approval surface: current Hermes
       // cannot prove that a response targets exactly one queued approval. The
       // supervisor denies all pending approvals and stops this run fail-closed.
       return "stopping";
     case "dispatch_unknown":
       return "unknown";
     default:
-      return status;
+      return record.status;
   }
 }
 
@@ -190,14 +206,18 @@ function publicTaskError(record: TaskRecord): PublicTaskError {
   if (record.status === "dispatch_unknown") {
     return {
       code: "task_dispatch_unknown",
-      message: "Hermes may have accepted this task, but no run id was confirmed. It was not retried.",
+      message: record.operatorContainedAt === undefined
+        ? "Hermes may have accepted this task, but no run id was confirmed. It was not retried."
+        : "The outcome is still unknown. An operator confirmed the task was contained and unblocked new work.",
       recoverable: false,
     };
   }
   if (record.status === "unknown") {
     return {
       code: "task_state_unknown",
-      message: "Hermes no longer has enough state to prove this task's outcome.",
+      message: record.operatorContainedAt === undefined
+        ? "Hermes Live cannot prove this task's outcome."
+        : "The outcome is still unknown. An operator confirmed the task was contained and unblocked new work.",
       recoverable: false,
     };
   }
@@ -244,6 +264,7 @@ function notificationKindFromEvent(type: TaskEvent["type"]): TaskNotification["k
       return type;
     case "unknown":
     case "dispatch_unknown":
+    case "operator_contained":
       return "unknown";
     default:
       return undefined;
@@ -255,9 +276,9 @@ function notificationId(taskId: string, sequence: number): string {
 }
 
 function notificationAnchor(
-  record: Pick<TaskRecord, "sequence" | "status" | "events">,
+  record: Pick<TaskRecord, "sequence" | "status" | "events" | "operatorContainedAt">,
 ): { sequence: number; timestamp: number } {
-  const expectedType = record.status;
+  const expectedType = record.operatorContainedAt === undefined ? record.status : "operator_contained";
   const event = [...record.events].reverse().find((candidate) => candidate.type === expectedType);
   return event ?? {
     sequence: record.sequence,

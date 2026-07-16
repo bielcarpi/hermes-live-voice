@@ -167,7 +167,7 @@ describe("protocol v3", () => {
     const base = { taskId: "task_1", occurredAt: NOW };
     const error = { code: "task_failed", message: "The task failed safely.", recoverable: false };
     const messages = [
-      { type: "task.accepted", ...base, sequence: 42, requestId: "request_1", state: "queued", queuePosition: 2 },
+      { type: "task.accepted", ...base, sequence: 42, requestId: "request_1", state: "queued" },
       { type: "task.started", ...base, sequence: 43, title: "Review repository" },
       { type: "task.progress", ...base, sequence: 44, progress: { message: "Running tests", current: 1, total: 3 } },
       { type: "task.stopping", ...base, sequence: 47, requestId: "stop_1", reason: "user cancelled" },
@@ -261,16 +261,16 @@ describe("protocol v3", () => {
       parseServerMessage({
         type: "task.snapshot",
         reason: "initial",
-        tasks: [{ ...taskSnapshot(), state: "queued", queuePosition: undefined }],
+        tasks: [{ ...taskSnapshot(), state: "queued" }],
       }),
     ).not.toThrow();
     expect(() =>
       parseServerMessage({
         type: "task.snapshot",
         reason: "initial",
-        tasks: [{ ...taskSnapshot(), state: "running", queuePosition: 1 }],
+        tasks: [{ ...taskSnapshot(), state: "queued", queuePosition: 1 }],
       }),
-    ).toThrow(/only queued tasks/i);
+    ).toThrow();
   });
 
   it("preserves normalized audio, transcript, and response messages", () => {

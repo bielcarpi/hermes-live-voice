@@ -138,8 +138,9 @@ Required evidence:
 
 Then exercise supervision:
 
-- submit two provably read-only tasks with disjoint resource keys and confirm they can overlap;
-- submit work sharing a resource key and confirm it serializes;
+- with the default configuration, submit two tasks and confirm they serialize;
+- restart with `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true`, then submit provably read-only tasks with disjoint resource keys and confirm they can overlap;
+- with that opt-in still enabled, submit work sharing a resource key and confirm it serializes;
 - submit an exclusive task and confirm it runs alone;
 - stop one exact task while another continues;
 - interrupt provider speech and confirm background tasks do not stop;
@@ -206,9 +207,9 @@ In a safe fixture, make Hermes request approval. Verify:
 - the gateway attempts deny-all;
 - the exact task moves to stopping and is stopped/contained;
 - other tasks are not stopped by inference;
-- the provider explains only that approval is unavailable in this release.
+- the provider explains only that approval is unavailable through Hermes Live.
 
-Do not advertise interactive approvals in v0.5 even if the Hermes capability object includes targeted approval support.
+Do not advertise interactive approvals even if the Hermes capability object includes run-scoped approval support; it lacks safe per-request identity for concurrent controllers.
 
 ## 8. Prove Audio And Interruption
 

@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Security fixes target the latest released minor version. Prereleases receive fixes while they are the active preview channel, but operators should not treat a beta as a production support commitment.
+Security fixes target the latest released minor version. Upgrade to the newest release before reporting an issue that may already be fixed.
 
 ## Reporting A Vulnerability
 
@@ -37,6 +37,7 @@ Reports are especially useful when they involve:
 - Keep Hermes and provider credentials server-side and Hermes API Server private.
 - Use TLS, edge rate limiting, and an authenticated same-origin relay for public browser deployments.
 - Keep `HERMES_LIVE_TRUST_CLIENT_IDENTITY=false` unless every client is trusted.
+- Keep `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=false` unless you accept model-declared concurrency scopes as policy input.
 - Store `HERMES_LIVE_TASK_STATE_FILE` in a private persistent directory; persist `/var/lib/hermes-live` in Docker.
 - Run the container as its bundled non-root user with the read-only filesystem and dropped capabilities from the Compose example.
 - Disable the public demo unless it is intentionally deployed.

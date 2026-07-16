@@ -152,7 +152,6 @@ export const PublicTaskSnapshotSchema = z
     updatedAt: PublicTimestampSchema,
     startedAt: PublicTimestampSchema.optional(),
     finishedAt: PublicTimestampSchema.optional(),
-    queuePosition: z.number().int().positive().max(PUBLIC_TASK_MAX_RETAINED).optional(),
     progress: PublicTaskProgressSchema.optional(),
     result: PublicTaskResultSchema.optional(),
     error: PublicTaskErrorSchema.optional(),
@@ -164,9 +163,6 @@ export const PublicTaskSnapshotSchema = z
     }
     if ((snapshot.state === "failed" || snapshot.state === "unknown") && snapshot.error === undefined) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: `${snapshot.state} tasks require a public error.` });
-    }
-    if (snapshot.queuePosition !== undefined && snapshot.state !== "queued") {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "Only queued tasks can expose a queue position." });
     }
   });
 export type PublicTaskSnapshot = z.infer<typeof PublicTaskSnapshotSchema>;
@@ -287,14 +283,8 @@ const TaskAcceptedMessageSchema = z
     requestId: RequestIdSchema.optional(),
     state: z.enum(["accepted", "queued"]),
     title: z.string().min(1).max(PUBLIC_TASK_TITLE_MAX_CHARS).optional(),
-    queuePosition: z.number().int().positive().max(PUBLIC_TASK_MAX_RETAINED).optional(),
   })
-  .strict()
-  .superRefine((message, context) => {
-    if (message.queuePosition !== undefined && message.state !== "queued") {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "Only queued task acceptance can expose a position." });
-    }
-  });
+  .strict();
 
 const TaskStartedMessageSchema = z
   .object({

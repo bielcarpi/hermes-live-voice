@@ -1,6 +1,6 @@
 # Support
 
-Hermes Live Voice is a community-maintained developer preview.
+Hermes Live Voice is community maintained.
 
 ## Where to ask
 

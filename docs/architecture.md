@@ -1,8 +1,8 @@
 # Architecture
 
-Hermes Live Voice is a realtime voice control plane for Hermes Agent. The speech provider handles conversation and turn-taking; Hermes keeps its memory, tools, skills, MCP servers, and execution environment; the gateway owns authentication, durable background-task supervision, and the protocol between them.
+Hermes Live Voice is a realtime voice gateway for Hermes Agent. The speech provider handles conversation and turn-taking; Hermes keeps its memory, tools, skills, MCP servers, and execution environment; the gateway owns authentication, durable background-task supervision, and the protocol between them.
 
-It is an independent integration, not a replacement for Hermes and not an official Hermes or Marvel product.
+It is an independent community integration, not a replacement for Hermes or an official NousResearch release.
 
 ## System Shape
 
@@ -66,7 +66,7 @@ A session does not own task lifetime. Closing it detaches from tasks and closes 
 - persist-before-publish task creation;
 - owner-scoped list, get, stop, subscription, and notification acknowledgement;
 - bounded queueing and safe admission;
-- exclusive execution and disjoint read-only parallelism;
+- exclusive execution by default, with operator-enabled disjoint read-only parallelism;
 - Hermes run creation, SSE consumption, periodic status reconciliation, and exact stop;
 - gateway-restart recovery from persisted upstream run ids;
 - retry of only definitive `429 rate_limit_exceeded` and `503 gateway_draining` rejections;
@@ -122,7 +122,7 @@ Each background task receives a separate Hermes session id derived from its stab
 
 ## Persistence Boundary
 
-The local file store contains task prompts, titles, internal run/session ids, bounded event summaries, results, usage, and notification state. It does not store provider or Hermes API keys, but prompts and results can still be sensitive.
+The local file store contains task prompts, titles, internal run/session ids, bounded event summaries, results, usage, and notification state. It does not store provider or Hermes API keys, but prompts and results can still be sensitive. A lifetime lock makes the store single-writer; abandoned locks require an explicit offline operator command.
 
 Every state is persisted before subscribers see it. The store uses atomic replacement and strict filesystem checks; corruption is fatal rather than silently replaced. In Docker, `/var/lib/hermes-live` is the only persistent writable volume and the remaining root filesystem is read-only.
 

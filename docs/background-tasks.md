@@ -37,7 +37,7 @@ The public states are:
 | `cancelled` | Hermes confirmed cancellation, or a queued task was cancelled before dispatch. |
 | `unknown` | The gateway cannot prove the outcome. It must not be described as success or failure. |
 
-Every task has a monotonically increasing, per-task `sequence`. Clients deduplicate and order lifecycle updates by `(taskId, sequence)`. The upstream Hermes run id is private and is never part of protocol v3.
+Every task has a monotonically increasing, per-task `sequence`, but clients retain two independent revisions: lifecycle state by `taskId` and notification state by `taskId`, `notificationId`, and acknowledgement. Lifecycle and notification messages can share one sequence and arrive in either order; both must be applied. Exact repeats within one channel are idempotent, while conflicting content at the same channel sequence must fail closed. The upstream Hermes run id is private and is never part of protocol v3.
 
 ## Ownership And Subscriptions
 
@@ -50,11 +50,12 @@ By default, `session.start.profileId` and `userLabel` are ignored. All clients u
 The scheduler is bounded by `HERMES_LIVE_MAX_CONCURRENT_TASKS` and `HERMES_LIVE_MAX_QUEUED_TASKS`.
 
 - `exclusive` is the default and is required for writes, Git operations, deployments, database changes, external messages, or uncertain side effects. It runs only when no other task is active.
-- `parallel_read_only` is for work that is provably read-only. It can overlap only with other `parallel_read_only` tasks whose `resource_keys` are disjoint.
+- With `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=false` (the default), every provider request is clamped to `exclusive` and its resource keys are ignored.
+- `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true` lets model-declared `parallel_read_only` work overlap only when the declared `resource_keys` are disjoint.
 - Tasks sharing any resource key never overlap.
-- Among eligible tasks, queue admission is oldest-first. An earlier eligible task that conflicts with active work is not bypassed by later work; tasks awaiting owner reconnection or a safe retry window are temporarily ineligible.
+- Among eligible tasks, queue admission is oldest-first. An exclusive task is a FIFO barrier. With the read-only opt-in enabled, a task blocked on one resource does not block a later read-only task whose resource keys are disjoint. Tasks awaiting owner reconnection or a safe retry window are temporarily ineligible.
 
-Resource keys should identify the actual contention boundary, such as an absolute repository path, database, deployment target, or account. Labeling mutating work read-only defeats the safety model.
+Resource keys should identify the actual contention boundary, such as an absolute repository path, database, deployment target, or account. The opt-in trusts policy metadata supplied by the model; it is not a sandbox. Keep it off unless Hermes permissions and isolation can absorb a wrong classification.
 
 ## Persistence And Recovery
 
@@ -64,7 +65,11 @@ The default state file is:
 ~/.hermes/hermes-live/tasks-v1.json
 ```
 
-The store writes a complete bounded document through a private temporary file, `fsync`, atomic rename, and directory `fsync`. Its directory is forced to mode `0700` and the file to `0600` on supported Unix systems. Invalid JSON, schema corruption, symlinks, wrong directory ownership, oversized state, or an unconfirmed post-rename commit stop the gateway instead of silently resetting history.
+The store writes a complete bounded document through a private temporary file, `fsync`, atomic rename, and directory `fsync`. Its directory is forced to mode `0700` and the file to `0600` on supported Unix systems. A lifetime lock allows one writer. Invalid JSON, schema corruption, symlinks, wrong directory ownership, oversized state, or an unconfirmed post-rename commit stop the gateway instead of silently resetting history.
+
+Stable v0.5 reads state created by the v0.5 beta. A beta file that already filled the old byte ceiling can use bounded migration headroom while its accepted work drains; with the default limit, the absolute read/write ceiling is 96 MiB plus 64 KiB. New tasks still have to fit the normal 64 MiB budget, and migration never deletes queued or active work. The store returns to the normal ceiling as soon as the document and its reserves fit.
+
+The upgrade is forward-only once stable writes a confirmed-missing or operator-containment field: the older beta's strict parser will reject that newer record. Back up the private state file while the gateway is stopped before upgrading; do not roll back the binary against state already written by stable v0.5.
 
 Recovery depends on what restarted:
 
@@ -79,18 +84,18 @@ Gateway persistence does not undo side effects already performed by Hermes. A ta
 
 ## Ambiguous Dispatch Fence
 
-`dispatch_unknown` is the safe response to an ambiguous run-creation outcome: Hermes may have accepted the request, but the gateway did not receive a trustworthy run id. Retrying could duplicate a mutation, so the task stays public `unknown`, occupies scheduler capacity, and can block later work according to the normal admission rules.
+`dispatch_unknown` is the safe response to an ambiguous run-creation outcome: Hermes may have accepted the request, but the gateway did not receive a trustworthy run id. Retrying could duplicate a mutation, so the task stays public `unknown` and fences conflicting admission.
 
-There is no unsafe “retry anyway” or JSON-edit recovery command in v0.5. Operator recovery is deliberately explicit:
+Recovery is explicit and offline:
 
-1. Stop the Hermes Live gateway so the state file cannot change.
-2. Stop or restart Hermes Agent in a maintenance window, eliminating any still-running in-memory run. This does not reverse effects that already happened.
-3. Audit the task's target resources before deciding whether the requested action is safe to repeat.
-4. Back up the private state file without relaxing its permissions.
-5. Start the gateway with a new empty `HERMES_LIVE_TASK_STATE_FILE`, or move the old file aside while both processes are stopped.
-6. Reconnect and submit a new task only after the audit.
+1. Stop Hermes Live. If needed, stop or restart Hermes Agent in a maintenance window so no in-memory run can still be active. This does not reverse effects that already happened.
+2. Inspect fenced records with `hermes-live tasks unresolved` and audit the target systems.
+3. After you have stopped or otherwise contained any possible upstream work, run `hermes-live tasks contain <taskId> --confirm-contained`.
+4. Restart the gateway. The record remains `unknown` with an audit event, but it no longer blocks admission.
 
-This resets the local inbox, not external state. Preserve the backup for incident analysis and never change `dispatch_unknown` to `queued` by hand.
+Never change an unknown task back to queued or retry it without checking external effects.
+
+An unclean process exit can leave the store lock behind. Confirm that no gateway process is using the state file, then run `hermes-live tasks unlock --confirm-no-gateway`. The store never steals a lock on a timer because two writers are worse than a manual recovery step.
 
 ## Completion Notifications
 
@@ -111,6 +116,10 @@ This is fail-closed. Do not advertise that approvals can be completed in another
 
 ## Retention
 
-Terminal tasks are pruned after `HERMES_LIVE_TASK_RETENTION_HOURS` (default seven days). `HERMES_LIVE_TASK_HISTORY_LIMIT` (default 200) is the advertised retained-history target; the store reserves additional bounded capacity for configured queued/active work, and active tasks are never pruned to make room. Each wire list/snapshot frame is capped at 100 tasks. Reconnect hydration can use multiple frames so active work and unread notifications never compete with recent terminal history for that cap. Completed output is bounded; list snapshots include a summary, while `task.get` can return the retained output.
+Terminal tasks become eligible for age pruning after `HERMES_LIVE_TASK_RETENTION_HOURS` (default seven days). Terminal, confirmed-missing, or operator-contained history may be removed sooner when the record limit or normal 64 MiB store budget needs room for a current write; acknowledged history is evicted before unread items.
+
+Admission reserves the largest valid terminal write for every task that can run concurrently, plus bounded lifecycle/control headroom. A terminal result consumes its reserved slot. A queued task can reclaim that slot only through a durable pre-dispatch write, which may prune closed history or hold admission before Hermes receives a request. Operationally active tasks are never pruned to make room.
+
+`HERMES_LIVE_TASK_HISTORY_LIMIT` (default 200) is the advertised retained-history target; the store also reserves bounded capacity for configured queued and active work. Each wire list/snapshot frame is capped at 100 tasks. Reconnect hydration can use multiple frames so active work and unread notifications never compete with recent terminal history for that cap. Completed output is bounded; list snapshots include a summary, while `task.get` can return the retained output.
 
 For wire details, see [Client Protocol](client-protocol.md). For storage and deployment controls, see [Security](security.md) and [Local Setup](local-setup.md).

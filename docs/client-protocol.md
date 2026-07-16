@@ -72,7 +72,7 @@ On success, the server sends `session.ready` followed by one or more bounded ini
     "sequence": "per_task",
     "reconnect": "snapshot",
     "durable": true,
-    "parallel": true,
+    "parallel": false,
     "maxConcurrent": 3,
     "maxRetained": 200,
     "supports": {
@@ -86,7 +86,7 @@ On success, the server sends `session.ready` followed by one or more bounded ini
 }
 ```
 
-Provider/model/audio values are negotiated, not constants. Mock mode reports audio disabled. Clients must not send or decode a codec that `session.ready` did not advertise.
+Provider/model/audio values are negotiated, not constants. Mock mode reports audio disabled. `tasks.parallel` becomes true only when the operator enables trusted model-declared read-only scopes. Clients must not send or decode a codec that `session.ready` did not advertise.
 
 The following snapshot shape establishes the owner's current inbox:
 
@@ -224,13 +224,18 @@ List/reconnect snapshots omit full completed output and mark it truncated from t
 
 ## Ordering And Reconnect
 
-`sequence` is monotonic within one task, not a global cursor. A client should:
+`sequence` is monotonic within one task, not a global cursor. Task delivery has two independent per-task revision channels:
 
-1. key state by `taskId`;
-2. accept a lifecycle update only when its sequence is newer than the retained sequence;
-3. treat conflicting content at the same `(taskId, sequence)` as a protocol error;
-4. clear stale cached active state on the first reconnect frame, then merge every bounded reconnect frame by task id;
-5. never infer task cancellation from socket closure.
+- Lifecycle state comes from `task.snapshot` and lifecycle events. Retain its latest sequence and content by `taskId`.
+- Notification state comes from `task.notification`. Retain its latest sequence, `notificationId`, and acknowledgement state by `taskId`; a later revision can acknowledge the same notification or replace a superseded notice with a new identity.
+
+A lifecycle event and `task.notification` may intentionally carry the same `(taskId, sequence)`. They are complementary projections, not duplicates, and either can arrive first. A client must not use one shared last-sequence gate that discards the second projection.
+
+Within each channel, accept a newer sequence and treat an exact equal-sequence replay as idempotent. Conflicting content repeated at the same sequence in the same channel is a protocol error and must fail closed. Then:
+
+1. key task state by `taskId` while retaining separate lifecycle and notification revisions;
+2. clear stale cached active state on the first reconnect frame, then merge every bounded reconnect frame by task id;
+3. never infer task cancellation from socket closure.
 
 The shared browser client implements these rules. Task execution continues when a client or provider disconnects. Gateway-restart recovery is possible only while the upstream Hermes process still knows the persisted run id; see [Durable Background Tasks](background-tasks.md#persistence-and-recovery).
 
@@ -334,9 +339,9 @@ client.acknowledgeNotification(taskId, notificationId);
 
 ## HTTP Readiness And Capabilities
 
-`GET /ready` reports gateway, Hermes, and provider configuration. A healthy response does not open a live provider session; `checks.realtime.sessionChecked` remains `false`.
+`GET /ready` reports gateway, Hermes, provider, and task-store readiness. A healthy response does not open a live provider session; `checks.realtime.sessionChecked` remains `false`.
 
-`GET /v1/capabilities` reports protocol version, audio contract, task persistence/admission limits, disconnect continuation, restart semantics, ambiguity fencing, and feature flags. In v0.5, `hermes_approval` and `hermes_approval_ui` are false; the advertised fallback is deny-all then stop.
+`GET /v1/capabilities` reports protocol version, audio contract, task persistence/admission limits, disconnect continuation, restart semantics, ambiguity fencing, and feature flags. `hermes_approval` and `hermes_approval_ui` are false; the advertised fallback is deny-all then stop.
 
 ## Limits And Errors
 

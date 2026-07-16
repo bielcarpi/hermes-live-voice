@@ -16,7 +16,10 @@ describe("Hermes Agent v0.18.2 API fixtures", () => {
       hermesVersion: "0.18.2",
       releaseTag: "v2026.7.7.2",
       reportedUpstreamCommit: "226e8de8",
-      containerDigest: "sha256:465e3be53ac04f87c983697d8446d3dbdde47b489b51bb910c319731c3c78397",
+      releaseCommit: "9de9c25f620ff7f1ce0fd5457d596052d5159596",
+      ociRevision: "9de9c25f620ff7f1ce0fd5457d596052d5159596",
+      containerImage: "nousresearch/hermes-agent:v2026.7.7.2@sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973",
+      containerDigest: "sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973",
     });
   });
 

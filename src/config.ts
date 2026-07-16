@@ -65,6 +65,7 @@ const EnvSchema = z.object({
     join(homedir(), ".hermes", "hermes-live", "tasks-v1.json"),
   ),
   HERMES_LIVE_MAX_CONCURRENT_TASKS: z.coerce.number().int().min(1).max(16).default(3),
+  HERMES_LIVE_TRUST_DECLARED_READ_ONLY: z.string().optional(),
   HERMES_LIVE_MAX_QUEUED_TASKS: z.coerce.number().int().min(0).max(512).default(32),
   HERMES_LIVE_TASK_HISTORY_LIMIT: z.coerce.number().int().min(10).max(1_000).default(200),
   HERMES_LIVE_TASK_RETENTION_HOURS: z.coerce.number().int().min(1).max(8_760).default(168),
@@ -132,6 +133,7 @@ export interface AppConfig {
   tasks: {
     stateFile: string;
     maxConcurrent: number;
+    trustDeclaredReadOnly: boolean;
     maxQueued: number;
     historyLimit: number;
     retentionMs: number;
@@ -199,6 +201,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     tasks: {
       stateFile: parsed.HERMES_LIVE_TASK_STATE_FILE,
       maxConcurrent: parsed.HERMES_LIVE_MAX_CONCURRENT_TASKS,
+      trustDeclaredReadOnly: parseBool(parsed.HERMES_LIVE_TRUST_DECLARED_READ_ONLY),
       maxQueued: parsed.HERMES_LIVE_MAX_QUEUED_TASKS,
       historyLimit: parsed.HERMES_LIVE_TASK_HISTORY_LIMIT,
       retentionMs: parsed.HERMES_LIVE_TASK_RETENTION_HOURS * 60 * 60 * 1_000,

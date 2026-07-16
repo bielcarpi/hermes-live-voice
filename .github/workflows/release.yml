@@ -36,6 +36,10 @@ jobs:
         with:
           node-version: 20
           package-manager-cache: false
+      - name: Install release npm CLI
+        run: npm install --global --ignore-scripts npm@11.18.0
+      - name: Verify release npm CLI
+        run: test "$(npm --version)" = "11.18.0"
       - name: Verify tag matches package version
         run: |
           package_version="$(node -p 'require("./package.json").version')"

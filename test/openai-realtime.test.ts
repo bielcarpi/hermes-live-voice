@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
+import type { LiveModelEvent } from "../src/application/live-gateway/ports/realtime-model.port.js";
 import {
   buildOpenAIConversationItemTruncate,
   buildOpenAIRealtimeAudioAppend,
@@ -51,6 +52,46 @@ describe("OpenAI Realtime adapter helpers", () => {
     });
   });
 
+  it("only extracts tools from completed response-scoped call events", () => {
+    const call = {
+      type: "function_call",
+      call_id: "call_untrusted_item",
+      name: "start_hermes_run",
+      arguments: '{"message":"must not run"}',
+    };
+
+    expect(normalizeOpenAIRealtimeEvent({
+      type: "conversation.item.created",
+      item: call,
+    })).not.toContainEqual(expect.objectContaining({ type: "tool_call" }));
+    expect(normalizeOpenAIRealtimeEvent({
+      type: "response.output_item.added",
+      response_id: "resp_1",
+      item: call,
+    })).not.toContainEqual(expect.objectContaining({ type: "tool_call" }));
+    expect(normalizeOpenAIRealtimeEvent({
+      type: "response.output_item.done",
+      response_id: "resp_1",
+      item: { ...call, status: "in_progress" },
+    })).not.toContainEqual(expect.objectContaining({ type: "tool_call" }));
+    expect(normalizeOpenAIRealtimeEvent({
+      type: "response.done",
+      response: { id: "resp_1", status: "cancelled", output: [call] },
+    })).not.toContainEqual(expect.objectContaining({ type: "tool_call" }));
+    expect(normalizeOpenAIRealtimeEvent({
+      type: "response.output_item.done",
+      response_id: "resp_1",
+      item: { ...call, status: "completed" },
+    })).toContainEqual({
+      type: "tool_call",
+      call: {
+        id: "call_untrusted_item",
+        name: "start_hermes_run",
+        args: { message: "must not run" },
+      },
+    });
+  });
+
   it("orders function calls before a terminal response from the same provider event", () => {
     const events = normalizeOpenAIRealtimeEvent({
       type: "response.done",
@@ -70,7 +111,7 @@ describe("OpenAI Realtime adapter helpers", () => {
     expect(events[1]).toMatchObject({ type: "response", status: "completed", responseId: "resp_tool" });
   });
 
-  it("normalizes speech-start events for VAD interruption handling", () => {
+  it("normalizes VAD speech boundaries for interruption and notification handling", () => {
     expect(
       normalizeOpenAIRealtimeEvent({
         type: "input_audio_buffer.speech_started",
@@ -82,6 +123,18 @@ describe("OpenAI Realtime adapter helpers", () => {
       provider: "openai",
       itemId: "item_1",
       audioStartMs: 320,
+    });
+    expect(
+      normalizeOpenAIRealtimeEvent({
+        type: "input_audio_buffer.speech_stopped",
+        item_id: "item_1",
+        audio_end_ms: 910,
+      }),
+    ).toContainEqual({
+      type: "input_speech_stopped",
+      provider: "openai",
+      itemId: "item_1",
+      audioEndMs: 910,
     });
   });
 
@@ -98,6 +151,14 @@ describe("OpenAI Realtime adapter helpers", () => {
       type: "response",
       status: "failed",
       responseId: "resp_2",
+      error: "OpenAI Realtime response failed.",
+    });
+    expect(
+      normalizeOpenAIRealtimeEvent({ type: "response.done", response: { id: "resp_3", status: "incomplete" } }),
+    ).toContainEqual({
+      type: "response",
+      status: "failed",
+      responseId: "resp_3",
       error: "OpenAI Realtime response failed.",
     });
   });
@@ -119,6 +180,15 @@ describe("OpenAI Realtime adapter helpers", () => {
 
   it("builds response cancellation events", () => {
     expect(buildOpenAIResponseCancel()).toEqual({ type: "response.cancel" });
+    expect(buildOpenAIResponseCancel("resp_notice")).toEqual({
+      type: "response.cancel",
+      response_id: "resp_notice",
+    });
+    expect(buildOpenAIResponseCancel("resp_notice", "cancel_1")).toEqual({
+      type: "response.cancel",
+      event_id: "cancel_1",
+      response_id: "resp_notice",
+    });
     expect(buildOpenAIConversationItemTruncate({ itemId: "item_1", contentIndex: 0, audioEndMs: 123.6 })).toEqual({
       type: "conversation.item.truncate",
       item_id: "item_1",
@@ -180,7 +250,11 @@ describe("OpenAI Realtime adapter helpers", () => {
     const semanticVad = buildOpenAISessionUpdate(testOpenAIConfig({ turnDetection: "semantic_vad" }), "hello");
 
     expect((disabled.session.audio as any).input.turn_detection).toBeNull();
-    expect((semanticVad.session.audio as any).input.turn_detection).toEqual({ type: "semantic_vad" });
+    expect((semanticVad.session.audio as any).input.turn_detection).toEqual({
+      type: "semantic_vad",
+      create_response: false,
+      interrupt_response: true,
+    });
     expect(semanticVad.session).toMatchObject({
       type: "realtime",
       model: "gpt-realtime-2.1",
@@ -388,6 +462,200 @@ describe("OpenAI Realtime adapter helpers", () => {
       );
       expect(JSON.stringify(responses[0])).not.toContain(notification.context);
       expect(JSON.stringify(responses[0])).not.toContain("private raw Hermes output");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("releases a queued response after OpenAI reports an incomplete terminal response", async () => {
+    const responseStarted = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "response" && event.status === "started") responseStarted.resolve();
+      },
+    });
+
+    try {
+      await harness.session.sendText("initial question");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_incomplete", status: "in_progress" },
+      }));
+      await withTimeout(responseStarted.promise, 1_000, "Initial response did not start.");
+
+      await harness.session.sendText("continue after the incomplete response");
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_incomplete", status: "incomplete" },
+      }));
+
+      const responses = await waitForResponseCreates(harness.clientMessages, 2);
+      expect(responses[1]).toEqual({ type: "response.create" });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("serializes typed input behind the adapter-scheduled VAD response", async () => {
+    const vadResponseStarted = deferred<void>();
+    const speechStopped = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "response" && event.status === "started") vadResponseStarted.resolve();
+        if (event.type === "input_speech_stopped") speechStopped.resolve();
+      },
+    }, { turnDetection: "semantic_vad" });
+
+    try {
+      harness.upstream.send(JSON.stringify({
+        type: "input_audio_buffer.speech_stopped",
+        item_id: "item_voice",
+        audio_end_ms: 900,
+      }));
+      await withTimeout(speechStopped.promise, 1_000, "Speech-stopped event was not delivered.");
+      let responses = await waitForResponseCreates(harness.clientMessages, 1);
+      expect(responses[0]).toEqual({ type: "response.create" });
+
+      await harness.session.sendText("typed while the VAD response is being created");
+      expect(harness.clientMessages.filter((message) => message.type === "conversation.item.create")).toHaveLength(0);
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_vad", status: "in_progress", conversation_id: "conv_test" },
+      }));
+      await withTimeout(vadResponseStarted.promise, 1_000, "Scheduled VAD response did not start.");
+      await vi.waitFor(() => expect(
+        harness.clientMessages.filter((message) => message.type === "conversation.item.create"),
+      ).toHaveLength(1));
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_vad", status: "completed", conversation_id: "conv_test" },
+      }));
+      responses = await waitForResponseCreates(harness.clientMessages, 2);
+      expect(responses[1]).toEqual({ type: "response.create" });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("serializes an interrupted out-of-band notice before VAD and drains later typed input", async () => {
+    const lifecycleEvents: LiveModelEvent[] = [];
+    const speechStarted = deferred<void>();
+    const speechStopped = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        lifecycleEvents.push(event);
+        if (event.type === "input_speech_started") speechStarted.resolve();
+        if (event.type === "input_speech_stopped") speechStopped.resolve();
+      },
+    }, { turnDetection: "semantic_vad" });
+
+    try {
+      await harness.session.sendTaskNotification?.(taskNotification("Overlapping task"));
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: {
+          id: "resp_notice_overlap",
+          status: "in_progress",
+          conversation_id: null,
+          metadata: { hermes_live_purpose: "task_notification" },
+        },
+      }));
+      await vi.waitFor(() => expect(lifecycleEvents).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "started",
+        responseId: "resp_notice_overlap",
+        scope: "task_notification",
+      })));
+
+      harness.upstream.send(JSON.stringify({
+        type: "input_audio_buffer.speech_started",
+        item_id: "item_overlap",
+        audio_start_ms: 100,
+      }));
+      await withTimeout(speechStarted.promise, 1_000, "Speech-started event was not delivered.");
+      await expect(harness.session.cancelResponse("barge in")).resolves.toBe(true);
+      await vi.waitFor(() => expect(harness.clientMessages).toContainEqual(expect.objectContaining({
+        type: "response.cancel",
+        response_id: "resp_notice_overlap",
+      })));
+
+      harness.upstream.send(JSON.stringify({
+        type: "input_audio_buffer.speech_stopped",
+        item_id: "item_overlap",
+        audio_end_ms: 700,
+      }));
+      await withTimeout(speechStopped.promise, 1_000, "Speech-stopped event was not delivered.");
+      await harness.session.sendText("typed behind the spoken turn");
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+      expect(harness.clientMessages.filter((message) => message.type === "conversation.item.create")).toHaveLength(0);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: {
+          id: "resp_notice_overlap",
+          status: "cancelled",
+          conversation_id: null,
+          metadata: { hermes_live_purpose: "task_notification" },
+        },
+      }));
+      let responses = await waitForResponseCreates(harness.clientMessages, 2);
+      expect(responses[1]).toEqual({ type: "response.create" });
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_vad_overlap", status: "in_progress", conversation_id: "conv_overlap" },
+      }));
+      await vi.waitFor(() => expect(
+        harness.clientMessages.filter((message) => message.type === "conversation.item.create"),
+      ).toHaveLength(1));
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(2);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_vad_overlap", status: "completed", conversation_id: "conv_overlap" },
+      }));
+      responses = await waitForResponseCreates(harness.clientMessages, 3);
+      expect(responses[2]).toEqual({ type: "response.create" });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("waits for an out-of-band response id before sending its exact cancellation", async () => {
+    const lifecycleEvents: LiveModelEvent[] = [];
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => lifecycleEvents.push(event),
+    });
+    try {
+      await harness.session.sendTaskNotification?.(taskNotification("Pending notice"));
+      await waitForResponseCreates(harness.clientMessages, 1);
+      await expect(harness.session.cancelResponse("cancel pending notice")).resolves.toBe(true);
+      expect(harness.clientMessages.filter((message) => message.type === "response.cancel")).toHaveLength(0);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: {
+          id: "resp_pending_notice",
+          status: "in_progress",
+        },
+      }));
+      await vi.waitFor(() => expect(harness.clientMessages).toContainEqual(expect.objectContaining({
+        type: "response.cancel",
+        response_id: "resp_pending_notice",
+      })));
+      expect(lifecycleEvents).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "started",
+        responseId: "resp_pending_notice",
+        scope: "task_notification",
+      }));
     } finally {
       await harness.close();
     }
@@ -644,9 +912,13 @@ describe("OpenAI Realtime adapter helpers", () => {
         if (message.type === "response.create") {
           const responseCreateCount = clientMessages.filter((entry) => entry.type === "response.create").length;
           if (responseCreateCount === 1) {
-            socket.send(JSON.stringify({ type: "response.created", response: { status: "in_progress" } }));
+            socket.send(JSON.stringify({
+              type: "response.created",
+              response: { id: "resp_tool_serialization", status: "in_progress" },
+            }));
             socket.send(JSON.stringify({
               type: "response.function_call_arguments.done",
+              response_id: "resp_tool_serialization",
               call_id: "call_1",
               name: "get_hermes_run_status",
               arguments: '{"run_id":"run_1"}',
@@ -691,6 +963,7 @@ describe("OpenAI Realtime adapter helpers", () => {
       upstream?.send(JSON.stringify({
         type: "response.done",
         response: {
+          id: "resp_tool_serialization",
           status: "completed",
           output: [{
             type: "function_call",
@@ -801,6 +1074,177 @@ describe("OpenAI Realtime adapter helpers", () => {
     }
   });
 
+  it("drops wrong or missing response payload identities without poisoning tool replay state", async () => {
+    const events: LiveModelEvent[] = [];
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => events.push(event),
+    });
+
+    try {
+      harness.upstream.send(JSON.stringify({
+        type: "conversation.item.created",
+        item: {
+          type: "function_call",
+          call_id: "call_unsolicited_item",
+          name: "start_hermes_run",
+          arguments: '{"message":"must not run"}',
+        },
+      }));
+      await harness.session.sendText("start a response for correlation checks");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_correlation_active", status: "in_progress" },
+      }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "started",
+        responseId: "resp_correlation_active",
+      })));
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: {
+          id: "resp_correlation_wrong",
+          status: "completed",
+          output: [{
+            type: "function_call",
+            status: "completed",
+            call_id: "call_wrong_terminal",
+            name: "start_hermes_run",
+            arguments: '{"message":"wrong terminal"}',
+          }],
+        },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_correlation_wrong",
+        call_id: "call_wrong_payload",
+        name: "start_hermes_run",
+        arguments: '{"message":"wrong payload"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "call_missing_identity",
+        name: "start_hermes_run",
+        arguments: '{"message":"missing identity"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_audio.delta",
+        response_id: "resp_correlation_wrong",
+        delta: "wrong-audio",
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_text.delta",
+        response_id: "resp_correlation_wrong",
+        delta: "wrong text",
+      }));
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_audio.delta",
+        response_id: "resp_correlation_active",
+        delta: "correct-audio",
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_text.delta",
+        response_id: "resp_correlation_active",
+        delta: "correct text",
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_correlation_active",
+        call_id: "call_wrong_terminal",
+        name: "start_hermes_run",
+        arguments: '{"message":"wrong terminal"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_correlation_active",
+        call_id: "call_wrong_payload",
+        name: "start_hermes_run",
+        arguments: '{"message":"wrong payload"}',
+      }));
+
+      await vi.waitFor(() => expect(events.filter((event) => event.type === "tool_call")).toHaveLength(2));
+      expect(events.filter((event) => event.type === "tool_call").map((event) => event.call.id)).toEqual([
+        "call_wrong_terminal",
+        "call_wrong_payload",
+      ]);
+      expect(events.filter((event) => event.type === "audio").map((event) => event.audio.data)).toEqual([
+        "correct-audio",
+      ]);
+      expect(events.filter((event) => event.type === "text").map((event) => event.text)).toEqual([
+        "correct text",
+      ]);
+      expect(events).not.toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "completed",
+        responseId: "resp_correlation_wrong",
+      }));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it.each(["created", "terminal"] as const)(
+    "fails closed when a %s response lifecycle event omits its response id",
+    async (phase) => {
+      const events: LiveModelEvent[] = [];
+      const adapterError = deferred<unknown>();
+      const harness = await createOpenAITestHarness({
+        onEvent: (event) => events.push(event),
+        onError: (error) => adapterError.resolve(error),
+      });
+      const providerClosed = once(harness.upstream, "close");
+
+      try {
+        await harness.session.sendText("response with malformed lifecycle identity");
+        await waitForResponseCreates(harness.clientMessages, 1);
+        if (phase === "terminal") {
+          harness.upstream.send(JSON.stringify({
+            type: "response.created",
+            response: { id: "resp_before_anonymous_terminal", status: "in_progress" },
+          }));
+          await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+            type: "response",
+            status: "started",
+            responseId: "resp_before_anonymous_terminal",
+          })));
+          harness.upstream.send(JSON.stringify({
+            type: "response.done",
+            response: {
+              status: "completed",
+              output: [{
+                type: "function_call",
+                status: "completed",
+                call_id: "call_anonymous_terminal",
+                name: "start_hermes_run",
+                arguments: '{"message":"anonymous terminal"}',
+              }],
+            },
+          }));
+        } else {
+          harness.upstream.send(JSON.stringify({
+            type: "response.created",
+            response: { status: "in_progress" },
+          }));
+        }
+
+        await expect(withTimeout(adapterError.promise, 1_000, "Missing lifecycle identity was not rejected."))
+          .resolves.toMatchObject({ message: expect.stringContaining("exact") });
+        await expect(withTimeout(providerClosed, 1_000, "Missing lifecycle identity did not close OpenAI."))
+          .resolves.toBeDefined();
+        expect(events.filter((event) => event.type === "tool_call")).toHaveLength(0);
+        expect(events).not.toContainEqual(expect.objectContaining({
+          type: "response",
+          status: "completed",
+        }));
+      } finally {
+        await harness.close();
+      }
+    },
+  );
+
   it("waits for cancellation acknowledgement before creating a queued text response", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await once(server, "listening");
@@ -882,6 +1326,417 @@ describe("OpenAI Realtime adapter helpers", () => {
     } finally {
       await session?.close();
       await closeServer(server);
+    }
+  });
+
+  it("suppresses exact-response tool completions while cancellation is pending without poisoning replay state", async () => {
+    const events: LiveModelEvent[] = [];
+    const cancellationBarrier = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        events.push(event);
+        if (event.type === "text" && event.text === "cancel barrier") cancellationBarrier.resolve();
+      },
+    });
+
+    try {
+      await harness.session.sendText("response that will be interrupted");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_cancel_tools", status: "in_progress" },
+      }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "started",
+        responseId: "resp_cancel_tools",
+      })));
+      await expect(harness.session.cancelResponse("interrupt tool generation")).resolves.toBe(true);
+      await vi.waitFor(() => expect(
+        harness.clientMessages.filter((message) => message.type === "response.cancel"),
+      ).toHaveLength(1));
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_cancel_tools",
+        call_id: "call_cancel_args",
+        name: "start_hermes_run",
+        arguments: '{"message":"cancelled args"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_item.done",
+        response_id: "resp_cancel_tools",
+        item: {
+          type: "function_call",
+          status: "completed",
+          call_id: "call_cancel_item",
+          name: "start_hermes_run",
+          arguments: '{"message":"cancelled item"}',
+        },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_text.delta",
+        response_id: "resp_cancel_tools",
+        delta: "cancel barrier",
+      }));
+      await withTimeout(cancellationBarrier.promise, 1_000, "Cancellation tool barrier was not delivered.");
+      expect(events.filter((event) => event.type === "tool_call")).toHaveLength(0);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: {
+          id: "resp_cancel_tools",
+          status: "completed",
+          output: [{
+            type: "function_call",
+            status: "completed",
+            call_id: "call_cancel_terminal",
+            name: "start_hermes_run",
+            arguments: '{"message":"cancelled terminal"}',
+          }],
+        },
+      }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "completed",
+        responseId: "resp_cancel_tools",
+      })));
+      expect(events.filter((event) => event.type === "tool_call")).toHaveLength(0);
+      await harness.session.sendText("response after cancellation");
+      await waitForResponseCreates(harness.clientMessages, 2);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_after_cancel_tools", status: "in_progress" },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_after_cancel_tools",
+        call_id: "call_cancel_args",
+        name: "start_hermes_run",
+        arguments: '{"message":"cancelled args"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_item.done",
+        response_id: "resp_after_cancel_tools",
+        item: {
+          type: "function_call",
+          status: "completed",
+          call_id: "call_cancel_item",
+          name: "start_hermes_run",
+          arguments: '{"message":"cancelled item"}',
+        },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_after_cancel_tools",
+        call_id: "call_cancel_terminal",
+        name: "start_hermes_run",
+        arguments: '{"message":"cancelled terminal"}',
+      }));
+      await vi.waitFor(() => expect(events.filter((event) => event.type === "tool_call")).toHaveLength(3));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("suppresses tool completions as soon as server VAD interrupts the active response", async () => {
+    const events: LiveModelEvent[] = [];
+    const vadBarrier = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        events.push(event);
+        if (event.type === "text" && event.text === "VAD barrier") vadBarrier.resolve();
+      },
+    }, { turnDetection: "semantic_vad" });
+
+    try {
+      await harness.session.sendText("response interrupted before the client cancel round trip");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_vad_tool_gap", status: "in_progress" },
+      }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "started",
+        responseId: "resp_vad_tool_gap",
+      })));
+
+      harness.upstream.send(JSON.stringify({
+        type: "input_audio_buffer.speech_started",
+        item_id: "item_vad_tool_gap",
+        audio_start_ms: 120,
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_vad_tool_gap",
+        call_id: "call_vad_args",
+        name: "start_hermes_run",
+        arguments: '{"message":"VAD args"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_item.done",
+        response_id: "resp_vad_tool_gap",
+        item: {
+          type: "function_call",
+          status: "completed",
+          call_id: "call_vad_item",
+          name: "start_hermes_run",
+          arguments: '{"message":"VAD item"}',
+        },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_text.delta",
+        response_id: "resp_vad_tool_gap",
+        delta: "VAD barrier",
+      }));
+      await withTimeout(vadBarrier.promise, 1_000, "VAD tool barrier was not delivered.");
+      expect(events.filter((event) => event.type === "tool_call")).toHaveLength(0);
+      expect(harness.clientMessages.filter((message) => message.type === "response.cancel")).toHaveLength(0);
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: { id: "resp_vad_tool_gap", status: "cancelled" },
+      }));
+      await harness.session.sendText("response after VAD interruption");
+      await waitForResponseCreates(harness.clientMessages, 2);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_after_vad_tool_gap", status: "in_progress" },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_after_vad_tool_gap",
+        call_id: "call_vad_args",
+        name: "start_hermes_run",
+        arguments: '{"message":"VAD args"}',
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.output_item.done",
+        response_id: "resp_after_vad_tool_gap",
+        item: {
+          type: "function_call",
+          status: "completed",
+          call_id: "call_vad_item",
+          name: "start_hermes_run",
+          arguments: '{"message":"VAD item"}',
+        },
+      }));
+      await vi.waitFor(() => expect(events.filter((event) => event.type === "tool_call")).toHaveLength(2));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it.each(["error_before_done", "done_before_error"] as const)(
+    "keeps a correlated no-active cancel race recoverable when %s",
+    async (order) => {
+      const lifecycleEvents: LiveModelEvent[] = [];
+      const adapterErrors: unknown[] = [];
+      const harness = await createOpenAITestHarness({
+        onEvent: (event) => lifecycleEvents.push(event),
+        onError: (error) => adapterErrors.push(error),
+      });
+
+      try {
+        await harness.session.sendText("response that server VAD may cancel first");
+        await waitForResponseCreates(harness.clientMessages, 1);
+        harness.upstream.send(JSON.stringify({
+          type: "response.created",
+          response: { id: "resp_cancel_race", status: "in_progress", conversation_id: "conv_cancel_race" },
+        }));
+        await vi.waitFor(() => expect(lifecycleEvents).toContainEqual(expect.objectContaining({
+          type: "response",
+          status: "started",
+          responseId: "resp_cancel_race",
+        })));
+
+        await expect(harness.session.cancelResponse("client followed server VAD interruption")).resolves.toBe(true);
+        await harness.session.sendText("queued after the interruption");
+        await vi.waitFor(() => expect(
+          harness.clientMessages.filter((message) => message.type === "response.cancel"),
+        ).toHaveLength(1));
+        const cancel = harness.clientMessages.find((message) => message.type === "response.cancel");
+        expect(cancel).toMatchObject({
+          type: "response.cancel",
+          response_id: "resp_cancel_race",
+          event_id: expect.stringMatching(/^cancel_[0-9a-f-]{36}$/),
+        });
+
+        const terminal = {
+          type: "response.done",
+          response: {
+            id: "resp_cancel_race",
+            status: "cancelled",
+            conversation_id: "conv_cancel_race",
+          },
+        };
+        const benignCancelError = {
+          type: "error",
+          event_id: "server_cancel_race_error",
+          error: {
+            type: "invalid_request_error",
+            code: "response_cancel_not_active",
+            message: "Cancellation failed because no response is active.",
+            param: null,
+            event_id: cancel.event_id,
+          },
+        };
+        if (order === "error_before_done") {
+          harness.upstream.send(JSON.stringify(benignCancelError));
+          await waitForResponseCreates(harness.clientMessages, 2);
+          harness.upstream.send(JSON.stringify(terminal));
+        } else {
+          harness.upstream.send(JSON.stringify(terminal));
+          await waitForResponseCreates(harness.clientMessages, 2);
+          harness.upstream.send(JSON.stringify(benignCancelError));
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(adapterErrors).toEqual([]);
+        expect(harness.upstream.readyState).toBe(WebSocket.OPEN);
+        expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(2);
+        expect(lifecycleEvents.filter(
+          (event) => event.type === "response"
+            && event.status === "cancelled"
+            && event.responseId === "resp_cancel_race",
+        )).toHaveLength(1);
+      } finally {
+        await harness.close();
+      }
+    },
+  );
+
+  it("drops a delayed tool-bearing terminal event after a recoverable cancel race", async () => {
+    const events: LiveModelEvent[] = [];
+    const adapterErrors: unknown[] = [];
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => events.push(event),
+      onError: (error) => adapterErrors.push(error),
+    });
+
+    try {
+      await harness.session.sendText("response cancelled by the provider first");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_stale_tool", status: "in_progress" },
+      }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "started",
+        responseId: "resp_stale_tool",
+      })));
+      await expect(harness.session.cancelResponse("race with provider cancellation")).resolves.toBe(true);
+      await harness.session.sendText("next response after the race");
+      await vi.waitFor(() => expect(
+        harness.clientMessages.filter((message) => message.type === "response.cancel"),
+      ).toHaveLength(1));
+      const cancel = harness.clientMessages.find((message) => message.type === "response.cancel");
+      harness.upstream.send(JSON.stringify({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          code: "response_cancel_not_active",
+          message: "Cancellation failed because no response is active.",
+          event_id: cancel.event_id,
+        },
+      }));
+      await waitForResponseCreates(harness.clientMessages, 2);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_after_stale_tool", status: "in_progress" },
+      }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "started",
+        responseId: "resp_after_stale_tool",
+      })));
+
+      harness.upstream.send(JSON.stringify({
+        type: "response.done",
+        response: {
+          id: "resp_stale_tool",
+          status: "completed",
+          output: [{
+            type: "function_call",
+            status: "completed",
+            call_id: "call_delayed_after_cancel",
+            name: "start_hermes_run",
+            arguments: '{"message":"delayed after cancel"}',
+          }],
+        },
+      }));
+      harness.upstream.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        response_id: "resp_after_stale_tool",
+        call_id: "call_delayed_after_cancel",
+        name: "start_hermes_run",
+        arguments: '{"message":"delayed after cancel"}',
+      }));
+
+      await vi.waitFor(() => expect(events.filter((event) => event.type === "tool_call")).toHaveLength(1));
+      expect(events.filter((event) => event.type === "tool_call").map((event) => event.call.id)).toEqual([
+        "call_delayed_after_cancel",
+      ]);
+      expect(events).not.toContainEqual(expect.objectContaining({
+        type: "response",
+        status: "completed",
+        responseId: "resp_stale_tool",
+      }));
+      expect(adapterErrors).toEqual([]);
+      expect(harness.upstream.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it.each([
+    { name: "an uncorrelated cancel error", correlated: false, code: "response_cancel_not_active" },
+    { name: "a correlated non-cancel-race error", correlated: true, code: "invalid_event" },
+  ])("fails closed on $name", async ({ correlated, code }) => {
+    const adapterError = deferred<unknown>();
+    const responseStarted = deferred<void>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "response" && event.status === "started") responseStarted.resolve();
+      },
+      onError: (error) => adapterError.resolve(error),
+    });
+
+    try {
+      await harness.session.sendText("response before a fatal provider error");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_fatal_cancel", status: "in_progress", conversation_id: "conv_fatal" },
+      }));
+      await withTimeout(responseStarted.promise, 1_000, "OpenAI response did not start.");
+      await expect(harness.session.cancelResponse("create a correlated cancel id")).resolves.toBe(true);
+      await vi.waitFor(() => expect(
+        harness.clientMessages.filter((message) => message.type === "response.cancel"),
+      ).toHaveLength(1));
+      const cancel = harness.clientMessages.find((message) => message.type === "response.cancel");
+      const providerClosed = once(harness.upstream, "close");
+
+      harness.upstream.send(JSON.stringify({
+        type: "error",
+        event_id: "server_fatal_cancel_error",
+        error: {
+          type: "invalid_request_error",
+          code,
+          message: "Provider rejected the cancellation event.",
+          param: null,
+          event_id: correlated ? cancel.event_id : "cancel_unrelated",
+        },
+      }));
+
+      await expect(withTimeout(adapterError.promise, 1_000, "Adapter did not surface the provider error."))
+        .resolves.toMatchObject({ code });
+      await expect(withTimeout(providerClosed, 1_000, "Adapter did not close after the provider error."))
+        .resolves.toBeDefined();
+    } finally {
+      await harness.close();
     }
   });
 
@@ -968,7 +1823,10 @@ describe("OpenAI Realtime adapter helpers", () => {
           socket.send(JSON.stringify({ type: "session.updated" }));
         } else if (message.type === "response.create") {
           responseCreates += 1;
-          socket.send(JSON.stringify({ type: "response.created", response: { status: "in_progress" } }));
+          socket.send(JSON.stringify({
+            type: "response.created",
+            response: { id: "resp_provider_error", status: "in_progress" },
+          }));
           socket.send(JSON.stringify({ type: "error", error: { message: "provider rejected response" } }));
         }
       });
@@ -1072,9 +1930,16 @@ describe("OpenAI Realtime adapter helpers", () => {
     });
 
     try {
+      await harness.session.sendText("fill the bounded tool-call ledger");
+      await waitForResponseCreates(harness.clientMessages, 1);
+      harness.upstream.send(JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_tool_ledger", status: "in_progress" },
+      }));
       for (let index = 0; index < OPENAI_MAX_HANDLED_TOOL_CALLS; index += 1) {
         harness.upstream.send(JSON.stringify({
           type: "response.function_call_arguments.done",
+          response_id: "resp_tool_ledger",
           call_id: `bounded_call_${index}`,
           name: "start_background_task",
           arguments: JSON.stringify({ message: `Mutation ${index}` }),
@@ -1085,12 +1950,14 @@ describe("OpenAI Realtime adapter helpers", () => {
 
       harness.upstream.send(JSON.stringify({
         type: "response.function_call_arguments.done",
+        response_id: "resp_tool_ledger",
         call_id: "bounded_call_0",
         name: "start_background_task",
         arguments: '{"message":"Mutation 0"}',
       }));
       harness.upstream.send(JSON.stringify({
         type: "response.output_audio_transcript.delta",
+        response_id: "resp_tool_ledger",
         delta: "ledger barrier",
       }));
       await withTimeout(replayBarrier.promise, 2_000, "Exact replay was not processed before the ledger barrier.");
@@ -1098,6 +1965,7 @@ describe("OpenAI Realtime adapter helpers", () => {
 
       harness.upstream.send(JSON.stringify({
         type: "response.function_call_arguments.done",
+        response_id: "resp_tool_ledger",
         call_id: "must_not_evict_an_old_id",
         name: "start_background_task",
         arguments: '{"message":"Must fail closed"}',
@@ -1128,16 +1996,22 @@ describe("OpenAI Realtime adapter helpers", () => {
         const message = JSON.parse(raw.toString("utf8"));
         if (message.type === "session.update") {
           socket.send(JSON.stringify({ type: "session.updated" }));
-          queueMicrotask(() => socket.send(JSON.stringify({
+        } else if (message.type === "response.create") {
+          socket.send(JSON.stringify({
+            type: "response.created",
+            response: { id: "resp_multiple_tools", status: "in_progress" },
+          }));
+          socket.send(JSON.stringify({
             type: "response.done",
             response: {
+              id: "resp_multiple_tools",
               status: "completed",
               output: [
                 { type: "function_call", call_id: "call_1", name: "get_hermes_run_status", arguments: '{}' },
                 { type: "function_call", call_id: "call_2", name: "stop_hermes_run", arguments: '{}' },
               ],
             },
-          })));
+          }));
         }
       });
       socket.once("close", (code, reason) => {
@@ -1156,11 +2030,12 @@ describe("OpenAI Realtime adapter helpers", () => {
         systemInstruction: "test",
         callbacks: { onEvent, onError: (error) => adapterError.resolve(error) },
       });
+      await session.sendText("trigger multiple tool calls");
       await expect(withTimeout(adapterError.promise, 1_000, "Multiple tool calls were not rejected."))
         .resolves.toMatchObject({ message: expect.stringContaining("multiple tool calls") });
       await expect(withTimeout(providerClosed.promise, 1_000, "Multiple tool calls did not close the provider socket."))
         .resolves.toEqual({ code: 1011, reason: "OpenAI Realtime provider error" });
-      expect(onEvent).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call" }));
     } finally {
       await session?.close();
       await closeServer(server);
@@ -1195,6 +2070,7 @@ async function createOpenAITestHarness(
   callbacks: Parameters<OpenAIRealtimeAdapter["connect"]>[0]["callbacks"] = {
     onEvent: () => undefined,
   },
+  configOverrides: Partial<Parameters<typeof buildOpenAISessionUpdate>[0]> = {},
 ): Promise<{
   server: WebSocketServer;
   upstream: import("ws").WebSocket;
@@ -1219,6 +2095,7 @@ async function createOpenAITestHarness(
   const adapter = new OpenAIRealtimeAdapter(testOpenAIConfig({
     apiKey: "test-key",
     baseUrl: `ws://127.0.0.1:${portOf(server)}/v1/realtime`,
+    ...configOverrides,
   }));
   const session = await adapter.connect({
     sessionId: "live_openai_notification_test",

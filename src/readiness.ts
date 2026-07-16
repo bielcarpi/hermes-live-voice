@@ -22,24 +22,49 @@ export interface ReadinessReport {
   gateway: ReadinessSection;
   hermes: ReadinessSection;
   realtime: ReadinessSection;
+  tasks: ReadinessSection;
+}
+
+export interface TaskRuntimeHealthPort {
+  health(): Promise<void>;
 }
 
 export interface BuildReadinessReportOptions {
   hermes?: HermesRunsPort;
+  tasks?: TaskRuntimeHealthPort;
   requireHermesApiKey?: boolean;
   requireRealtimeProviderConfig?: boolean;
 }
 
 export async function buildReadinessReport(config: AppConfig, options: BuildReadinessReportOptions = {}): Promise<ReadinessReport> {
   const gateway = checkGatewayConfig(config);
-  const hermes = await checkHermesConfig(config, options);
   const realtime = checkRealtimeConfig(config, options);
+  const [hermes, tasks] = await Promise.all([
+    checkHermesConfig(config, options),
+    checkTaskRuntime(options.tasks),
+  ]);
   return {
-    ok: gateway.ok && hermes.ok && realtime.ok,
+    ok: gateway.ok && hermes.ok && realtime.ok && tasks.ok,
     gateway,
     hermes,
     realtime,
+    tasks,
   };
+}
+
+async function checkTaskRuntime(tasks: TaskRuntimeHealthPort | undefined): Promise<ReadinessSection> {
+  if (!tasks) return { ok: true, checked: false, durable: true };
+  try {
+    await tasks.health();
+    return { ok: true, checked: true, durable: true };
+  } catch {
+    return {
+      ok: false,
+      checked: true,
+      durable: true,
+      error: "Task state is unavailable. Check the gateway logs.",
+    };
+  }
 }
 
 function checkGatewayConfig(config: AppConfig): ReadinessSection {
@@ -53,6 +78,7 @@ function checkGatewayConfig(config: AppConfig): ReadinessSection {
     tasks: {
       durable: true,
       maxConcurrent: config.tasks.maxConcurrent,
+      declaredReadOnlyTrusted: config.tasks.trustDeclaredReadOnly === true,
       maxQueued: config.tasks.maxQueued,
       maxRetained: config.tasks.historyLimit,
       retentionMs: config.tasks.retentionMs,

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-07-16
+
+- Keep the realtime conversation open while Hermes works. Delegated work is now owned by a durable server-side supervisor, survives client detachment, and reports retained results through an unread completion inbox after reconnect.
+- Persist a task before accepting it, reconcile known Hermes runs after a gateway restart, and fence ambiguous dispatches as `dispatch_unknown` instead of retrying a mutation that Hermes may already have accepted. In-progress work still cannot survive a Hermes Agent restart.
+- Run work exclusively by default. Operators can opt into parallel read-only tasks with disjoint resource keys only when they explicitly trust model-declared scopes through `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true`.
+- Add exact background-task controls to the realtime tools, terminal, Dashboard, browser client, and wire protocol v3. Speech interruption and task cancellation remain separate operations.
+- Harden the local task store with a private atomic file, strict single-writer lock, bounded retention, startup reconciliation, task-store readiness checks, offline containment and abandoned-lock recovery commands, and bounded shutdown. The stable state format reads beta state but becomes forward-only after writing new recovery fields.
+- Deliver completion speech through bounded, retryable session claims and mark notifications spoken only after provider handoff. OpenAI isolates each task notice from conversation history, keeps a newly finished notice behind the user's current VAD turn, and targets interruption to the exact notice response; Gemini notices remain best effort.
+- Remove the provisional `queuePosition` hint from protocol v3 because the bounded scheduler is not a strict FIFO queue. The field was optional in beta clients, but beta gateways and clients should still be upgraded together before reconnecting to stable v0.5.
+- Keep approvals fail-closed until Hermes exposes identity that can target one exact request safely. Unknown or confirmed-missing runs can be contained without fabricating a result.
+- Add a real built-image Docker smoke, pin the Hermes v0.18.2 fixture to its published image digest and revision, update `@google/genai` to 2.12.0, and verify the packed CLI, plugin, Dashboard, browser client, task recovery, and provider adapters.
+- Export the new `tasks.trustDeclaredReadOnly`, task-store `health()`, readiness `tasks`, and `input_speech_stopped` contracts. Simplify the README, Dashboard, demo, and release docs around the project's actual role: real-time voice for Hermes Agent.
+
 ## 0.5.0-beta.1 - 2026-07-15
 
 - Replace session-bound delegation with a server-owned durable task supervisor: tasks are persisted before acceptance, retain bounded results, survive client detachment, and reconcile after a gateway restart when Hermes still knows the upstream run.

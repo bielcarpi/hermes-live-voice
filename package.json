@@ -1,7 +1,7 @@
 {
   "name": "hermes-live-voice",
-  "version": "0.5.0-beta.1",
-  "description": "Keep talking while Hermes keeps working—realtime voice, durable background tasks, and completion notifications for Hermes Agent.",
+  "version": "0.5.0",
+  "description": "Real-time voice for Hermes Agent—talk naturally while it works in the background.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -36,27 +36,16 @@
   },
   "keywords": [
     "hermes-agent",
-    "gemini-live",
-    "openai-realtime",
     "realtime",
     "voice",
-    "hermes-plugin",
-    "hermes-dashboard",
-    "background-agents",
+    "background-tasks",
     "durable-tasks",
-    "parallel-agents",
-    "task-supervisor",
-    "completion-notifications",
+    "openai-realtime",
+    "gemini-live",
+    "hermes-plugin",
     "self-hosted",
-    "jarvis",
-    "browser-client",
-    "voice-ui",
     "terminal",
-    "speech-to-speech",
-    "voice-agent",
-    "full-duplex",
-    "barge-in",
-    "agent",
+    "voice-assistant",
     "websocket"
   ],
   "engines": {
@@ -115,7 +104,7 @@
     "prepack": "npm run check:dashboard-assets && npm run build"
   },
   "dependencies": {
-    "@google/genai": "2.11.0",
+    "@google/genai": "2.12.0",
     "ws": "8.21.1",
     "zod": "^3.25.76"
   },

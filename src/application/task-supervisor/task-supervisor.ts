@@ -35,6 +35,7 @@ const DEFAULT_MAX_QUEUED = 32;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_RETRY_BASE_MS = 500;
 const DEFAULT_RETRY_MAX_MS = 30_000;
+const STARTUP_RECONCILIATION_CONCURRENCY = 4;
 const MAX_PROGRESS_EVENTS_PER_TASK = 64;
 const ACTIVE_TASK_STATUSES = new Set<TaskStatus>([
   "dispatching",
@@ -57,6 +58,7 @@ export interface TaskSupervisorOptions {
   store: TaskStorePort;
   hermes: HermesRunsPort;
   maxConcurrent?: number;
+  trustDeclaredReadOnly?: boolean;
   maxQueued?: number;
   pollIntervalMs?: number;
   retryBaseMs?: number;
@@ -96,6 +98,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
   private readonly store: TaskStorePort;
   private readonly hermes: HermesRunsPort;
   private readonly maxConcurrent: number;
+  private readonly trustDeclaredReadOnly: boolean;
   private readonly maxQueued: number;
   private readonly pollIntervalMs: number;
   private readonly retryBaseMs: number;
@@ -105,14 +108,16 @@ export class TaskSupervisor implements TaskSupervisorPort {
   private readonly scheduler: TaskSupervisorScheduler;
   private readonly onError?: (error: unknown) => void;
   private readonly ownerSessionKeys = new Map<string, string>();
+  private readonly notificationAnnouncementClaims = new Map<string, { ownerId: string; claimantId: string }>();
   private readonly subscribers = new Map<string, Set<TaskRecordListener>>();
   private readonly timers = new Map<string, unknown>();
   private readonly retryAttempts = new Map<string, number>();
   private readonly retryNotBefore = new Map<string, number>();
+  private readonly acceptedRunsAwaitingPersistence = new Map<string, { runId: string; attempt: number }>();
+  private readonly taskStateFailures = new Map<string, Error>();
   private readonly progressEventCounts = new Map<string, number>();
   private readonly watching = new Set<string>();
   private readonly pollSuppressed = new Set<string>();
-  private readonly confirmedMissing = new Set<string>();
   private readonly confirmedStopRequests = new Set<string>();
   private readonly stopRequests = new Map<string, Promise<void>>();
   private readonly containingApprovals = new Set<string>();
@@ -120,6 +125,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
   private readonly abortController = new AbortController();
   private operationTail: Promise<void> = Promise.resolve();
   private initializePromise?: Promise<void>;
+  private closePromise?: Promise<void>;
   private initialized = false;
   private closed = false;
   private drainQueued = false;
@@ -131,6 +137,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
     this.store = options.store;
     this.hermes = options.hermes;
     this.maxConcurrent = positiveInteger(options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT, "maxConcurrent");
+    this.trustDeclaredReadOnly = options.trustDeclaredReadOnly === true;
     this.maxQueued = nonNegativeInteger(options.maxQueued ?? DEFAULT_MAX_QUEUED, "maxQueued");
     this.pollIntervalMs = positiveInteger(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, "pollIntervalMs");
     this.retryBaseMs = positiveInteger(options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS, "retryBaseMs");
@@ -148,8 +155,12 @@ export class TaskSupervisor implements TaskSupervisorPort {
     return this.initializePromise;
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (!this.closePromise) this.closePromise = this.closeOnce();
+    return this.closePromise;
+  }
+
+  private async closeOnce(): Promise<void> {
     this.closed = true;
     this.abortController.abort();
     for (const handle of this.timers.values()) this.scheduler.clearTimeout(handle);
@@ -157,6 +168,8 @@ export class TaskSupervisor implements TaskSupervisorPort {
     this.watching.clear();
     this.subscribers.clear();
     this.ownerSessionKeys.clear();
+    this.notificationAnnouncementClaims.clear();
+    await this.initializePromise?.catch(() => undefined);
     while (true) {
       await this.operationTail;
       const pending = [...this.backgroundOperations];
@@ -164,6 +177,31 @@ export class TaskSupervisor implements TaskSupervisorPort {
       await Promise.allSettled(pending);
     }
     await this.operationTail;
+    // If Hermes accepted a run while its state update failed, make one final
+    // bounded effort to preserve that known run ID before releasing the store.
+    const shutdownFailures: unknown[] = [];
+    for (const [taskId, pending] of this.acceptedRunsAwaitingPersistence) {
+      try {
+        await this.persistAcceptedRun(taskId, pending.runId);
+        this.acceptedRunsAwaitingPersistence.delete(taskId);
+        this.taskStateFailures.delete(taskId);
+      } catch (error) {
+        this.reportError(error);
+        shutdownFailures.push(error);
+      }
+    }
+    try {
+      await this.store.close?.();
+    } catch (error) {
+      shutdownFailures.push(error);
+    }
+    if (shutdownFailures.length === 1) throw shutdownFailures[0];
+    if (shutdownFailures.length > 1) {
+      throw new AggregateError(
+        shutdownFailures,
+        "Task supervisor shutdown could not preserve every accepted run ID and close task state cleanly.",
+      );
+    }
   }
 
   registerOwner(ownerIdentity: string, sessionKey: string): string {
@@ -184,8 +222,8 @@ export class TaskSupervisor implements TaskSupervisorPort {
         ownerIdentity: input.ownerIdentity,
         input: input.input,
         title: input.title,
-        executionMode: input.executionMode,
-        resourceKeys: input.resourceKeys,
+        executionMode: this.trustDeclaredReadOnly ? input.executionMode : "exclusive",
+        resourceKeys: this.trustDeclaredReadOnly ? input.resourceKeys : undefined,
         now: this.nextCreationTimestamp(),
       });
       if (created.ownerId !== ownerId) throw new Error("Task owner registration mismatch.");
@@ -210,7 +248,9 @@ export class TaskSupervisor implements TaskSupervisorPort {
     return this.store.list({
       ownerId: parsedOwnerId,
       statuses: OWNER_ACTIVE_TASK_STATUSES,
-    }).then((records) => records.map(cloneTask));
+    }).then((records) => records
+      .filter((record) => record.upstreamRunMissingAt === undefined && record.operatorContainedAt === undefined)
+      .map(cloneTask));
   }
 
   listUnreadNotifications(ownerId: string): Promise<TaskRecord[]> {
@@ -238,6 +278,10 @@ export class TaskSupervisor implements TaskSupervisorPort {
       : "Queued task cancelled.";
     let record = await this.mutatePersist(parsedTaskId, (current) => {
       if (current.ownerId !== parsedOwnerId) throw new TaskNotFoundError(parsedTaskId);
+      // A confirmed missing run or operator containment is the durable final
+      // disposition for an indeterminate task. No later control operation may
+      // reopen or mutate it.
+      if (isTaskOperationallyClosed(current)) return current;
       if (current.status === "queued") {
         return transitionTask(current, "cancelled", { now: this.now(), summary: cancellationSummary });
       }
@@ -249,6 +293,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
           : "Exact task stop requested.",
       });
     });
+    if (isTaskOperationallyClosed(record)) return record;
     if (record.status === "cancelled") {
       this.scheduleDrain();
       return record;
@@ -280,32 +325,84 @@ export class TaskSupervisor implements TaskSupervisorPort {
   claimNotificationAnnouncement(
     ownerId: string,
     taskId: string,
+    claimantId: string,
   ): Promise<TaskNotificationAnnouncementClaim> {
     this.assertReady();
     const parsedOwnerId = TaskOwnerIdSchema.parse(ownerId);
     const parsedTaskId = TaskIdSchema.parse(taskId);
+    const parsedClaimantId = validateClaimantId(claimantId);
     return this.serialized(async () => {
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        const current = await this.store.load(parsedTaskId);
-        if (!current || current.ownerId !== parsedOwnerId) throw new TaskNotFoundError(parsedTaskId);
-        if (!current.notification.unread || current.notification.announcedAt !== undefined) {
-          return { claimed: false, task: cloneTask(current) };
-        }
-        const updated = markTaskNotificationAnnounced(current, this.now());
-        try {
-          const persisted = await this.store.update(
-            parsedTaskId,
-            () => updated,
-            { expectedRevision: current.revision },
-          );
-          this.publish(persisted);
-          return { claimed: true, task: cloneTask(persisted) };
-        } catch (error) {
-          if (errorName(error) !== "TaskStoreConflictError" || attempt === 3) throw error;
-        }
+      const current = await this.store.load(parsedTaskId);
+      if (!current || current.ownerId !== parsedOwnerId) throw new TaskNotFoundError(parsedTaskId);
+      if (
+        !current.notification.unread
+        || current.notification.announcedAt !== undefined
+        || this.notificationAnnouncementClaims.has(parsedTaskId)
+      ) {
+        return { claimed: false, task: cloneTask(current) };
       }
-      throw new Error("Task notification announcement claim retry loop exhausted.");
+      this.notificationAnnouncementClaims.set(parsedTaskId, {
+        ownerId: parsedOwnerId,
+        claimantId: parsedClaimantId,
+      });
+      return { claimed: true, task: cloneTask(current) };
     });
+  }
+
+  completeNotificationAnnouncement(ownerId: string, taskId: string, claimantId: string): Promise<TaskRecord> {
+    this.assertReady();
+    const parsedOwnerId = TaskOwnerIdSchema.parse(ownerId);
+    const parsedTaskId = TaskIdSchema.parse(taskId);
+    const parsedClaimantId = validateClaimantId(claimantId);
+    return this.serialized(async () => {
+      const claim = this.notificationAnnouncementClaims.get(parsedTaskId);
+      if (claim?.ownerId !== parsedOwnerId || claim.claimantId !== parsedClaimantId) {
+        throw new Error("Task notification announcement claim is not held by this live session.");
+      }
+      try {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const current = await this.store.load(parsedTaskId);
+          if (!current || current.ownerId !== parsedOwnerId) throw new TaskNotFoundError(parsedTaskId);
+          const updated = markTaskNotificationAnnounced(current, this.now());
+          if (updated.revision === current.revision) return cloneTask(current);
+          try {
+            const persisted = await this.store.update(
+              parsedTaskId,
+              () => updated,
+              { expectedRevision: current.revision },
+            );
+            this.publish(persisted);
+            return cloneTask(persisted);
+          } catch (error) {
+            if (errorName(error) !== "TaskStoreConflictError" || attempt === 3) throw error;
+          }
+        }
+        throw new Error("Task notification announcement completion retry loop exhausted.");
+      } finally {
+        this.notificationAnnouncementClaims.delete(parsedTaskId);
+      }
+    });
+  }
+
+  releaseNotificationAnnouncement(ownerId: string, taskId: string, claimantId: string): void {
+    this.assertReady();
+    const parsedOwnerId = TaskOwnerIdSchema.parse(ownerId);
+    const parsedTaskId = TaskIdSchema.parse(taskId);
+    const parsedClaimantId = validateClaimantId(claimantId);
+    const claim = this.notificationAnnouncementClaims.get(parsedTaskId);
+    if (claim?.ownerId === parsedOwnerId && claim.claimantId === parsedClaimantId) {
+      this.notificationAnnouncementClaims.delete(parsedTaskId);
+    }
+  }
+
+  async health(): Promise<void> {
+    this.assertReady();
+    await this.store.list({ limit: 1 });
+    if (this.acceptedRunsAwaitingPersistence.size > 0) {
+      throw new Error("Hermes accepted a task, but its exact run ID is not yet durable.");
+    }
+    const failure = this.taskStateFailures.values().next().value;
+    if (failure) throw failure;
   }
 
   subscribe(ownerId: string, listener: TaskRecordListener): () => void {
@@ -328,38 +425,41 @@ export class TaskSupervisor implements TaskSupervisorPort {
       (latest, record) => latest === undefined ? record.createdAt : Math.max(latest, record.createdAt),
       this.lastCreatedAt,
     );
-    for (const record of records) {
+    await runWithConcurrency(records, STARTUP_RECONCILIATION_CONCURRENCY, async (record) => {
       if (this.closed) return;
+      if (record.upstreamRunMissingAt !== undefined || record.operatorContainedAt !== undefined) return;
       if (record.status === "dispatching" && !record.runId) {
         await this.transitionPersist(record.taskId, "dispatch_unknown", {
           summary: "Dispatch outcome is unknown after supervisor restart.",
         });
-        continue;
+        return;
       }
-      if (record.runId && !isTaskTerminal(record.status)) {
+      if (record.runId && !isTaskOperationallyClosed(record)) {
         await this.reconcileTask(record.taskId);
         const reconciled = await this.store.load(record.taskId);
-        if (reconciled?.runId && !isTaskTerminal(reconciled.status)) this.startWatcher(reconciled);
+        if (reconciled?.runId && !isTaskOperationallyClosed(reconciled)) this.startWatcher(reconciled);
       }
-    }
+    });
     this.initialized = true;
     this.scheduleDrain();
   }
 
   private async requestStop(record: TaskRecord, reason?: string): Promise<TaskRecord> {
+    if (isTaskOperationallyClosed(record)) return record;
     let stopping = record;
     if (stopping.stopRequestedAt === undefined) {
       stopping = await this.mutatePersist(stopping.taskId, (current) =>
-        isTaskTerminal(current.status)
+        isTaskOperationallyClosed(current)
           ? current
           : markTaskStopRequested(current, { now: this.now(), summary: "Exact task stop requested." }));
     }
+    if (isTaskOperationallyClosed(stopping)) return stopping;
     if (stopping.status !== "stopping" && canTransitionTask(stopping.status, "stopping")) {
       stopping = await this.transitionPersist(stopping.taskId, "stopping", {
         summary: reason ? `Stop requested: ${sanitizeTaskEventSummary(reason)}` : "Stop requested.",
       });
     }
-    if (!stopping.runId || isTaskTerminal(stopping.status)) return stopping;
+    if (!stopping.runId || isTaskOperationallyClosed(stopping)) return stopping;
     if (this.confirmedStopRequests.has(stopping.taskId)) return stopping;
     let request = this.stopRequests.get(stopping.taskId);
     if (!request) {
@@ -467,20 +567,33 @@ export class TaskSupervisor implements TaskSupervisorPort {
       // duplicate an already-running mutation without upstream idempotency.
       const active = records.filter((record) =>
         ACTIVE_TASK_STATUSES.has(record.status)
-        && !(record.status === "unknown" && this.confirmedMissing.has(record.taskId)));
+        && record.upstreamRunMissingAt === undefined
+        && record.operatorContainedAt === undefined);
       if (active.length >= this.maxConcurrent) return undefined;
       const now = this.now();
       const queued = records
         .filter((record) => record.status === "queued")
         .sort((left, right) => left.createdAt - right.createdAt || left.taskId.localeCompare(right.taskId));
       for (const candidate of queued) {
+        if (candidate.stopRequestedAt !== undefined) {
+          const cancelled = await this.store.update(
+            candidate.taskId,
+            (current) => transitionTask(current, "cancelled", {
+              now,
+              summary: "Task cancelled before Hermes admitted it.",
+            }),
+            { expectedRevision: candidate.revision },
+          );
+          this.publish(cancelled);
+          continue;
+        }
         if (!this.ownerSessionKeys.has(candidate.ownerId)) continue;
         if ((this.retryNotBefore.get(candidate.taskId) ?? 0) > now) continue;
-        if (!canAdmit(candidate, active)) {
+        if (!canAdmit(candidate, active, this.trustDeclaredReadOnly)) {
           // An exclusive task is a FIFO barrier so it cannot be starved by a
           // stream of later reads. A read blocked only by an overlapping key
           // does not need to head-of-line block later disjoint read-only work.
-          if (candidate.executionMode === "exclusive") return undefined;
+          if (!this.trustDeclaredReadOnly || candidate.executionMode === "exclusive") return undefined;
           continue;
         }
         const updated = await this.store.update(
@@ -501,72 +614,151 @@ export class TaskSupervisor implements TaskSupervisorPort {
       await this.transitionPersist(task.taskId, "queued", { summary: "Task is waiting for its owner to reconnect." });
       return;
     }
+    let started: Awaited<ReturnType<HermesRunsPort["startRun"]>>;
     try {
-      const started = await this.hermes.startRun({
+      started = await this.hermes.startRun({
         input: task.input,
         sessionId: task.hermesSessionId,
         sessionKey,
         ...(this.runInstructions ? { instructions: this.runInstructions } : {}),
       }, this.abortController.signal);
-      const running = await this.transitionPersist(task.taskId, "running", {
-        runId: started.runId,
-        summary: "Hermes accepted the task.",
-      });
-      this.retryAttempts.delete(task.taskId);
-      this.retryNotBefore.delete(task.taskId);
-      if (!this.closed && running.stopRequestedAt !== undefined) {
-        await this.requestStop(running, "Stop requested during dispatch.");
-      } else if (!this.closed) {
-        this.startWatcher(running);
-      }
     } catch (error) {
-      const status = httpStatus(error);
-      const current = await this.store.load(task.taskId);
-      const stopRequested = current?.stopRequestedAt !== undefined;
-      if (stopRequested && (
-        isDefinitiveRetryableDispatchRejection(error)
-        || isDefinitiveClientDispatchRejection(error)
-      )) {
-        await this.transitionPersist(task.taskId, "cancelled", {
-          summary: "Task cancelled before Hermes admitted it.",
-        });
-        this.scheduleDrain();
-        return;
-      }
-      if (isDefinitiveRetryableDispatchRejection(error)) {
-        await this.transitionPersist(task.taskId, "queued", {
-          summary: "Hermes is busy; task safely requeued.",
-        });
-        const attempt = (this.retryAttempts.get(task.taskId) ?? 0) + 1;
-        this.retryAttempts.set(task.taskId, attempt);
-        const delay = Math.min(this.retryBaseMs * (2 ** Math.min(attempt - 1, 20)), this.retryMaxMs);
-        this.retryNotBefore.set(task.taskId, this.now() + delay);
-        this.scheduleTimer(`retry:${task.taskId}`, delay, () => {
-          this.retryNotBefore.delete(task.taskId);
-          this.scheduleDrain();
-        });
-        this.scheduleDrain();
-        return;
-      }
-      if (isDefinitiveClientDispatchRejection(error)) {
-        await this.transitionPersist(task.taskId, "failed", {
+      await this.handleDispatchStartFailure(task, error);
+      return;
+    }
+    // A valid run ID is now known. Errors below are task-state/runtime errors,
+    // never ambiguous POST outcomes, and must not discard that exact identity.
+    await this.activateAcceptedRun(task.taskId, started.runId);
+  }
+
+  private async handleDispatchStartFailure(task: TaskRecord, error: unknown): Promise<void> {
+    const status = httpStatus(error);
+    const retryable = isDefinitiveRetryableDispatchRejection(error);
+    const clientRejection = isDefinitiveClientDispatchRejection(error);
+    if (retryable || clientRejection) {
+      // Decide against the latest durable record inside the same supervisor
+      // serialization as the write. A stop can race the Hermes rejection; a
+      // stale pre-read must never requeue work after that stop intent exists.
+      const outcome = await this.mutatePersist(task.taskId, (current) => {
+        if (isTaskOperationallyClosed(current) || current.status !== "dispatching") return current;
+        if (current.stopRequestedAt !== undefined) {
+          return transitionTask(current, "cancelled", {
+            now: this.now(),
+            summary: "Task cancelled before Hermes admitted it.",
+          });
+        }
+        if (retryable) {
+          return transitionTask(current, "queued", {
+            now: this.now(),
+            summary: "Hermes is busy; task safely requeued.",
+          });
+        }
+        return transitionTask(current, "failed", {
+          now: this.now(),
           error: `Hermes rejected task dispatch with HTTP ${status!}.`,
           summary: "Hermes rejected task dispatch.",
         });
+      });
+
+      if (outcome.status !== "queued" || outcome.stopRequestedAt !== undefined) {
+        this.retryAttempts.delete(task.taskId);
+        this.retryNotBefore.delete(task.taskId);
         this.scheduleDrain();
         return;
       }
-      await this.transitionPersist(task.taskId, "dispatch_unknown", {
-        summary: "Hermes dispatch outcome could not be confirmed; automatic retry is disabled.",
+
+      const attempt = (this.retryAttempts.get(task.taskId) ?? 0) + 1;
+      this.retryAttempts.set(task.taskId, attempt);
+      const delay = Math.min(this.retryBaseMs * (2 ** Math.min(attempt - 1, 20)), this.retryMaxMs);
+      this.retryNotBefore.set(task.taskId, this.now() + delay);
+      this.scheduleTimer(`retry:${task.taskId}`, delay, () => {
+        this.retryNotBefore.delete(task.taskId);
+        this.scheduleDrain();
       });
+      this.scheduleDrain();
+      return;
     }
+    await this.transitionPersist(task.taskId, "dispatch_unknown", {
+      summary: "Hermes dispatch outcome could not be confirmed; automatic retry is disabled.",
+    });
+  }
+
+  private async activateAcceptedRun(taskId: string, runId: string): Promise<void> {
+    let running: TaskRecord;
+    try {
+      running = await this.persistAcceptedRun(taskId, runId);
+    } catch (error) {
+      const previous = this.acceptedRunsAwaitingPersistence.get(taskId);
+      const attempt = (previous?.attempt ?? 0) + 1;
+      this.acceptedRunsAwaitingPersistence.set(taskId, { runId, attempt });
+      const persistenceFailure = new Error(
+        "Hermes accepted a task, but its exact run ID has not yet been made durable.",
+        { cause: error },
+      );
+      this.taskStateFailures.set(taskId, persistenceFailure);
+      this.reportError(persistenceFailure);
+      if (!this.closed) {
+        const delay = Math.min(this.retryBaseMs * (2 ** Math.min(attempt - 1, 20)), this.retryMaxMs);
+        this.scheduleTimer(`persist-run:${taskId}`, delay, () => {
+          this.trackBackground(this.activateAcceptedRun(taskId, runId));
+        });
+      }
+      return;
+    }
+
+    this.acceptedRunsAwaitingPersistence.delete(taskId);
+    this.taskStateFailures.delete(taskId);
+    this.retryAttempts.delete(taskId);
+    this.retryNotBefore.delete(taskId);
+    if (this.closed) return;
+    try {
+      if (running.stopRequestedAt !== undefined) {
+        await this.requestStop(running, "Stop requested during dispatch.");
+      } else {
+        this.startWatcher(running);
+      }
+    } catch (error) {
+      this.reportError(error);
+      const current = await this.store.load(taskId).catch(() => undefined);
+      if (current?.runId === runId && !isTaskOperationallyClosed(current)) this.startWatcher(current);
+    }
+  }
+
+  private async persistAcceptedRun(taskId: string, runId: string): Promise<TaskRecord> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const persisted = await this.mutatePersist(taskId, (record) => {
+          if (record.runId !== undefined && record.runId !== runId) {
+            throw new Error("Hermes accepted run ID conflicts with durable task state.");
+          }
+          if (record.runId === runId) return record;
+          if (record.status !== "dispatching") {
+            throw new Error(`Cannot attach an accepted Hermes run to task state ${record.status}.`);
+          }
+          return transitionTask(record, "running", {
+            runId,
+            now: this.now(),
+            summary: "Hermes accepted the task.",
+          });
+        });
+        if (persisted.runId !== runId) {
+          throw new Error("Durable task state did not retain the accepted Hermes run ID.");
+        }
+        return persisted;
+      } catch (error) {
+        lastError = error;
+        await Promise.resolve();
+      }
+    }
+    throw lastError;
   }
 
   private startWatcher(record: TaskRecord): void {
     if (
       this.closed
       || !record.runId
-      || isTaskTerminal(record.status)
+      || isTaskOperationallyClosed(record)
       || this.watching.has(record.taskId)
       || this.pollSuppressed.has(record.taskId)
     ) return;
@@ -589,18 +781,19 @@ export class TaskSupervisor implements TaskSupervisorPort {
         if (this.closed) return;
         await this.handleRunEvent(record.taskId, record.runId!, event);
         const current = await this.store.load(record.taskId);
-        if (!current || isTaskTerminal(current.status)) return;
+        if (!current || isTaskOperationallyClosed(current)) return;
       }
     } finally {
-      if (!this.closed) {
-        await this.reconcileTask(record.taskId);
-        const current = await this.store.load(record.taskId);
-        if (current?.runId && !isTaskTerminal(current.status)) this.schedulePoll(record.taskId, this.pollIntervalMs);
-      }
+      // Once SSE ends, hand recovery back to the bounded polling loop. Doing
+      // reconciliation inline here could let one transient state-store failure
+      // escape before a replacement poll was scheduled.
+      if (!this.closed) this.schedulePoll(record.taskId, 0);
     }
   }
 
   private async handleRunEvent(taskId: string, runId: string, event: HermesRunEvent): Promise<void> {
+    const current = await this.store.load(taskId);
+    if (!current || isTaskOperationallyClosed(current)) return;
     if (event.run_id !== undefined && event.run_id !== runId) {
       await this.markUnknown(taskId, "Hermes sent an event for a different run.");
       throw new Error("Hermes run-event correlation mismatch.");
@@ -656,10 +849,10 @@ export class TaskSupervisor implements TaskSupervisorPort {
     const waiting = await this.moveToStatus(taskId, "waiting_for_approval", {
       summary: "Task requires approval.",
     });
-    if (isTaskTerminal(waiting.status)) return;
-    // v0.5 has no user-facing targeted-approval response path. Even an opaque
-    // id in an upstream event is therefore not actionable here: every approval
-    // is denied-all and the exact run is stopped fail-closed.
+    if (isTaskOperationallyClosed(waiting)) return;
+    // The public protocol has no user-facing targeted-approval response path.
+    // Even an opaque id in an upstream event is therefore not actionable here:
+    // every approval is denied-all and the exact run is stopped fail-closed.
     await this.containUncorrelatedApproval(waiting, runId);
   }
 
@@ -668,7 +861,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
     if (
       this.containingApprovals.has(taskId)
       || this.closed
-      || isTaskTerminal(waiting.status)
+      || isTaskOperationallyClosed(waiting)
     ) return;
     this.containingApprovals.add(taskId);
     try {
@@ -683,7 +876,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
       }
       if (!this.closed) {
         const current = await this.requireTask(taskId);
-        if (!isTaskTerminal(current.status)) {
+        if (!isTaskOperationallyClosed(current)) {
           await this.requestStop(current, "Uncorrelated approval denied fail-closed.");
         }
       }
@@ -696,34 +889,32 @@ export class TaskSupervisor implements TaskSupervisorPort {
     const count = this.progressEventCounts.get(taskId) ?? 0;
     if (count >= MAX_PROGRESS_EVENTS_PER_TASK) return;
     const updated = await this.mutatePersist(taskId, (record) => {
-      if (isTaskTerminal(record.status)) return record;
+      if (isTaskOperationallyClosed(record)) return record;
       return appendTaskEvent(record, { summary, now: this.now() });
     });
-    if (!isTaskTerminal(updated.status)) this.progressEventCounts.set(taskId, count + 1);
+    if (!isTaskOperationallyClosed(updated)) this.progressEventCounts.set(taskId, count + 1);
   }
 
   private async reconcileTask(taskId: string): Promise<void> {
     const record = await this.store.load(taskId);
-    if (!record?.runId || isTaskTerminal(record.status) || this.closed) return;
+    if (!record?.runId || isTaskOperationallyClosed(record) || this.closed) return;
     try {
       const snapshot = await this.hermes.getRun(record.runId, {
         signal: this.abortController.signal,
         sessionKey: this.ownerSessionKeys.get(record.ownerId),
       });
       if (snapshot.run_id !== record.runId) {
-        this.pollSuppressed.add(taskId);
         await this.markUnknown(taskId, "Hermes returned a snapshot for a different run.");
+        this.pollSuppressed.add(taskId);
         return;
       }
       this.pollSuppressed.delete(taskId);
-      this.confirmedMissing.delete(taskId);
       await this.applySnapshot(taskId, snapshot);
     } catch (error) {
       if (this.closed && isAbortError(error)) return;
       if (httpStatus(error) === 404) {
+        await this.markUnknown(taskId, "Hermes no longer recognizes this run.", true);
         this.pollSuppressed.add(taskId);
-        this.confirmedMissing.add(taskId);
-        await this.markUnknown(taskId, "Hermes no longer recognizes this run.");
       } else if (!isAbortError(error)) {
         this.reportError(error);
       }
@@ -790,7 +981,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
     options: TaskTransitionOptions = {},
   ): Promise<TaskRecord> {
     let current = await this.requireTask(taskId);
-    if (current.status === target || isTaskTerminal(current.status)) return current;
+    if (current.status === target || isTaskOperationallyClosed(current)) return current;
     if (target === "running") {
       if (current.status === "queued") current = await this.transitionPersist(taskId, "dispatching");
       if (["dispatching", "unknown", "dispatch_unknown", "waiting_for_approval"].includes(current.status)) {
@@ -811,14 +1002,19 @@ export class TaskSupervisor implements TaskSupervisorPort {
     return current;
   }
 
-  private markUnknown(taskId: string, summary: string): Promise<TaskRecord> {
+  private markUnknown(taskId: string, summary: string, upstreamRunMissing = false): Promise<TaskRecord> {
     return this.mutatePersist(taskId, (record) => {
-      if (isTaskTerminal(record.status) || record.status === "unknown") return record;
+      if (isTaskOperationallyClosed(record)) return record;
+      if (record.status === "unknown") {
+        return upstreamRunMissing && record.upstreamRunMissingAt === undefined
+          ? transitionTask(record, "unknown", { now: this.now(), summary, upstreamRunMissing: true })
+          : record;
+      }
       if (record.status === "dispatching" && !record.runId) {
         return transitionTask(record, "dispatch_unknown", { now: this.now(), summary });
       }
       if (!canTransitionTask(record.status, "unknown")) return record;
-      return transitionTask(record, "unknown", { now: this.now(), summary });
+      return transitionTask(record, "unknown", { now: this.now(), summary, upstreamRunMissing });
     });
   }
 
@@ -828,7 +1024,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
     options: TaskTransitionOptions = {},
   ): Promise<TaskRecord> {
     return this.mutatePersist(taskId, (record) => {
-      if (record.status === status || isTaskTerminal(record.status)) return record;
+      if (record.status === status || isTaskOperationallyClosed(record)) return record;
       if (!canTransitionTask(record.status, status)) return record;
       return transitionTask(record, status, { ...options, now: options.now ?? this.now() });
     });
@@ -837,20 +1033,48 @@ export class TaskSupervisor implements TaskSupervisorPort {
   private mutatePersist(taskId: string, updater: (record: TaskRecord) => TaskRecord): Promise<TaskRecord> {
     return this.serialized(async () => {
       for (let attempt = 0; attempt < 4; attempt += 1) {
-        const current = await this.store.load(taskId);
-        if (!current) throw new TaskNotFoundError(taskId);
+        let current: TaskRecord | undefined;
+        try {
+          current = await this.store.load(taskId);
+        } catch (error) {
+          this.recordTaskStateFailure(taskId, error);
+          throw error;
+        }
+        if (!current) {
+          // Missing records and owner-hiding TaskNotFoundError results are
+          // expected client/domain outcomes, not task-store health failures.
+          this.taskStateFailures.delete(taskId);
+          throw new TaskNotFoundError(taskId);
+        }
+        // Keep updater validation and authorization errors outside the durable
+        // failure path. They did not prove any inability to read or write state.
         const updated = updater(current);
-        if (updated.revision === current.revision) return cloneTask(current);
+        if (updated.revision === current.revision) {
+          this.taskStateFailures.delete(taskId);
+          return cloneTask(current);
+        }
         try {
           const persisted = await this.store.update(taskId, () => updated, { expectedRevision: current.revision });
+          this.taskStateFailures.delete(taskId);
           this.publish(persisted);
           return persisted;
         } catch (error) {
-          if (errorName(error) !== "TaskStoreConflictError" || attempt === 3) throw error;
+          if (errorName(error) === "TaskStoreConflictError" && attempt < 3) continue;
+          this.recordTaskStateFailure(taskId, error);
+          throw error;
         }
       }
-      throw new Error("Task update retry loop exhausted.");
+      const exhausted = new Error("Task update retry loop exhausted.");
+      this.recordTaskStateFailure(taskId, exhausted);
+      throw exhausted;
     });
+  }
+
+  private recordTaskStateFailure(taskId: string, cause: unknown): void {
+    this.taskStateFailures.set(
+      taskId,
+      new Error("Durable task state could not be updated; the supervisor will retry safely.", { cause }),
+    );
   }
 
   private requireTask(taskId: string): Promise<TaskRecord> {
@@ -868,13 +1092,21 @@ export class TaskSupervisor implements TaskSupervisorPort {
   }
 
   private async pollTask(taskId: string): Promise<void> {
-    await this.reconcileTask(taskId);
-    const current = await this.store.load(taskId);
-    if (!current || isTaskTerminal(current.status)) {
-      this.scheduleDrain();
-      return;
+    try {
+      await this.reconcileTask(taskId);
+      const current = await this.store.load(taskId);
+      if (!current || isTaskOperationallyClosed(current)) {
+        this.scheduleDrain();
+        return;
+      }
+      if (current.runId && !this.pollSuppressed.has(taskId)) this.schedulePoll(taskId, this.pollIntervalMs);
+    } catch (error) {
+      if (this.closed && isAbortError(error)) return;
+      this.reportError(error);
+      if (!this.closed && !this.pollSuppressed.has(taskId)) {
+        this.schedulePoll(taskId, this.pollIntervalMs);
+      }
     }
-    if (current.runId && !this.pollSuppressed.has(taskId)) this.schedulePoll(taskId, this.pollIntervalMs);
   }
 
   private scheduleTimer(key: string, delayMs: number, callback: () => void): void {
@@ -939,12 +1171,26 @@ const defaultScheduler: TaskSupervisorScheduler = {
   },
 };
 
-function canAdmit(candidate: TaskRecord, active: readonly TaskRecord[]): boolean {
+function canAdmit(
+  candidate: TaskRecord,
+  active: readonly TaskRecord[],
+  trustDeclaredReadOnly: boolean,
+): boolean {
   if (active.length === 0) return true;
+  // The policy flag also governs records created by an older release or a
+  // previous configuration. Otherwise upgrading with the safer default could
+  // silently preserve model-declared parallel execution from persisted state.
+  if (!trustDeclaredReadOnly) return false;
   if (candidate.executionMode !== "parallel_read_only") return false;
   return active.every((record) =>
     record.executionMode === "parallel_read_only"
     && resourcesAreDisjoint(candidate.resourceKeys, record.resourceKeys));
+}
+
+function isTaskOperationallyClosed(record: TaskRecord): boolean {
+  return isTaskTerminal(record.status)
+    || record.upstreamRunMissingAt !== undefined
+    || record.operatorContainedAt !== undefined;
 }
 
 function validateSessionKey(value: string): string {
@@ -952,6 +1198,40 @@ function validateSessionKey(value: string): string {
     throw new Error("Hermes session key must be a safe non-empty value of at most 1024 characters.");
   }
   return value;
+}
+
+function validateClaimantId(value: string): string {
+  if (typeof value !== "string" || !/^live_[a-f0-9]{32}$/u.test(value)) {
+    throw new Error("Task notification claimant must be a valid live-session id.");
+  }
+  return value;
+}
+
+async function runWithConcurrency<T>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
+  const workers = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (nextIndex < values.length && !failed) {
+        const index = nextIndex;
+        nextIndex += 1;
+        try {
+          await operation(values[index]!);
+        } catch (error) {
+          if (!failed) firstError = error;
+          failed = true;
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  if (failed) throw firstError;
 }
 
 function normalizeHermesUsage(value: unknown): { input_tokens: number; output_tokens: number; total_tokens: number } {

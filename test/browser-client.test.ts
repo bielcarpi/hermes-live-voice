@@ -154,12 +154,68 @@ describe("HermesLiveClient", () => {
       type: "task.snapshot",
       reason: "list",
       requestId,
-      tasks: [taskSnapshot("task_stable", "queued", 4, { updatedAt: 400, queuePosition: 2 })],
+      tasks: [taskSnapshot("task_stable", "queued", 4, { updatedAt: 400 })],
       truncated: false,
     });
     await flushMessages();
 
     expect(client.tasks[0]).toMatchObject({ taskId: "task_stable", state: "running", sequence: 5 });
+  });
+
+  it("fails closed when an equal-sequence snapshot changes immutable task timestamps", async () => {
+    const { client, socket } = await connectedClient("live_conflicting_snapshot_time");
+    socket.message(taskAccepted("task_stable_identity", 1, 100));
+    await flushMessages();
+
+    const requestId = client.listTasks();
+    socket.message({
+      type: "task.snapshot",
+      reason: "list",
+      requestId,
+      tasks: [taskSnapshot("task_stable_identity", "accepted", 1, { createdAt: 99 })],
+      truncated: false,
+    });
+
+    await vi.waitFor(() => expect(socket.closeCalls.at(-1)).toMatchObject({
+      code: 4000,
+      reason: "invalid server message",
+    }));
+    expect(client.tasks[0]).toMatchObject({
+      taskId: "task_stable_identity",
+      createdAt: 100,
+      updatedAt: 100,
+    });
+  });
+
+  it("fails closed when an equal-sequence lifecycle event contradicts a retained snapshot", async () => {
+    const { client, socket } = await connectedClient("live_conflicting_snapshot_event");
+    const requestId = client.listTasks();
+    socket.message({
+      type: "task.snapshot",
+      reason: "list",
+      requestId,
+      tasks: [taskSnapshot("task_snapshot_revision", "running", 2, { startedAt: 200 })],
+      truncated: false,
+    });
+    await flushMessages();
+
+    socket.message({
+      type: "task.completed",
+      taskId: "task_snapshot_revision",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "contradictory completion", truncated: false },
+    });
+
+    await vi.waitFor(() => expect(socket.closeCalls.at(-1)).toMatchObject({
+      code: 4000,
+      reason: "invalid server message",
+    }));
+    expect(client.tasks[0]).toMatchObject({
+      taskId: "task_snapshot_revision",
+      state: "running",
+      sequence: 2,
+    });
   });
 
   it("rejects a task.get snapshot that mutates a different task", async () => {
@@ -345,7 +401,6 @@ describe("HermesLiveClient", () => {
     socket.message({
       ...taskAccepted("task_queued", 1, 100),
       state: "queued",
-      queuePosition: 1,
     });
     await flushMessages();
 
@@ -638,6 +693,67 @@ describe("HermesLiveClient", () => {
     expect(client.getSnapshot().unreadNotifications[0]).toMatchObject({
       taskId: "task_reordered",
       notificationId: "notice_reordered",
+    });
+  });
+
+  it("treats an exact equal-sequence lifecycle replay as idempotent", async () => {
+    const { client, socket } = await connectedClient("live_exact_lifecycle_replay");
+    const completed = vi.fn();
+    client.on("task.completed", completed);
+    socket.message(taskAccepted("task_exact_replay", 1, 100));
+    socket.message({
+      type: "task.completed",
+      taskId: "task_exact_replay",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "finished", truncated: false },
+    });
+    // Reordered object keys are still the same validated protocol revision.
+    socket.message({
+      result: { truncated: false, summary: "finished" },
+      occurredAt: 200,
+      sequence: 2,
+      taskId: "task_exact_replay",
+      type: "task.completed",
+    });
+    await flushMessages();
+
+    expect(client.tasks[0]).toMatchObject({
+      taskId: "task_exact_replay",
+      state: "completed",
+      sequence: 2,
+      result: { summary: "finished" },
+    });
+    expect(completed).toHaveBeenCalledTimes(1);
+    expect(socket.closeCalls).toEqual([]);
+  });
+
+  it("fails closed on conflicting equal-sequence lifecycle content", async () => {
+    const { client, socket } = await connectedClient("live_conflicting_lifecycle_replay");
+    socket.message(taskAccepted("task_conflicting_lifecycle", 1, 100));
+    socket.message({
+      type: "task.completed",
+      taskId: "task_conflicting_lifecycle",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "first result", truncated: false },
+    });
+    socket.message({
+      type: "task.completed",
+      taskId: "task_conflicting_lifecycle",
+      sequence: 2,
+      occurredAt: 200,
+      result: { summary: "conflicting result", truncated: false },
+    });
+
+    await vi.waitFor(() => expect(socket.closeCalls.at(-1)).toMatchObject({
+      code: 4000,
+      reason: "invalid server message",
+    }));
+    expect(client.tasks.find((task) => task.taskId === "task_conflicting_lifecycle")).toMatchObject({
+      state: "completed",
+      sequence: 2,
+      result: { summary: "first result" },
     });
   });
 
@@ -1257,6 +1373,222 @@ describe("browser client utilities", () => {
     expect(() => validateServerMessage({ type: "log", level: "fatal", message: "no" }))
       .toThrow(/unsupported level/);
   });
+
+  it.each([
+    {
+      name: "session model",
+      maximum: 256,
+      build: (text: string) => ({ ...readyMessage("live_model_bound"), model: text }),
+    },
+    {
+      name: "audio MIME type",
+      maximum: 128,
+      build: (text: string) => ({ type: "audio.output", data: "AA==", mimeType: text }),
+    },
+    {
+      name: "transcript",
+      maximum: 20_000,
+      build: (text: string) => ({ type: "transcript.delta", speaker: "assistant", text }),
+    },
+    {
+      name: "task title",
+      maximum: 256,
+      build: (text: string) => ({ ...taskAccepted("task_title_bound", 1, 1), title: text }),
+    },
+    {
+      name: "task progress message",
+      maximum: 1_000,
+      build: (text: string) => ({
+        type: "task.progress",
+        taskId: "task_progress_bound",
+        sequence: 1,
+        occurredAt: 1,
+        progress: { message: text },
+      }),
+    },
+    {
+      name: "task progress stage",
+      maximum: 128,
+      build: (text: string) => ({
+        type: "task.progress",
+        taskId: "task_stage_bound",
+        sequence: 1,
+        occurredAt: 1,
+        progress: { message: "working", stage: text },
+      }),
+    },
+    {
+      name: "task result summary",
+      maximum: 4_000,
+      build: (text: string) => ({
+        type: "task.completed",
+        taskId: "task_summary_bound",
+        sequence: 1,
+        occurredAt: 1,
+        result: { summary: text, truncated: false },
+      }),
+    },
+    {
+      name: "task result output",
+      maximum: 200_000,
+      build: (text: string) => ({
+        type: "task.completed",
+        taskId: "task_output_bound",
+        sequence: 1,
+        occurredAt: 1,
+        result: { output: text, truncated: false },
+      }),
+    },
+    {
+      name: "task error code",
+      maximum: 128,
+      build: (text: string) => ({
+        type: "task.failed",
+        taskId: "task_error_code_bound",
+        sequence: 1,
+        occurredAt: 1,
+        error: { code: text, message: "failed", recoverable: false },
+      }),
+    },
+    {
+      name: "task error message",
+      maximum: 2_000,
+      build: (text: string) => ({
+        type: "task.failed",
+        taskId: "task_error_message_bound",
+        sequence: 1,
+        occurredAt: 1,
+        error: { code: "failed", message: text, recoverable: false },
+      }),
+    },
+    {
+      name: "task notification message",
+      maximum: 1_000,
+      build: (text: string) => ({
+        ...taskNotification("task_notification_bound", "notification_bound", 1, false),
+        notification: {
+          ...taskNotification("task_notification_bound", "notification_bound", 1, false).notification,
+          message: text,
+        },
+      }),
+    },
+    {
+      name: "task stop reason",
+      maximum: 1_000,
+      build: (text: string) => ({
+        type: "task.stopping",
+        taskId: "task_reason_bound",
+        sequence: 1,
+        occurredAt: 1,
+        reason: text,
+      }),
+    },
+    {
+      name: "public log message",
+      maximum: 2_000,
+      build: (text: string) => ({ type: "log", level: "info", message: text }),
+    },
+    {
+      name: "audio base64",
+      maximum: 8_000_000,
+      build: (text: string) => ({ type: "audio.output", data: text, mimeType: "audio/pcm;rate=24000" }),
+    },
+  ])("enforces the server-side $name ceiling", ({ maximum, build }) => {
+    expect(() => validateServerMessage(build("x".repeat(maximum)))).not.toThrow();
+    expect(() => validateServerMessage(build("x".repeat(maximum + 1)))).toThrow(/at most/);
+  });
+
+  it.each([
+    {
+      name: "request id",
+      maximum: 128,
+      build: (id: string) => ({ type: "session.error", code: "error", message: "failed", requestId: id }),
+    },
+    {
+      name: "session id",
+      maximum: 256,
+      build: (id: string) => readyMessage(id),
+    },
+    {
+      name: "task id",
+      maximum: 256,
+      build: (id: string) => ({ type: "task.started", taskId: id, sequence: 1, occurredAt: 1 }),
+    },
+    {
+      name: "notification id",
+      maximum: 256,
+      build: (id: string) => taskNotification("task_notification_id_bound", id, 1, false),
+    },
+  ])("enforces the server-side $name ceiling", ({ maximum, build }) => {
+    expect(() => validateServerMessage(build("a".repeat(maximum)))).not.toThrow();
+    expect(() => validateServerMessage(build("a".repeat(maximum + 1)))).toThrow(/unsafe/);
+  });
+
+  it.each([
+    {
+      name: "Hermes capabilities",
+      build: (data: Record<string, unknown>) => ({
+        ...readyMessage("live_capabilities_json_bound"),
+        hermes: { capabilities: data },
+      }),
+    },
+    {
+      name: "task usage",
+      build: (data: Record<string, unknown>) => ({
+        type: "task.completed",
+        taskId: "task_usage_json_bound",
+        sequence: 1,
+        occurredAt: 1,
+        result: { summary: "done", truncated: false, usage: data },
+      }),
+    },
+    {
+      name: "log metadata",
+      build: (data: Record<string, unknown>) => ({ type: "log", level: "info", message: "ok", data }),
+    },
+  ])("enforces the 64k serialized JSON ceiling for $name", ({ build }) => {
+    const exact = { value: "x".repeat(64_000 - JSON.stringify({ value: "" }).length) };
+    const over = { value: `${exact.value}x` };
+    expect(JSON.stringify(exact)).toHaveLength(64_000);
+    expect(() => validateServerMessage(build(exact))).not.toThrow();
+    expect(() => validateServerMessage(build(over))).toThrow(/64000 serialized/);
+  });
+
+  it("bounds JSON metadata keys and depth without recursive traversal or cyclic stringify", () => {
+    const exactKey = { ["k".repeat(63_994)]: 0 };
+    const overKey = { ["k".repeat(63_995)]: 0 };
+    expect(JSON.stringify(exactKey)).toHaveLength(64_000);
+    expect(() => validateServerMessage({ type: "log", level: "info", message: "key", data: exactKey }))
+      .not.toThrow();
+    expect(() => validateServerMessage({ type: "log", level: "info", message: "key", data: overKey }))
+      .toThrow(/64000 serialized/);
+
+    let exactDepth: unknown = 0;
+    for (let depth = 0; depth < 31_994; depth += 1) exactDepth = [exactDepth];
+    const overDepth: unknown = [exactDepth];
+    // {"value":0} is 11 characters and each nested array adds two.
+    expect(() => validateServerMessage({ type: "log", level: "info", message: "depth", data: { value: exactDepth } }))
+      .not.toThrow();
+    expect(() => validateServerMessage({ type: "log", level: "info", message: "depth", data: { value: overDepth } }))
+      .toThrow(/64000 serialized/);
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => validateServerMessage({ type: "log", level: "info", message: "cycle", data: cyclic }))
+      .toThrow(/circular JSON/);
+
+    const getter = vi.fn(() => "executed");
+    const accessorArray: unknown[] = [];
+    Object.defineProperty(accessorArray, "0", { enumerable: true, get: getter });
+    accessorArray.length = 1;
+    expect(() => validateServerMessage({
+      type: "log",
+      level: "info",
+      message: "accessor",
+      data: { values: accessorArray },
+    })).toThrow(/accessor instead of JSON data/);
+    expect(getter).not.toHaveBeenCalled();
+  });
 });
 
 function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient {
@@ -1349,7 +1681,6 @@ function taskSnapshot(
   overrides: Record<string, unknown> = {},
 ) {
   const stateFields: Record<string, unknown> = {};
-  if (state === "queued") stateFields.queuePosition = 1;
   if (state === "completed") {
     stateFields.result = { summary: `${taskId} completed`, truncated: false };
     stateFields.finishedAt = sequence * 100;

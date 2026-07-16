@@ -7,8 +7,8 @@ describe("web demo v3 task inbox", () => {
     const html = readFileSync(new URL("../apps/web-demo/index.html", import.meta.url), "utf8");
     const source = readFileSync(new URL("../apps/web-demo/app.js", import.meta.url), "utf8");
 
-    expect(html).toContain("Hermes has a voice. Now it keeps working.");
-    expect(html).toContain("Disconnecting only ends voice. Tasks keep working");
+    expect(html).toContain("Hermes, now with a real-time voice.");
+    expect(html).toContain("Voice can disconnect without cancelling tasks.");
     expect(html).toContain('id="task-inbox-title"');
     expect(html).not.toContain('id="stop"');
     for (const token of [
@@ -41,7 +41,7 @@ describe("web demo v3 task inbox", () => {
     harness.client.emitSnapshot(taskSnapshotState({
       activeTasks: [
         task("task_alpha", "running", 8, { title: "Review API", updatedAt: 800 }),
-        task("task_beta", "queued", 3, { title: "Run tests", updatedAt: 300, queuePosition: 1 }),
+        task("task_beta", "queued", 3, { title: "Run tests", updatedAt: 300 }),
       ],
       recentTasks: [task("task_done", "completed", 5, {
         title: "Check docs",
@@ -106,6 +106,44 @@ describe("web demo v3 task inbox", () => {
     expect(harness.client.acknowledgeNotification).toHaveBeenCalledWith(
       "task_result_stable",
       "notification_stable",
+    );
+  });
+
+  it("keeps an older unread result visible beyond the recent-task display limit", async () => {
+    const harness = loadWebDemo();
+    await harness.api.connect();
+    const recent = Array.from({ length: 20 }, (_, index) => task(`task_recent_${index}`, "completed", 30 - index, {
+      result: { summary: `Result ${index}`, truncated: false },
+    }));
+    const unreadTask = recent[18]!;
+    const notification = {
+      taskId: unreadTask.taskId,
+      notificationId: "notification_old_unread",
+      kind: "completed",
+      delivery: "when_idle",
+      message: "An older result still needs attention.",
+      createdAt: 100,
+      acknowledged: false,
+    };
+    harness.client.emitSnapshot(taskSnapshotState({
+      recentTasks: recent,
+      unreadNotifications: [notification],
+    }));
+
+    const cards = taskCards(harness);
+    const unreadCards = cards.filter((card) => card.dataset.unread === "true");
+    const unreadCard = cards.find((card) => card.dataset.taskId === unreadTask.taskId);
+    expect(cards).toHaveLength(13);
+    expect(unreadCards).toHaveLength(1);
+    expect(unreadCard).toBeDefined();
+    expect(findText(unreadCard!, "task-card__notification")).toContain(notification.message);
+    expect(findText(unreadCard!, "pre")).toContain("Result 18");
+    expect(harness.elements.taskBadge.textContent).toBe("1");
+
+    taskButton(unreadCard!, "Mark read").click();
+    expect(harness.client.acknowledgeNotification).toHaveBeenCalledWith(
+      unreadTask.taskId,
+      notification.notificationId,
     );
   });
 
