@@ -269,6 +269,68 @@ describe("OpenAI Realtime adapter helpers", () => {
     expect(realtime15.session).not.toHaveProperty("parallel_tool_calls");
   });
 
+  it.each([
+    ["pcm16", { type: "audio/pcm", rate: 24_000 }],
+    ["g711_ulaw", { type: "audio/pcmu" }],
+    ["g711_alaw", { type: "audio/pcma" }],
+  ] as const)("builds the current OpenAI %s format for both audio directions", (format, expected) => {
+    const update = buildOpenAISessionUpdate(testOpenAIConfig({
+      inputAudioFormat: format,
+      outputAudioFormat: format,
+    }), "hello");
+
+    const audio = update.session.audio as {
+      input: { format: unknown };
+      output: { format: unknown };
+    };
+    expect(audio.input.format).toEqual(expected);
+    expect(audio.output.format).toEqual(expected);
+  });
+
+  it.each([
+    {
+      inputAudioFormat: "g711_ulaw",
+      outputAudioFormat: "pcm16",
+      expectedInput: { type: "audio/pcmu" },
+      expectedOutput: { type: "audio/pcm", rate: 24_000 },
+    },
+    {
+      inputAudioFormat: "pcm16",
+      outputAudioFormat: "g711_alaw",
+      expectedInput: { type: "audio/pcm", rate: 24_000 },
+      expectedOutput: { type: "audio/pcma" },
+    },
+  ] as const)(
+    "keeps mixed OpenAI input and output formats in their configured directions",
+    ({ inputAudioFormat, outputAudioFormat, expectedInput, expectedOutput }) => {
+      const update = buildOpenAISessionUpdate(testOpenAIConfig({ inputAudioFormat, outputAudioFormat }), "hello");
+      const audio = update.session.audio as {
+        input: { format: unknown };
+        output: { format: unknown };
+      };
+
+      expect(audio.input.format).toEqual(expectedInput);
+      expect(audio.output.format).toEqual(expectedOutput);
+    },
+  );
+
+  it("sends the required 24 kHz PCM output rate on the provider wire", async () => {
+    const harness = await createOpenAITestHarness();
+    try {
+      expect(harness.clientMessages[0]).toMatchObject({
+        type: "session.update",
+        session: {
+          audio: {
+            input: { format: { type: "audio/pcm", rate: 24_000 } },
+            output: { format: { type: "audio/pcm", rate: 24_000 } },
+          },
+        },
+      });
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("fails direct adapter connects with a clear credential error", async () => {
     await expect(new OpenAIRealtimeAdapter(testOpenAIConfig({ apiKey: undefined })).connect(testConnectParams())).rejects.toThrow(
       /OPENAI_API_KEY/,

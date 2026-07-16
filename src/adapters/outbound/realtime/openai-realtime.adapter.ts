@@ -19,7 +19,7 @@ import type {
   LiveModelSession,
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 
-const OPENAI_REALTIME_PCM_INPUT_SAMPLE_RATE = 24_000;
+const OPENAI_REALTIME_PCM_SAMPLE_RATE = 24_000;
 const OPENAI_CANCEL_ACK_TIMEOUT_MS = 2_000;
 const OPENAI_HANDSHAKE_TIMEOUT_MS = 10_000;
 const DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS = 15_000;
@@ -990,7 +990,7 @@ export function buildOpenAIRealtimeAudioAppend(
   inputFormat: AppConfig["openai"]["inputAudioFormat"] = "pcm16",
 ): { type: "input_audio_buffer.append"; audio: string } {
   if (inputFormat === "pcm16") {
-    return { type: "input_audio_buffer.append", audio: normalizePcm16Audio(audio, OPENAI_REALTIME_PCM_INPUT_SAMPLE_RATE).data };
+    return { type: "input_audio_buffer.append", audio: normalizePcm16Audio(audio, OPENAI_REALTIME_PCM_SAMPLE_RATE).data };
   }
   const actual = audio.mimeType.split(";")[0]?.trim().toLowerCase();
   const expected = inputFormat === "g711_ulaw" ? "audio/pcmu" : "audio/pcma";
@@ -1038,11 +1038,11 @@ export function buildOpenAISessionUpdate(
       output_modalities: ["audio"],
       audio: {
         input: {
-          format: openAiSessionAudioFormat(config.inputAudioFormat, "input"),
+          format: openAiSessionAudioFormat(config.inputAudioFormat),
           turn_detection: openAiTurnDetection(config.turnDetection),
         },
         output: {
-          format: openAiSessionAudioFormat(config.outputAudioFormat, "output"),
+          format: openAiSessionAudioFormat(config.outputAudioFormat),
           voice: config.voice,
         },
       },
@@ -1139,10 +1139,9 @@ function openAiTurnDetection(turnDetection: AppConfig["openai"]["turnDetection"]
 
 function openAiSessionAudioFormat(
   format: AppConfig["openai"]["inputAudioFormat"] | AppConfig["openai"]["outputAudioFormat"],
-  direction: "input" | "output",
-): { type: string; rate?: number } {
+): { type: "audio/pcm"; rate: 24000 } | { type: "audio/pcmu" } | { type: "audio/pcma" } {
   if (format === "pcm16") {
-    return direction === "input" ? { type: "audio/pcm", rate: 24000 } : { type: "audio/pcm" };
+    return { type: "audio/pcm", rate: OPENAI_REALTIME_PCM_SAMPLE_RATE };
   }
   return format === "g711_ulaw" ? { type: "audio/pcmu" } : { type: "audio/pcma" };
 }

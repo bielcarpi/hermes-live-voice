@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { WebSocketServer } from "ws";
 
 const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-let observedSessionUpdate = false;
+let observedSessionUpdate;
 let observedAuthorization = "";
 let observedSafetyIdentifier = "";
 let observedModel = "";
@@ -17,7 +17,7 @@ server.on("connection", (socket, request) => {
   socket.on("message", (raw) => {
     const message = JSON.parse(raw.toString("utf8"));
     if (message.type === "session.update") {
-      observedSessionUpdate = true;
+      observedSessionUpdate = message;
       socket.send(JSON.stringify({ type: "session.updated", session: { type: "realtime", model: observedModel } }));
     }
   });
@@ -65,6 +65,16 @@ try {
   }
   if (!observedSessionUpdate) {
     throw new Error("CLI provider smoke did not send session.update.");
+  }
+  const inputFormat = observedSessionUpdate.session?.audio?.input?.format;
+  const outputFormat = observedSessionUpdate.session?.audio?.output?.format;
+  if (
+    inputFormat?.type !== "audio/pcm"
+    || inputFormat?.rate !== 24_000
+    || outputFormat?.type !== "audio/pcm"
+    || outputFormat?.rate !== 24_000
+  ) {
+    throw new Error("CLI provider smoke sent an invalid OpenAI PCM session format.");
   }
   if (observedAuthorization !== "Bearer test-openai-key") {
     throw new Error(`Unexpected authorization header: ${JSON.stringify(observedAuthorization)}.`);
