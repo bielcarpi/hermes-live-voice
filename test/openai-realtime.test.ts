@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import type { LiveModelEvent } from "../src/application/live-gateway/ports/realtime-model.port.js";
 import {
