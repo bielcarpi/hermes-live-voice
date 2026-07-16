@@ -29,6 +29,7 @@ import type {
 } from "../src/application/live-gateway/ports/realtime-model.port.js";
 import { startServer } from "../src/adapters/inbound/http/server.js";
 import { FileTaskStore } from "../src/adapters/outbound/task-store/file-task-store.js";
+import { TaskSupervisor } from "../src/application/task-supervisor/task-supervisor.js";
 import {
   acknowledgeTaskNotification,
   createTaskRecord,
@@ -82,7 +83,7 @@ describe("protocol-v3 live gateway WebSocket", () => {
         sequence: "per_task",
         reconnect: "snapshot",
         durable: true,
-        parallel: true,
+        parallel: false,
         maxConcurrent: 3,
         supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
       },
@@ -167,6 +168,65 @@ describe("protocol-v3 live gateway WebSocket", () => {
     start.resolve({ runId: "run_deferred", status: "queued" });
     await expect(client.messages.wait("task.started", (message) => message.taskId === receipt.response.task_id)).resolves
       .toMatchObject({ taskId: receipt.response.task_id });
+  });
+
+  it("projects a stop during blocked dispatch as stopping until the exact Hermes run can be stopped", async () => {
+    const start = deferred<StartRunResult>();
+    const config = testConfig();
+    const hermes = new HermesHarness();
+    hermes.startBehavior = async () => start.promise;
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config, hermes, provider });
+    const first = await readyClient(server.url);
+
+    provider.emit({ type: "tool_call", call: backgroundTaskCall("blocked_dispatch", "Dispatch slowly") });
+    const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.id === "blocked_dispatch");
+    const taskId = String(receipt.response.task_id);
+    await waitForStoredTask(config.tasks.stateFile, taskId, "dispatching");
+
+    send(first.socket, { type: "task.stop", id: "stop_blocked_dispatch", taskId });
+    await expect(first.messages.wait(
+      "task.stopping",
+      (message) => message.taskId === taskId && message.requestId === "stop_blocked_dispatch",
+    )).resolves.toMatchObject({ taskId, requestId: "stop_blocked_dispatch" });
+    expect(storedTask(config.tasks.stateFile, taskId)).toMatchObject({
+      status: "dispatching",
+      stopRequestedAt: expect.any(Number),
+    });
+
+    send(first.socket, { type: "task.list", id: "list_blocked_dispatch", limit: 10 });
+    const listed = await first.messages.wait(
+      "task.snapshot",
+      (message) => message.requestId === "list_blocked_dispatch",
+    );
+    expect(listed.tasks).toEqual([expect.objectContaining({ taskId, state: "stopping" })]);
+    expect(listed.tasks[0]).not.toHaveProperty("queuePosition");
+
+    send(first.socket, { type: "task.get", id: "get_blocked_dispatch", taskId });
+    await expect(first.messages.wait(
+      "task.snapshot",
+      (message) => message.requestId === "get_blocked_dispatch",
+    )).resolves.toMatchObject({ tasks: [expect.objectContaining({ taskId, state: "stopping" })] });
+
+    provider.emit({
+      type: "tool_call",
+      call: { id: "tool_stop_blocked_dispatch", name: "stop_background_task", args: { task_id: taskId } },
+    });
+    await expect(provider.latest.toolResponses.wait(
+      (entry) => entry.call.id === "tool_stop_blocked_dispatch",
+    )).resolves.toMatchObject({ response: { ok: true, task_id: taskId, status: "stopping" } });
+
+    first.socket.terminate();
+    await first.messages.waitForClose();
+    const second = await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+    expect(second.initialSnapshot.tasks).toEqual([
+      expect.objectContaining({ taskId, state: "stopping" }),
+    ]);
+
+    start.resolve({ runId: "run_blocked_dispatch", status: "started" });
+    await waitUntil(() => hermes.stopCalls.includes("run_blocked_dispatch"));
+    expect(hermes.stopCalls).toEqual(["run_blocked_dispatch"]);
+    await waitForStoredTask(config.tasks.stateFile, taskId, "stopping");
   });
 
   it("never exposes a private task-store path when persistence rejects a provider task", async () => {
@@ -521,10 +581,306 @@ describe("protocol-v3 live gateway WebSocket", () => {
     )).resolves.toMatchObject({ notification: { acknowledged: true } });
   });
 
+  it("persists notification speech only after the provider accepts it and retries a failed handoff", async () => {
+    const config = testConfig();
+    const record = seededCompletedTask(
+      defaultSessionKey,
+      "Retry completion speech",
+      Date.now() - 1_000,
+      "run_seed_retry_notice",
+      false,
+    );
+    await seedTaskState(config, [record]);
+    const firstAttempt = deferred<void>();
+    let attempts = 0;
+    const provider = new RecordingLiveAdapter();
+    provider.sessionFactory = (params) => {
+      const session = new RecordingLiveSession(params);
+      session.notificationBehavior = async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          await firstAttempt.promise;
+          throw new Error("provider rejected notification");
+        }
+      };
+      return session;
+    };
+    const server = await startTestServer({ config, hermes: new HermesHarness(), provider });
+    await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+
+    await waitUntil(() => provider.latest.notificationCalls.length === 1);
+    expect(storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt).toBeUndefined();
+    firstAttempt.resolve();
+    await provider.latest.notifications.wait();
+    expect(provider.latest.notificationCalls).toHaveLength(2);
+    await waitUntil(() => storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt !== undefined);
+  });
+
+  it("retries within the same session when provider speech succeeds but its durable marker fails", async () => {
+    const config = testConfig();
+    const record = seededCompletedTask(
+      defaultSessionKey,
+      "Retry completion persistence",
+      Date.now() - 1_000,
+      "run_seed_retry_persistence",
+      false,
+    );
+    await seedTaskState(config, [record]);
+    const hermes = new HermesHarness();
+    const store = new FileTaskStore({
+      directory: dirname(config.tasks.stateFile),
+      filename: basename(config.tasks.stateFile),
+      maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
+      retentionMs: config.tasks.retentionMs,
+    });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      maxConcurrent: config.tasks.maxConcurrent,
+      maxQueued: config.tasks.maxQueued,
+      pollIntervalMs: config.tasks.pollIntervalMs,
+    });
+    vi.spyOn(supervisor, "completeNotificationAnnouncement")
+      .mockRejectedValueOnce(new Error("temporary task-state write failure"));
+    const provider = new RecordingLiveAdapter();
+    provider.sessionFactory = (params) => {
+      const session = new RecordingLiveSession(params);
+      session.notificationBehavior = async () => {
+        params.callbacks.onEvent({ type: "response", status: "completed" });
+      };
+      return session;
+    };
+    const server = await startServer({
+      config,
+      hermes,
+      liveModel: provider,
+      taskSupervisor: supervisor,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+
+    await waitUntil(() => provider.latest.notificationCalls.length === 2);
+    await waitUntil(() => storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt !== undefined);
+    expect(provider.latest.notifications.items).toHaveLength(2);
+  });
+
+  it("retries a transient notification claim failure instead of stranding the durable notice", async () => {
+    const config = testConfig();
+    const record = seededCompletedTask(
+      defaultSessionKey,
+      "Retry notification claim",
+      Date.now() - 1_000,
+      "run_seed_retry_claim",
+      false,
+    );
+    await seedTaskState(config, [record]);
+    const hermes = new HermesHarness();
+    const store = new FileTaskStore({
+      directory: dirname(config.tasks.stateFile),
+      filename: basename(config.tasks.stateFile),
+      maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
+      retentionMs: config.tasks.retentionMs,
+      terminalReserveSlots: config.tasks.maxConcurrent,
+    });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      maxConcurrent: config.tasks.maxConcurrent,
+      maxQueued: config.tasks.maxQueued,
+      pollIntervalMs: config.tasks.pollIntervalMs,
+    });
+    const claim = vi.spyOn(supervisor, "claimNotificationAnnouncement");
+    claim.mockRejectedValueOnce(new Error("temporary task-state read failure"));
+    const provider = new RecordingLiveAdapter();
+    provider.sessionFactory = (params) => {
+      const session = new RecordingLiveSession(params);
+      session.notificationBehavior = async () => {
+        params.callbacks.onEvent({ type: "response", status: "completed" });
+      };
+      return session;
+    };
+    const server = await startServer({
+      config,
+      hermes,
+      liveModel: provider,
+      taskSupervisor: supervisor,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+
+    await waitUntil(() => claim.mock.calls.length === 2);
+    await waitUntil(() => provider.latest.notificationCalls.length === 1);
+    await waitUntil(() => storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt !== undefined);
+  });
+
+  it("re-arms a notification retry that expires while another claim is still in flight", async () => {
+    const config = testConfig();
+    const first = seededCompletedTask(
+      defaultSessionKey,
+      "Retry after a long claim batch",
+      Date.now() - 2_000,
+      "run_seed_long_claim_first",
+      false,
+    );
+    const second = seededCompletedTask(
+      defaultSessionKey,
+      "Complete the long claim batch",
+      Date.now() - 1_000,
+      "run_seed_long_claim_second",
+      false,
+    );
+    await seedTaskState(config, [first, second]);
+    const hermes = new HermesHarness();
+    const store = new FileTaskStore({
+      directory: dirname(config.tasks.stateFile),
+      filename: basename(config.tasks.stateFile),
+      maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
+      retentionMs: config.tasks.retentionMs,
+      terminalReserveSlots: config.tasks.maxConcurrent,
+    });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      maxConcurrent: config.tasks.maxConcurrent,
+      maxQueued: config.tasks.maxQueued,
+      pollIntervalMs: config.tasks.pollIntervalMs,
+    });
+    const originalClaim = supervisor.claimNotificationAnnouncement.bind(supervisor);
+    const secondClaimEntered = deferred<void>();
+    const releaseSecondClaim = deferred<void>();
+    let claimCalls = 0;
+    vi.spyOn(supervisor, "claimNotificationAnnouncement").mockImplementation(async (...args) => {
+      claimCalls += 1;
+      if (claimCalls === 1) throw new Error("temporary first-claim failure");
+      if (claimCalls === 2) {
+        secondClaimEntered.resolve();
+        await releaseSecondClaim.promise;
+      }
+      return originalClaim(...args);
+    });
+    const provider = new RecordingLiveAdapter();
+    provider.sessionFactory = (params) => {
+      const session = new RecordingLiveSession(params);
+      session.notificationBehavior = async () => {
+        params.callbacks.onEvent({ type: "response", status: "completed" });
+      };
+      return session;
+    };
+    const server = await startServer({
+      config,
+      hermes,
+      liveModel: provider,
+      taskSupervisor: supervisor,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+    await secondClaimEntered.promise;
+
+    // The first retry expires after 250 ms. Keep the second claim blocked past
+    // that deadline so the timer has to re-arm instead of being consumed.
+    await delay(350);
+    releaseSecondClaim.resolve();
+
+    await waitUntil(() => provider.latest.notificationCalls.length === 2);
+    await waitUntil(() => [first, second].every((record) =>
+      storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt !== undefined));
+  });
+
+  it("bounds repeated notification claim failures until a new session reconnects", async () => {
+    const config = testConfig();
+    const record = seededCompletedTask(
+      defaultSessionKey,
+      "Persistent notification claim failure",
+      Date.now() - 1_000,
+      "run_seed_failed_claim",
+      false,
+    );
+    await seedTaskState(config, [record]);
+    const hermes = new HermesHarness();
+    const store = new FileTaskStore({
+      directory: dirname(config.tasks.stateFile),
+      filename: basename(config.tasks.stateFile),
+      maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
+      retentionMs: config.tasks.retentionMs,
+      terminalReserveSlots: config.tasks.maxConcurrent,
+    });
+    const supervisor = new TaskSupervisor({
+      store,
+      hermes,
+      maxConcurrent: config.tasks.maxConcurrent,
+      maxQueued: config.tasks.maxQueued,
+      pollIntervalMs: config.tasks.pollIntervalMs,
+    });
+    const claim = vi.spyOn(supervisor, "claimNotificationAnnouncement")
+      .mockRejectedValue(new Error("task-state reads remain unavailable"));
+    const provider = new RecordingLiveAdapter();
+    const server = await startServer({
+      config,
+      hermes,
+      liveModel: provider,
+      taskSupervisor: supervisor,
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+    const firstClient = await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+
+    await waitUntil(() => claim.mock.calls.length === 3);
+    provider.emit({ type: "response", status: "completed", responseId: "unrelated_idle_event" });
+    await delay(800);
+    expect(claim).toHaveBeenCalledTimes(3);
+    expect(provider.latest.notificationCalls).toHaveLength(0);
+    expect(storedTask(config.tasks.stateFile, record.taskId)?.notification).toMatchObject({ unread: true });
+    expect(storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt).toBeUndefined();
+
+    claim.mockRestore();
+    firstClient.socket.terminate();
+    await firstClient.messages.waitForClose();
+    await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+    await waitUntil(() => provider.latest.notificationCalls.length === 1);
+    await waitUntil(() => storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt !== undefined);
+  });
+
+  it("bounds automatic notification speech retries and leaves the durable inbox unread", async () => {
+    const config = testConfig();
+    const record = seededCompletedTask(
+      defaultSessionKey,
+      "Provider remains unavailable",
+      Date.now() - 1_000,
+      "run_seed_failed_notice",
+      false,
+    );
+    await seedTaskState(config, [record]);
+    const provider = new RecordingLiveAdapter();
+    provider.sessionFactory = (params) => {
+      const session = new RecordingLiveSession(params);
+      session.notificationBehavior = async () => {
+        throw new Error("provider unavailable");
+      };
+      return session;
+    };
+    const server = await startTestServer({ config, hermes: new HermesHarness(), provider });
+    await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+
+    await waitUntil(() => provider.latest.notificationCalls.length === 3);
+    await delay(800);
+    expect(provider.latest.notificationCalls).toHaveLength(3);
+    expect(provider.latest.notifications.items).toEqual([]);
+    const storedNotification = storedTask(config.tasks.stateFile, record.taskId)?.notification;
+    expect(storedNotification).toMatchObject({ unread: true });
+    expect(storedNotification?.announcedAt).toBeUndefined();
+  });
+
   it("runs multiple disjoint read-only tasks concurrently and reports out-of-order completion by stable task id", async () => {
     const hermes = new HermesHarness();
     const provider = new RecordingLiveAdapter();
-    const server = await startTestServer({ config: testConfig(), hermes, provider });
+    const server = await startTestServer({
+      config: testConfig({ tasks: { trustDeclaredReadOnly: true } }),
+      hermes,
+      provider,
+    });
     const client = await readyClient(server.url);
 
     provider.emit({
@@ -958,6 +1314,7 @@ describe("transport, tool-call, and notification safety", () => {
     const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.id === "cancel_voice_task");
     const taskId = String(receipt.response.task_id);
     await waitUntil(() => hermes.startCalls.length === 1);
+    await client.messages.wait("task.started", (message) => message.taskId === taskId);
 
     send(client.socket, {
       type: "response.cancel",
@@ -1079,6 +1436,197 @@ describe("transport, tool-call, and notification safety", () => {
     expect(JSON.stringify(notification)).not.toContain("Secret task input");
     expect(JSON.stringify(notification)).not.toContain("Secret task title");
     expect(JSON.stringify(notification)).not.toContain("Secret task output");
+  });
+
+  it.each(["user speech", "provider response"] as const)(
+    "rechecks conversation state after an asynchronous notification claim when %s begins",
+    async (busyKind) => {
+      const config = testConfig();
+      const hermes = new HermesHarness();
+      const store = new FileTaskStore({
+        directory: dirname(config.tasks.stateFile),
+        filename: basename(config.tasks.stateFile),
+        maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
+        retentionMs: config.tasks.retentionMs,
+        terminalReserveSlots: config.tasks.maxConcurrent,
+      });
+      const supervisor = new TaskSupervisor({
+        store,
+        hermes,
+        maxConcurrent: config.tasks.maxConcurrent,
+        maxQueued: config.tasks.maxQueued,
+        pollIntervalMs: config.tasks.pollIntervalMs,
+      });
+      const claimEntered = deferred<void>();
+      const releaseClaim = deferred<void>();
+      const originalClaim = supervisor.claimNotificationAnnouncement.bind(supervisor);
+      vi.spyOn(supervisor, "claimNotificationAnnouncement").mockImplementation(async (...args) => {
+        claimEntered.resolve();
+        await releaseClaim.promise;
+        return originalClaim(...args);
+      });
+      const provider = new RecordingLiveAdapter();
+      const server = await startServer({
+        config,
+        hermes,
+        liveModel: provider,
+        taskSupervisor: supervisor,
+        logger: fakeLogger(),
+      });
+      openServers.push(server);
+      const client = await readyClient(server.url);
+
+      provider.emit({
+        type: "tool_call",
+        call: backgroundTaskCall(`claim_race_${busyKind.replace(" ", "_")}`, "Finish during claim"),
+      });
+      const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.name === "start_background_task");
+      const taskId = String(receipt.response.task_id);
+      await waitUntil(() => hermes.startCalls.length === 1);
+      hermes.complete(hermes.runIdForInput("Finish during claim"), "done");
+      await client.messages.wait("task.completed", (message) => message.taskId === taskId);
+      await claimEntered.promise;
+
+      if (busyKind === "user speech") {
+        provider.emit({ type: "input_speech_started", provider: "openai", itemId: "claim_race_speech" });
+      } else {
+        provider.emit({ type: "response", status: "started", responseId: "claim_race_response" });
+      }
+      releaseClaim.resolve();
+      await delay(40);
+      expect(provider.latest.notifications.items).toEqual([]);
+
+      if (busyKind === "user speech") {
+        provider.emit({ type: "input_speech_stopped", provider: "openai", itemId: "claim_race_speech" });
+        await delay(20);
+        expect(provider.latest.notifications.items).toEqual([]);
+        provider.emit({ type: "response", status: "started", responseId: "claim_race_turn" });
+        provider.emit({ type: "response", status: "completed", responseId: "claim_race_turn" });
+      } else {
+        provider.emit({ type: "response", status: "completed", responseId: "claim_race_response" });
+      }
+      await expect(provider.latest.notifications.wait()).resolves.toMatchObject({
+        announcement: "Your background task is finished. The result is ready in the task inbox.",
+      });
+    },
+  );
+
+  it("waits for the OpenAI VAD turn response before releasing a pending completion notice", async () => {
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config: testConfig(), hermes, provider });
+    const client = await readyClient(server.url);
+    provider.emit({ type: "input_speech_started", provider: "openai", itemId: "speech_1" });
+    provider.emit({
+      type: "tool_call",
+      call: backgroundTaskCall("vad_notice", "Finish while the user is speaking"),
+    });
+    const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.id === "vad_notice");
+    const taskId = String(receipt.response.task_id);
+    await waitUntil(() => hermes.startCalls.length === 1);
+    hermes.complete(hermes.runIdForInput("Finish while the user is speaking"), "done");
+    await client.messages.wait("task.completed", (message) => message.taskId === taskId);
+    await delay(40);
+    expect(provider.latest.notifications.items).toEqual([]);
+
+    provider.emit({ type: "input_speech_stopped", provider: "openai", itemId: "speech_1" });
+    await delay(40);
+    expect(provider.latest.notifications.items).toEqual([]);
+    provider.emit({ type: "response", status: "started", responseId: "vad_turn_response" });
+    provider.emit({ type: "response", status: "completed", responseId: "vad_turn_response" });
+    await expect(provider.latest.notifications.wait()).resolves.toMatchObject({
+      announcement: "Your background task is finished. The result is ready in the task inbox.",
+    });
+  });
+
+  it("keeps the VAD gate through a delayed out-of-band notification lifecycle", async () => {
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config: testConfig(), hermes, provider });
+    const client = await readyClient(server.url);
+
+    provider.emit({
+      type: "tool_call",
+      call: backgroundTaskCall("scoped_notice_first", "Finish before the user speaks"),
+    });
+    const firstReceipt = await provider.latest.toolResponses.wait(
+      (entry) => entry.call.id === "scoped_notice_first",
+    );
+    const firstTaskId = String(firstReceipt.response.task_id);
+    await waitUntil(() => hermes.startCalls.length === 1);
+    hermes.complete(hermes.runIdForInput("Finish before the user speaks"), "done");
+    await client.messages.wait("task.completed", (message) => message.taskId === firstTaskId);
+    await waitUntil(() => provider.latest.notificationCalls.length === 1);
+
+    provider.emit({ type: "input_speech_started", provider: "openai", itemId: "scoped_speech" });
+    provider.emit({
+      type: "tool_call",
+      call: backgroundTaskCall("scoped_notice_second", "Finish during the user's turn"),
+    });
+    const secondReceipt = await provider.latest.toolResponses.wait(
+      (entry) => entry.call.id === "scoped_notice_second",
+    );
+    const secondTaskId = String(secondReceipt.response.task_id);
+    await waitUntil(() => hermes.startCalls.length === 2);
+    hermes.complete(hermes.runIdForInput("Finish during the user's turn"), "done");
+    await client.messages.wait("task.completed", (message) => message.taskId === secondTaskId);
+    expect(provider.latest.notificationCalls).toHaveLength(1);
+
+    provider.emit({ type: "input_speech_stopped", provider: "openai", itemId: "scoped_speech" });
+    provider.emit({
+      type: "response",
+      status: "started",
+      responseId: "scoped_task_notice",
+      scope: "task_notification",
+    });
+    provider.emit({
+      type: "response",
+      status: "completed",
+      responseId: "scoped_task_notice",
+      scope: "task_notification",
+    });
+    await delay(40);
+    expect(provider.latest.notificationCalls).toHaveLength(1);
+
+    provider.emit({
+      type: "response",
+      status: "started",
+      responseId: "scoped_vad_turn",
+      scope: "conversation",
+    });
+    provider.emit({
+      type: "response",
+      status: "completed",
+      responseId: "scoped_vad_turn",
+      scope: "conversation",
+    });
+    await waitUntil(() => provider.latest.notificationCalls.length === 2);
+  });
+
+  it("releases a pending completion notice when a late final user transcript makes the conversation idle", async () => {
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config: testConfig(), hermes, provider });
+    const client = await readyClient(server.url);
+    provider.emit({ type: "input_speech_started", provider: "openai", itemId: "late_transcript_speech" });
+    provider.emit({
+      type: "tool_call",
+      call: backgroundTaskCall("late_transcript_notice", "Finish before the final transcript"),
+    });
+    const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.id === "late_transcript_notice");
+    const taskId = String(receipt.response.task_id);
+    await waitUntil(() => hermes.startCalls.length === 1);
+    hermes.complete(hermes.runIdForInput("Finish before the final transcript"), "done");
+    await client.messages.wait("task.completed", (message) => message.taskId === taskId);
+
+    provider.emit({ type: "response", status: "completed", responseId: "response_before_transcript" });
+    await delay(40);
+    expect(provider.latest.notifications.items).toEqual([]);
+
+    provider.emit({ type: "text", speaker: "user", text: "final transcript", final: true });
+    await expect(provider.latest.notifications.wait()).resolves.toMatchObject({
+      announcement: "Your background task is finished. The result is ready in the task inbox.",
+    });
   });
 
   it("contains every approval fail-closed without exposing an actionable approval", async () => {
@@ -1249,6 +1797,7 @@ function testConfig(overrides: {
     tasks: {
       stateFile,
       maxConcurrent: 3,
+      trustDeclaredReadOnly: false,
       maxQueued: 32,
       historyLimit: 200,
       retentionMs: 7 * 24 * 60 * 60 * 1_000,
@@ -1282,8 +1831,10 @@ async function seedTaskState(config: AppConfig, records: TaskRecord[]): Promise<
     filename: basename(config.tasks.stateFile),
     maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
     retentionMs: config.tasks.retentionMs,
+    terminalReserveSlots: config.tasks.maxConcurrent,
   });
   for (const record of records) await store.put(record);
+  await store.close();
 }
 
 function seededRunningTask(
@@ -1452,11 +2003,13 @@ class RecordingLiveAdapter implements LiveModelAdapter {
 class RecordingLiveSession implements LiveModelSession {
   readonly toolResponses = new RecordQueue<{ call: LiveToolCall; response: Record<string, unknown> }>();
   readonly notifications = new RecordQueue<LiveTaskNotification>();
+  readonly notificationCalls: LiveTaskNotification[] = [];
   readonly textInputs: string[] = [];
   readonly audioInputs: LiveModelAudio[] = [];
   readonly cancelCalls: Array<{ reason?: string; truncate?: unknown }> = [];
   closeCalls = 0;
   textBehavior?: (text: string) => Promise<void>;
+  notificationBehavior?: (notification: LiveTaskNotification) => Promise<void>;
   closeBehavior?: () => Promise<void>;
 
   constructor(readonly params: LiveModelConnectParams) {}
@@ -1482,6 +2035,8 @@ class RecordingLiveSession implements LiveModelSession {
   }
 
   async sendTaskNotification(notification: LiveTaskNotification): Promise<void> {
+    this.notificationCalls.push(structuredClone(notification));
+    await this.notificationBehavior?.(structuredClone(notification));
     this.notifications.push(structuredClone(notification));
   }
 

@@ -76,6 +76,7 @@ export const TaskEventTypeSchema = z.enum([
   "approval_required",
   "notification.announced",
   "notification.acknowledged",
+  "operator_contained",
 ]);
 export type TaskEventType = z.infer<typeof TaskEventTypeSchema>;
 
@@ -131,6 +132,8 @@ export const TaskRecordSchema = z.object({
   sequence: TaskCounterSchema,
   events: z.array(TaskEventSchema).min(1).max(MAX_TASK_EVENTS),
   stopRequestedAt: TaskTimestampSchema.optional(),
+  upstreamRunMissingAt: TaskTimestampSchema.optional(),
+  operatorContainedAt: TaskTimestampSchema.optional(),
   output: TaskOutputSchema.optional(),
   outputTruncated: z.boolean().optional(),
   usage: TaskUsageSchema.optional(),
@@ -171,6 +174,37 @@ export const TaskRecordSchema = z.object({
     && (record.stopRequestedAt < record.createdAt || record.stopRequestedAt > record.updatedAt)
   ) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Task stop intent timestamp must fall within task lifetime." });
+  }
+  if (record.upstreamRunMissingAt !== undefined) {
+    if (
+      record.status !== "unknown"
+      || record.runId === undefined
+      || record.upstreamRunMissingAt < record.createdAt
+      || record.upstreamRunMissingAt > record.updatedAt
+      || !record.events.some((event) =>
+        event.type === "unknown" && event.timestamp === record.upstreamRunMissingAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A confirmed missing upstream run must be an unknown task with a run ID and bounded timestamp.",
+      });
+    }
+  }
+  if (record.operatorContainedAt !== undefined) {
+    if (
+      (record.status !== "unknown" && record.status !== "dispatch_unknown")
+      || record.operatorContainedAt < record.createdAt
+      || record.operatorContainedAt > record.updatedAt
+      || !record.events.some((event) =>
+        event.type === "operator_contained" && event.timestamp === record.operatorContainedAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Operator containment must close an indeterminate task with an exact audit event.",
+      });
+    }
+  } else if (record.events.some((event) => event.type === "operator_contained")) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Operator containment audit event is missing its timestamp." });
   }
   if (record.outputTruncated !== undefined && record.status !== "completed") {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Only completed tasks can describe output truncation." });

@@ -9,7 +9,7 @@ This documents compatibility with Hermes Agent and community projects, not endor
 | Surface | Support | Purpose |
 | --- | --- | --- |
 | Hermes Dashboard + Live Voice plugin | First-class | Browser audio/text, transcript, durable task inbox, reconnect, notification acknowledgement, interruption, and exact stop. |
-| Bundled browser demo | First-class development tool | Local provider/audio/protocol troubleshooting. |
+| Bundled browser client | Development tool | Local provider/audio/protocol troubleshooting. |
 | `hermes-live-voice/browser` | First-class integration API | Vanilla, React, Vue, Svelte, Electron, or mobile-web clients. |
 | `hermes-live terminal` | First-class text control | SSH/headless task supervision, retained results, interruption, and exact stop. |
 | Hermes Voice Mode/Desktop voice | Official Hermes features | First-party local voice experiences; not replaced by this project. |
@@ -123,7 +123,7 @@ Do not map speech and task cancellation to one ambiguous stop button. Keep a tas
 
 ## Durable Inbox And Notifications
 
-Treat the task inbox as the source of truth. The SDK deduplicates by `(taskId, sequence)`, clears stale cache state on the first reconnect frame, merges any additional bounded frames, and retains unread notifications until an exact acknowledgement succeeds or the gateway explicitly withdraws a superseded uncertainty notice.
+Treat the task inbox as the source of truth. The SDK keeps lifecycle and notification revisions separate: lifecycle state is ordered by task id and sequence, while notification state also retains the exact notification id and acknowledgement. A lifecycle update and notification may share one sequence and arrive in either order; both are applied. Exact repeats within either channel are idempotent, conflicting equal-sequence repeats fail closed, and one channel never suppresses the complementary projection from the other. On reconnect, the SDK clears stale cache state on the first frame, merges any additional bounded frames, and retains unread notifications until an exact acknowledgement succeeds or the gateway explicitly withdraws a superseded uncertainty notice.
 
 Provider speech is supplementary:
 
@@ -137,7 +137,7 @@ Do not auto-acknowledge merely because a provider may have spoken. Let the user 
 
 There is no interactive approval UX in protocol v3. Do not render approval buttons, synthesize approval identity from progress/events, or call Hermes approval APIs from the browser.
 
-When a task requires approval, the gateway attempts deny-all and stops the exact task fail-closed. Show the resulting non-actionable stopping/terminal state and explain that this release cannot approve the operation.
+When a task requires approval, the gateway attempts deny-all and stops the exact task fail-closed. Show the resulting non-actionable stopping/terminal state and explain that Hermes Live cannot approve it safely.
 
 ## Audio And Browser Requirements
 
@@ -186,7 +186,7 @@ Before calling a UI ready:
 1. Confirm protocol v3 and negotiated provider/audio/task capabilities.
 2. Verify the browser never receives the shared bearer or Hermes/provider credentials.
 3. Send text, receive an immediate task receipt, and keep conversing while the task runs.
-4. Start independent read-only work and verify only disjoint resource keys overlap.
+4. With `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true`, start independent read-only work and verify only disjoint resource keys overlap. With the default setting, verify work stays exclusive.
 5. Stop one exact task while another continues.
 6. Disconnect/reconnect during work and reconcile from `task.snapshot` without duplicates.
 7. Verify completion/failed/cancelled/unknown notifications and exact acknowledgement.

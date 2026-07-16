@@ -284,6 +284,7 @@ def test_capability_sanitizing(plugin: Any) -> None:
             "tasks": {
                 "durable": True,
                 "disconnectContinuation": True,
+                "declaredReadOnlyTrusted": True,
                 "maxConcurrent": 3,
                 "maxRetained": 200,
                 "statePath": "/private/must-not-escape/tasks.json",
@@ -303,6 +304,7 @@ def test_capability_sanitizing(plugin: Any) -> None:
     assert tasks == {
         "durable": True,
         "disconnectContinuation": True,
+        "declaredReadOnlyTrusted": True,
         "maxConcurrent": 3,
         "maxRetained": 200,
         "parallel": True,
@@ -339,7 +341,12 @@ def test_capability_sanitizing(plugin: Any) -> None:
 def test_readiness_requires_every_check(plugin: Any) -> None:
     healthy = {
         "status": "ready",
-        "checks": {"gateway": {"ok": True}, "hermes": {"ok": True}, "realtime": {"ok": True}},
+        "checks": {
+            "gateway": {"ok": True},
+            "hermes": {"ok": True},
+            "realtime": {"ok": True},
+            "tasks": {"ok": True},
+        },
     }
     assert plugin._readiness_is_ready(plugin._Probe(status=200, body=healthy))
     assert not plugin._readiness_is_ready(
@@ -347,7 +354,12 @@ def test_readiness_requires_every_check(plugin: Any) -> None:
             status=200,
             body={
                 "status": "ready",
-                "checks": {"gateway": {"ok": True}, "hermes": {"ok": False}, "realtime": {"ok": True}},
+                "checks": {
+                    "gateway": {"ok": True},
+                    "hermes": {"ok": False},
+                    "realtime": {"ok": True},
+                    "tasks": {"ok": True},
+                },
             },
         )
     )
@@ -428,6 +440,7 @@ async def test_status(plugin: Any) -> None:
                     "tasks": {
                         "durable": True,
                         "disconnectContinuation": True,
+                        "declaredReadOnlyTrusted": True,
                         "maxConcurrent": 3,
                         "maxRetained": 200,
                         "stateFile": "/private/tasks.json",
@@ -438,7 +451,12 @@ async def test_status(plugin: Any) -> None:
             status=200,
             body={
                 "status": "ready",
-                "checks": {"gateway": {"ok": True}, "hermes": {"ok": True}, "realtime": {"ok": True}},
+                "checks": {
+                    "gateway": {"ok": True},
+                    "hermes": {"ok": True},
+                    "realtime": {"ok": True},
+                    "tasks": {"ok": True},
+                },
             },
         )
 
@@ -478,6 +496,7 @@ async def test_status(plugin: Any) -> None:
         "tasks": {
             "durable": True,
             "disconnectContinuation": True,
+            "declaredReadOnlyTrusted": True,
             "maxConcurrent": 3,
             "maxRetained": 200,
             "parallel": True,
@@ -532,7 +551,12 @@ async def test_status_suppresses_reflected_bearer_and_failed_readiness(plugin: A
             status=200,
             body={
                 "status": "ready",
-                "checks": {"gateway": {"ok": True}, "hermes": {"ok": False}, "realtime": {"ok": True}},
+                "checks": {
+                    "gateway": {"ok": True},
+                    "hermes": {"ok": False},
+                    "realtime": {"ok": True},
+                    "tasks": {"ok": True},
+                },
             },
         )
 

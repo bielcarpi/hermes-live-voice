@@ -51,6 +51,7 @@ try {
     "assets/banner.svg",
     "dist/index.js",
     "dist/cli.js",
+    "dist/cli/task-operator.js",
     "dist/cli/terminal-session.js",
     "dist/config.js",
     "dist/live-provider-smoke.js",

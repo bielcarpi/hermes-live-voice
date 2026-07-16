@@ -29,17 +29,24 @@ import { HERMES_LIVE_PROTOCOL_VERSION } from "../../../domain/protocol/version.j
 import { realtimeClientCapabilities } from "../../../application/live-gateway/client-capabilities.js";
 import { negotiateHermesApprovalCompatibility } from "../../../application/live-gateway/hermes-approval-compatibility.js";
 
+const SERVER_SESSION_CLOSE_TIMEOUT_MS = 6_000;
+const SERVER_WEBSOCKET_CLOSE_GRACE_MS = 250;
+const SERVER_WEBSOCKET_FORCE_WAIT_MS = 1_000;
+const SERVER_HTTP_CLOSE_TIMEOUT_MS = 2_000;
+
 export interface StartServerOptions {
   config: AppConfig;
   logger: Logger;
   hermes?: HermesRunsPort;
   liveModel?: LiveModelAdapter;
   taskSupervisor?: TaskSupervisorRuntime;
+  signal?: AbortSignal;
 }
 
 export interface TaskSupervisorRuntime extends TaskSupervisorPort {
   initialize(): Promise<void>;
   close(): Promise<void>;
+  health(): Promise<void>;
 }
 
 export async function startServer({
@@ -48,6 +55,7 @@ export async function startServer({
   hermes: providedHermes,
   liveModel: providedLiveModel,
   taskSupervisor: providedTaskSupervisor,
+  signal,
 }: StartServerOptions): Promise<{
   close(): Promise<void>;
   url: string;
@@ -67,9 +75,11 @@ export async function startServer({
       filename: basename(config.tasks.stateFile),
       maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
       retentionMs: config.tasks.retentionMs,
+      terminalReserveSlots: config.tasks.maxConcurrent,
     }),
     hermes,
     maxConcurrent: config.tasks.maxConcurrent,
+    trustDeclaredReadOnly: config.tasks.trustDeclaredReadOnly === true,
     maxQueued: config.tasks.maxQueued,
     pollIntervalMs: config.tasks.pollIntervalMs,
     ...(config.hermes.instructions ? { runInstructions: config.hermes.instructions } : {}),
@@ -80,8 +90,44 @@ export async function startServer({
     config.server.defaultProfileId,
     config.server.defaultUserLabel,
   );
-  taskSupervisor.registerOwner(defaultSessionKey, defaultSessionKey);
-  await taskSupervisor.initialize();
+  type StartupTaskCloseResult =
+    | { ok: true }
+    | { ok: false; error: unknown };
+  let startupAbortClose: Promise<StartupTaskCloseResult> | undefined;
+  const closeTaskStateForAbort = () => {
+    if (!startupAbortClose) {
+      // Always settle this promise. The abort listener can run while
+      // initialize() is still pending, so rethrowing here would briefly leave
+      // a rejected promise without a handler. The startup path inspects and
+      // propagates the captured cleanup failure before it rejects.
+      startupAbortClose = Promise.resolve().then(() => taskSupervisor.close()).then(
+        () => ({ ok: true }),
+        (error) => {
+          logger.error("failed to close task supervisor during startup cleanup", {
+            error: errorToMessage(error),
+          });
+          return { ok: false, error };
+        },
+      );
+    }
+    return startupAbortClose;
+  };
+  if (signal?.aborted) closeTaskStateForAbort();
+  else signal?.addEventListener("abort", closeTaskStateForAbort, { once: true });
+  try {
+    if (signal?.aborted) throw startupAbortError(signal);
+    taskSupervisor.registerOwner(defaultSessionKey, defaultSessionKey);
+    await taskSupervisor.initialize();
+    if (signal?.aborted) throw startupAbortError(signal);
+  } catch (error) {
+    signal?.removeEventListener("abort", closeTaskStateForAbort);
+    const closeResult = await closeTaskStateForAbort();
+    if (!closeResult.ok) {
+      throw startupCleanupError(signal?.aborted ? startupAbortError(signal) : error, closeResult.error);
+    }
+    if (signal?.aborted) throw startupAbortError(signal);
+    throw error;
+  }
   const demoRoot = resolveDemoRoot();
   const browserClientRoot = resolveBrowserClientRoot();
   const sessions = new Set<LiveGatewaySession>();
@@ -91,6 +137,7 @@ export async function startServer({
       await handleHttp(req, res, {
         config,
         hermes,
+        taskSupervisor,
         demoRoot,
         browserClientRoot,
         requireHermesApiKey: !providedHermes,
@@ -144,7 +191,13 @@ export async function startServer({
       });
       sessions.add(session);
       ws.once("close", () => {
-        void session.close().finally(() => sessions.delete(session));
+        void session.close()
+          .catch((error) => {
+            logger.error("live session cleanup failed", {
+              error: errorToMessage(error),
+            });
+          })
+          .finally(() => sessions.delete(session));
       });
       session.bind();
       wss.emit("connection", ws, req);
@@ -154,30 +207,170 @@ export async function startServer({
   try {
     await listenHttpServer(server, config.server.port, config.server.host);
   } catch (error) {
+    signal?.removeEventListener("abort", closeTaskStateForAbort);
     await new Promise<void>((resolve) => wss.close(() => resolve()));
-    await taskSupervisor.close();
+    const closeResult = await closeTaskStateForAbort();
+    if (!closeResult.ok) throw startupCleanupError(error, closeResult.error);
     throw error;
   }
+  if (signal?.aborted) {
+    signal.removeEventListener("abort", closeTaskStateForAbort);
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await closeHttpServer(server);
+    const closeResult = await closeTaskStateForAbort();
+    if (!closeResult.ok) throw startupCleanupError(startupAbortError(signal), closeResult.error);
+    throw startupAbortError(signal);
+  }
+  signal?.removeEventListener("abort", closeTaskStateForAbort);
   const address = server.address() as AddressInfo | null;
   const port = address?.port ?? config.server.port;
   const url = `http://${config.server.host}:${port}`;
   logger.info("hermes-live listening", { url });
 
+  let closePromise: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    if (!closePromise) {
+      closePromise = (async () => {
+        // Stop accepting HTTP requests and WebSocket upgrades before waiting
+        // for any client/provider cleanup.
+        const httpClosing = closeHttpServer(server);
+        // Session cleanup may take several seconds. Attach a rejection handler
+        // immediately so an early server.close callback error cannot surface as
+        // an unhandled rejection before the ordered aggregation below awaits it.
+        void httpClosing.catch(() => undefined);
+        const shutdownFailures: unknown[] = [];
+        try {
+          server.closeIdleConnections();
+        } catch (error) {
+          shutdownFailures.push(error);
+        }
+        try {
+          const sessionResults = await Promise.allSettled(Array.from(sessions, (session) => withServerDeadline(
+            session.close(),
+            SERVER_SESSION_CLOSE_TIMEOUT_MS,
+            "Live session did not close before the server shutdown deadline.",
+          )));
+          for (const result of sessionResults) {
+            if (result.status === "rejected") shutdownFailures.push(result.reason);
+          }
+        } catch (error) {
+          shutdownFailures.push(error);
+        }
+        try {
+          await closeWebSocketServer(wss);
+        } catch (error) {
+          shutdownFailures.push(error);
+        }
+        try {
+          server.closeAllConnections();
+        } catch (error) {
+          shutdownFailures.push(error);
+        }
+        try {
+          await withServerDeadline(
+            httpClosing,
+            SERVER_HTTP_CLOSE_TIMEOUT_MS,
+            "HTTP server did not close before the shutdown deadline.",
+          );
+        } catch (error) {
+          shutdownFailures.push(error);
+        }
+        for (const client of wss.clients) {
+          try {
+            client.terminate();
+          } catch (error) {
+            shutdownFailures.push(error);
+          }
+        }
+        try {
+          server.closeAllConnections();
+        } catch (error) {
+          shutdownFailures.push(error);
+        }
+        // Task-state ownership must be released even when transport teardown
+        // reports an error; otherwise a normal shutdown can look like a crash.
+        try {
+          await taskSupervisor.close();
+        } catch (error) {
+          shutdownFailures.push(error);
+        }
+        if (shutdownFailures.length === 1) throw shutdownFailures[0];
+        if (shutdownFailures.length > 1) {
+          throw new AggregateError(
+            shutdownFailures,
+            "Hermes Live server shutdown encountered multiple cleanup failures.",
+          );
+        }
+      })();
+    }
+    return closePromise;
+  };
+
   return {
     url,
-    close: async () => {
-      await Promise.allSettled(Array.from(sessions, (session) => session.close()));
-      for (const client of wss.clients) {
-        client.close(1001, "server shutdown");
-      }
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
-      const closing = new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-      server.closeIdleConnections();
-      server.closeAllConnections();
-      await closing;
-      await taskSupervisor.close();
-    },
+    close,
   };
+}
+
+function startupAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Hermes Live startup was aborted before the server became ready.");
+}
+
+function startupCleanupError(startupError: unknown, cleanupError: unknown): AggregateError {
+  return new AggregateError(
+    [startupError, cleanupError],
+    `Hermes Live startup failed and task-state cleanup also failed: ${errorToMessage(cleanupError)}`,
+  );
+}
+
+function closeHttpServer(server: ReturnType<typeof createServer>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function closeWebSocketServer(wss: WebSocketServer): Promise<void> {
+  for (const client of wss.clients) client.close(1001, "server shutdown");
+  const closed = new Promise<void>((resolve) => {
+    try {
+      wss.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+  if (await settlesWithin(closed, SERVER_WEBSOCKET_CLOSE_GRACE_MS)) return;
+  for (const client of wss.clients) client.terminate();
+  await settlesWithin(closed, SERVER_WEBSOCKET_FORCE_WAIT_MS);
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => true),
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function withServerDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 async function handleHttp(
@@ -186,6 +379,7 @@ async function handleHttp(
   options: {
     config: AppConfig;
     hermes: HermesRunsPort;
+    taskSupervisor: TaskSupervisorRuntime;
     demoRoot: string;
     browserClientRoot: string;
     requireHermesApiKey: boolean;
@@ -219,6 +413,7 @@ async function handleHttp(
     }
     const report = await buildReadinessReport(options.config, {
       hermes: options.hermes,
+      tasks: options.taskSupervisor,
       requireHermesApiKey: options.requireHermesApiKey,
       requireRealtimeProviderConfig: options.requireRealtimeProviderConfig,
     });
@@ -228,6 +423,7 @@ async function handleHttp(
         gateway: report.gateway,
         hermes: report.hermes,
         realtime: report.realtime,
+        tasks: report.tasks,
       },
     });
     return;
@@ -253,6 +449,7 @@ async function handleHttp(
         gatewayRestartRecovery: "reconcile_by_upstream_run_id",
         hermesRestartRecovery: false,
         ambiguousDispatch: "fenced_no_automatic_retry",
+        declaredReadOnlyTrusted: options.config.tasks.trustDeclaredReadOnly === true,
         maxConcurrent: options.config.tasks.maxConcurrent,
         maxQueued: options.config.tasks.maxQueued,
         maxRetained: options.config.tasks.historyLimit,
@@ -270,7 +467,8 @@ async function handleHttp(
         background_tasks: true,
         durable_task_state: true,
         task_reconnect_snapshot: true,
-        parallel_read_only_tasks: options.config.tasks.maxConcurrent > 1,
+        parallel_read_only_tasks:
+          options.config.tasks.maxConcurrent > 1 && options.config.tasks.trustDeclaredReadOnly === true,
         exact_task_stop: true,
         task_notifications: true,
         hermes_run_events_internal: true,

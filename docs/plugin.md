@@ -161,6 +161,6 @@ The Compose example persists task state in `hermes-live-state`; keep that volume
 
 The realtime provider receives four narrow gateway tools that start, list, inspect, and stop owner-scoped tasks. It does not receive Hermes tools, credentials, raw events, upstream run ids, or approval authority. Hermes remains responsible for memory, tools, skills, MCP, and execution; the gateway supervises lifetime, persistence, scheduling, and client projection.
 
-Closing Dashboard or the provider session detaches from tasks. Only an exact `task.stop` cancels work. If Hermes requests approval, the supervisor attempts deny-all and stops that task fail-closed; no plugin surface can approve it in v0.5.
+Closing Dashboard or the provider session detaches from tasks. Only an exact `task.stop` cancels work. If Hermes requests approval, the supervisor attempts deny-all and stops that task fail-closed; the plugin has no approval control.
 
 For custom/community clients, see [UI Integration](ui-integration.md). Generic OpenAI-compatible chat support does not implement the Hermes Live protocol v3 audio/task/notification contract by itself.

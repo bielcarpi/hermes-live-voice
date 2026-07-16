@@ -22,6 +22,7 @@ export interface TaskPruneResult {
 }
 
 export interface TaskStorePort {
+  close?(): Promise<void>;
   load(taskId: string): Promise<TaskRecord | undefined>;
   list(options?: TaskListOptions): Promise<TaskRecord[]>;
   put(record: TaskRecord): Promise<TaskRecord>;

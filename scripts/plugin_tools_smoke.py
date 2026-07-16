@@ -125,6 +125,7 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
                     "gatewayRestartRecovery": "reconcile_by_upstream_run_id",
                     "hermesRestartRecovery": False,
                     "ambiguousDispatch": "fenced_no_automatic_retry",
+                    "declaredReadOnlyTrusted": True,
                     "maxConcurrent": 3,
                     "maxQueued": 32,
                     "maxRetained": 200,
@@ -158,6 +159,7 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
                         "authRequired": True,
                         "tasks": {
                             "durable": True,
+                            "declaredReadOnlyTrusted": True,
                             "maxConcurrent": 3,
                             "maxQueued": 32,
                             "maxRetained": 200,
@@ -180,6 +182,11 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
                         "provider": "openai",
                         "model": "gpt-realtime-2.1",
                         "baseUrl": f"https://{reflected_secret}@api.example",
+                    },
+                    "tasks": {
+                        "ok": True,
+                        "checked": True,
+                        "durable": True,
                     },
                     "unknown": {"secret": reflected_secret},
                 },
@@ -210,6 +217,7 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
             "durable": True,
             "disconnectContinuation": True,
             "hermesRestartRecovery": False,
+            "declaredReadOnlyTrusted": True,
             "scope": "owner",
             "persistence": "local_file",
             "gatewayRestartRecovery": "reconcile_by_upstream_run_id",
@@ -240,6 +248,7 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
         payload["checks"]["ready"]["body"]["checks"]["gateway"]["tasks"],
         {
             "durable": True,
+            "declaredReadOnlyTrusted": True,
             "maxConcurrent": 3,
             "maxQueued": 32,
             "maxRetained": 200,

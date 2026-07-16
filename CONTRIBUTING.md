@@ -101,8 +101,8 @@ Never include credentials, session tokens, private prompts, user audio, or sensi
 - Document protocol changes in [docs/client-protocol.md](docs/client-protocol.md).
 - Document configuration changes in `.env.example` and [docs/local-setup.md](docs/local-setup.md).
 - Add user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
-- Do not claim model support until the compatibility gates in [docs/roadmap.md](docs/roadmap.md) pass.
-- Keep marketing statements consistent with the developer-preview security boundary.
+- Do not claim model support until the compatibility gates in [live provider testing](docs/live-provider-testing.md) pass.
+- Keep product claims specific and consistent with the documented recovery and security boundaries.
 
 ## Dependency updates
 

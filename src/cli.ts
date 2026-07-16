@@ -16,6 +16,7 @@ import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
 import { normalizeGatewayWebSocketUrl, runInteractiveTerminal, sanitizeTerminalText } from "./cli/terminal-session.js";
+import { runOfflineTaskCommand } from "./cli/task-operator.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
@@ -37,6 +38,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "tasks") {
+    await runOfflineTaskCommand(process.argv.slice(3), loadConfig());
+    return;
+  }
+
   if (command === "help" || command === "--help" || command === "-h") {
     printHelp();
     return;
@@ -50,9 +56,52 @@ async function main(): Promise<void> {
   if (command === "serve" || command === "dev") {
     const config = loadConfig();
     assertRuntimeConfig(config);
-    const server = await startServer({ config, logger });
-    process.on("SIGINT", () => void server.close().finally(() => process.exit(0)));
-    process.on("SIGTERM", () => void server.close().finally(() => process.exit(0)));
+    const startupAbort = new AbortController();
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+    let shuttingDown = false;
+    const shutdown = (signal: NodeJS.Signals) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      if (!server) {
+        startupAbort.abort(new Error(`Hermes Live startup interrupted by ${signal}.`));
+        return;
+      }
+      void server.close().then(
+        () => process.exit(0),
+        (error) => {
+          logger.error("hermes-live shutdown failed", { signal, error: errorToMessage(error) });
+          process.exit(1);
+        },
+      );
+    };
+    const onSigint = () => shutdown("SIGINT");
+    const onSigterm = () => shutdown("SIGTERM");
+    // Keep both handlers installed through cleanup. Repeated signals are
+    // ignored by the guard instead of falling back to Node's immediate default
+    // exit while the task-store lock is still being released.
+    process.on("SIGINT", onSigint);
+    process.on("SIGTERM", onSigterm);
+    try {
+      server = await startServer({ config, logger, signal: startupAbort.signal });
+    } catch (error) {
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+      if (
+        shuttingDown
+        && startupAbort.signal.aborted
+        && error === startupAbort.signal.reason
+      ) {
+        process.exitCode = 0;
+        return;
+      }
+      throw error;
+    }
+    if (shuttingDown) {
+      await server.close();
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+      process.exitCode = 0;
+    }
     return;
   }
 
@@ -157,6 +206,9 @@ Usage:
   hermes-live chat          Alias for terminal
   hermes-live check         Check Hermes capabilities and realtime provider config
   hermes-live provider-smoke Open and close a real Gemini/OpenAI provider session
+  hermes-live tasks unresolved Inspect unresolved outcomes with the gateway stopped
+  hermes-live tasks contain <taskId> --confirm-contained Unblock one unknown outcome after containment
+  hermes-live tasks unlock --confirm-no-gateway Clear a crash-left state lock after verifying shutdown
   hermes-live print-config  Print resolved config with secrets redacted
   hermes-live plugin install Install the Hermes plugin into ~/.hermes/plugins
   hermes-live plugin status  Show Hermes plugin install status
@@ -176,6 +228,7 @@ Optional:
   HERMES_LIVE_MAX_TEXT_CHARS Text/tool-call character limit, default 20000
   HERMES_LIVE_MAX_SESSIONS Concurrent WebSocket session limit, default 8
   HERMES_LIVE_TRUST_CLIENT_IDENTITY Allow profileId/userLabel from clients; default false
+  HERMES_LIVE_TRUST_DECLARED_READ_ONLY Trust model-declared read-only task scopes; default false
   HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS  Hermes run SSE idle timeout, default 120000
   HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
@@ -185,7 +238,7 @@ Optional:
   OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2.1
   OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
 
-Terminal voice:
+Terminal client:
   The terminal console controls a remote Hermes Live session without native
   audio dependencies. Use /tasks, /status <taskId>, /result <taskId>, and
   /stop <taskId>. Quitting only detaches; server-owned tasks keep running.

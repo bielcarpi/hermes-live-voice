@@ -8,6 +8,31 @@ const DEFAULT_PLAYBACK_RESUME_TIMEOUT_MS = 2_000;
 const DEFAULT_SAMPLE_RATE = 24_000;
 const MIN_PCM_SAMPLE_RATE = 8_000;
 const MAX_PCM_SAMPLE_RATE = 192_000;
+// Keep these public wire ceilings in lockstep with
+// src/domain/protocol/server-protocol.ts. The total frame limit is a separate
+// transport guard and does not replace per-field or retained-state bounds.
+const PUBLIC_MODEL_MAX_CHARS = 256;
+const PUBLIC_MIME_TYPE_MAX_CHARS = 128;
+const PUBLIC_TRANSCRIPT_MAX_CHARS = 20_000;
+const PUBLIC_TASK_TITLE_MAX_CHARS = 256;
+const PUBLIC_TASK_PROGRESS_MAX_CHARS = 1_000;
+const PUBLIC_TASK_SUMMARY_MAX_CHARS = 4_000;
+const PUBLIC_TASK_OUTPUT_MAX_CHARS = 200_000;
+const PUBLIC_TASK_ERROR_MAX_CHARS = 2_000;
+const PUBLIC_NOTIFICATION_MAX_CHARS = 1_000;
+const PUBLIC_LOG_MAX_CHARS = 2_000;
+const PUBLIC_JSON_MAX_CHARS = 64_000;
+// A JSON value whose serialized representation fits in 64k cannot legitimately
+// exceed these structural ceilings. They let the exported validator reject
+// adversarial direct-call objects before traversal becomes unbounded while
+// preserving every value the wire schema accepts.
+const PUBLIC_JSON_MAX_DEPTH = PUBLIC_JSON_MAX_CHARS;
+const PUBLIC_JSON_MAX_KEYS = PUBLIC_JSON_MAX_CHARS;
+const PUBLIC_JSON_MAX_NODES = PUBLIC_JSON_MAX_CHARS;
+const PUBLIC_AUDIO_BASE64_MAX_CHARS = 8_000_000;
+const PUBLIC_ERROR_CODE_MAX_CHARS = 128;
+const PUBLIC_TASK_STAGE_MAX_CHARS = 128;
+const PUBLIC_TASK_REASON_MAX_CHARS = 1_000;
 const DEFAULT_TASK_LIST_LIMIT = 50;
 const MAX_TASK_LIST_LIMIT = 100;
 // Server configuration can retain history (1000) + queued work (512) +
@@ -140,6 +165,7 @@ export class HermesLiveClient {
     this.reconnectSnapshotPending = false;
     this.taskMap = new Map();
     this.taskLifecycleSequenceMap = new Map();
+    this.taskLifecycleRevisionMap = new Map();
     this.unreadNotificationMap = new Map();
     this.notificationRevisionMap = new Map();
     this.pendingRequests = new Map();
@@ -670,6 +696,7 @@ export class HermesLiveClient {
       // accumulating forever while subsequent frames merge normally.
       this.taskMap.clear();
       this.taskLifecycleSequenceMap.clear();
+      this.taskLifecycleRevisionMap.clear();
     }
 
     for (const task of message.tasks) {
@@ -684,10 +711,37 @@ export class HermesLiveClient {
         });
         continue;
       }
+      if (existing && task.sequence === lifecycleSequence) {
+        const retainedRevision = this.taskLifecycleRevisionMap.get(task.taskId);
+        if (
+          retainedRevision &&
+          (
+            retainedRevision.createdAt !== task.createdAt ||
+            retainedRevision.updatedAt !== task.updatedAt
+          )
+        ) {
+          throw new Error("Hermes Live received conflicting lifecycle timestamps at one task sequence.");
+        }
+        assertCompatibleTaskRevision(existing, task);
+        this.retainTask(mergeEqualSequenceTask(existing, task));
+        if (!retainedRevision) {
+          this.retainTaskLifecycleRevision(task.taskId, {
+            sequence: task.sequence,
+            createdAt: task.createdAt,
+            updatedAt: task.updatedAt,
+          });
+        }
+        continue;
+      }
       this.retainTask(existing && task.sequence < existing.sequence
-        ? { ...task, sequence: existing.sequence, updatedAt: Math.max(existing.updatedAt, task.updatedAt) }
+        ? mergeNewerLifecycleSnapshot(existing, task)
         : task);
       this.taskLifecycleSequenceMap.set(task.taskId, task.sequence);
+      this.retainTaskLifecycleRevision(task.taskId, {
+        sequence: task.sequence,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+      });
     }
     this.syncTaskSnapshot();
     if (reconnectReconciliation) {
@@ -704,19 +758,43 @@ export class HermesLiveClient {
 
   acceptTaskEvent(message) {
     const existing = this.taskMap.get(message.taskId);
+    const eventFingerprint = taskEventFingerprint(message);
     const notificationRevision = message.type === "task.notification"
       ? this.notificationRevisionMap.get(message.taskId)
       : undefined;
+    const lifecycleRevision = message.type === "task.notification"
+      ? undefined
+      : this.taskLifecycleRevisionMap.get(message.taskId);
     const lifecycleSequence = this.taskLifecycleSequenceMap.get(message.taskId) ?? existing?.sequence ?? 0;
     if (
       notificationRevision &&
       message.sequence === notificationRevision.sequence &&
-      (
-        message.notification.notificationId !== notificationRevision.notificationId ||
-        message.notification.acknowledged !== notificationRevision.acknowledged
-      )
+      eventFingerprint !== notificationRevision.fingerprint
     ) {
       throw new Error("Hermes Live received conflicting notification state at one task sequence.");
+    }
+    if (
+      lifecycleRevision &&
+      message.sequence === lifecycleRevision.sequence &&
+      (
+        (lifecycleRevision.fingerprint && eventFingerprint !== lifecycleRevision.fingerprint) ||
+        lifecycleRevision.updatedAt !== message.occurredAt
+      )
+    ) {
+      throw new Error("Hermes Live received conflicting lifecycle content at one task sequence.");
+    }
+    if (
+      message.type !== "task.notification" &&
+      message.sequence === lifecycleSequence &&
+      !lifecycleRevision?.fingerprint
+    ) {
+      if (existing) assertCompatibleTaskRevision(existing, taskFromLifecycle(existing, message));
+      this.retainTaskLifecycleRevision(message.taskId, {
+        sequence: message.sequence,
+        fingerprint: eventFingerprint,
+        createdAt: lifecycleRevision?.createdAt ?? existing?.createdAt ?? message.occurredAt,
+        updatedAt: lifecycleRevision?.updatedAt ?? message.occurredAt,
+      });
     }
     const stale = message.type === "task.notification"
       ? Boolean(
@@ -738,71 +816,16 @@ export class HermesLiveClient {
       throw new Error(`Hermes Live rejected ${message.type} for unknown task ${message.taskId}.`);
     }
 
-    let task;
-    switch (message.type) {
-      case "task.accepted":
-        task = {
-          ...(existing ?? {}),
-          taskId: message.taskId,
-          sequence: Math.max(existing?.sequence ?? 0, message.sequence),
-          state: message.state,
-          ...(message.title === undefined ? {} : { title: message.title }),
-          createdAt: existing?.createdAt ?? message.occurredAt,
-          updatedAt: Math.max(existing?.updatedAt ?? 0, message.occurredAt),
-          ...(message.queuePosition === undefined ? {} : { queuePosition: message.queuePosition }),
-        };
-        if (message.state !== "queued") delete task.queuePosition;
-        task = freezeTaskSnapshot(task);
-        break;
-      case "task.started":
-        task = nextTaskSnapshot(existing, message, {
-          state: "running",
-          startedAt: existing.startedAt ?? message.occurredAt,
-          ...(message.title === undefined ? {} : { title: message.title }),
-        }, ["queuePosition", "error"]);
-        break;
-      case "task.progress":
-        task = nextTaskSnapshot(existing, message, {
-          state: existing.state === "stopping" ? "stopping" : "running",
-          progress: message.progress,
-        }, ["queuePosition", "error"]);
-        break;
-      case "task.stopping":
-        task = nextTaskSnapshot(existing, message, { state: "stopping" }, ["queuePosition"]);
-        break;
-      case "task.completed":
-        task = nextTaskSnapshot(existing, message, {
-          state: "completed",
-          finishedAt: message.occurredAt,
-          result: message.result,
-        }, ["queuePosition", "error"]);
-        break;
-      case "task.failed":
-        task = nextTaskSnapshot(existing, message, {
-          state: "failed",
-          finishedAt: message.occurredAt,
-          error: message.error,
-        }, ["queuePosition", "result"]);
-        break;
-      case "task.cancelled":
-        task = nextTaskSnapshot(existing, message, {
-          state: "cancelled",
-          finishedAt: message.occurredAt,
-        }, ["queuePosition", "result", "error"]);
-        break;
-      case "task.unknown":
-        task = nextTaskSnapshot(existing, message, {
-          state: "unknown",
-          error: message.error,
-        }, ["queuePosition", "result"]);
-        break;
-      case "task.notification": {
-        task = nextTaskSnapshot(existing, message, {});
+    let task = message.type === "task.notification"
+      ? nextTaskSnapshot(existing, message, {})
+      : taskFromLifecycle(existing, message);
+    if (message.type === "task.notification") {
         const key = notificationKey(message.taskId, message.notification.notificationId);
         this.retainNotificationRevision(message.taskId, {
           notificationId: message.notification.notificationId,
           sequence: message.sequence,
           acknowledged: message.notification.acknowledged,
+          fingerprint: eventFingerprint,
         });
         // One durable task has exactly one current notification identity. A
         // later terminal resolution (for example unknown -> cancelled) creates
@@ -819,12 +842,16 @@ export class HermesLiveClient {
         } else {
           this.retainUnreadNotification({ taskId: message.taskId, ...message.notification });
         }
-        break;
-      }
     }
     this.retainTask(task);
     if (message.type !== "task.notification") {
       this.taskLifecycleSequenceMap.set(message.taskId, message.sequence);
+      this.retainTaskLifecycleRevision(message.taskId, {
+        sequence: message.sequence,
+        fingerprint: eventFingerprint,
+        createdAt: task.createdAt,
+        updatedAt: message.occurredAt,
+      });
     }
     this.syncTaskSnapshot();
     this.emitter.emit("task.updated", { task, message });
@@ -914,6 +941,13 @@ export class HermesLiveClient {
       throw new Error("Hermes Live exceeded the safe retained notification revision limit.");
     }
     this.notificationRevisionMap.set(taskId, Object.freeze({ ...revision }));
+  }
+
+  retainTaskLifecycleRevision(taskId, revision) {
+    if (!this.taskLifecycleRevisionMap.has(taskId) && this.taskLifecycleRevisionMap.size >= MAX_RETAINED_TASKS) {
+      throw new Error("Hermes Live exceeded the safe retained lifecycle revision limit.");
+    }
+    this.taskLifecycleRevisionMap.set(taskId, Object.freeze({ ...revision }));
   }
 
   syncTaskSnapshot() {
@@ -1508,11 +1542,18 @@ export function validateServerMessage(value) {
       }
       optionalOpaqueId(message, "requestId", 128);
       requireOpaqueId(message, "sessionId");
-      requireString(message, "model");
+      requireBoundedString(message, "model", PUBLIC_MODEL_MAX_CHARS);
       requireObject(message, "hermes");
       requireOnlyKeys(message.hermes, ["model", "capabilities"], "session.ready hermes");
-      optionalStringField(message.hermes, "model", false, "session.ready hermes");
-      if (message.hermes.capabilities !== undefined) requirePlainObject(message.hermes.capabilities, "session.ready hermes capabilities");
+      optionalBoundedStringField(
+        message.hermes,
+        "model",
+        PUBLIC_MODEL_MAX_CHARS,
+        { label: "session.ready hermes" },
+      );
+      if (message.hermes.capabilities !== undefined) {
+        validateBoundedJsonObject(message.hermes.capabilities, "session.ready hermes capabilities");
+      }
       requireObject(message, "realtime");
       validateRealtimeCapabilities(message.realtime);
       requireObject(message, "tasks");
@@ -1521,22 +1562,22 @@ export function validateServerMessage(value) {
     }
     case "session.error":
       requireOnlyKeys(message, ["type", "code", "message", "requestId", "recoverable"]);
-      requireString(message, "code");
-      requireString(message, "message");
+      requireBoundedString(message, "code", PUBLIC_ERROR_CODE_MAX_CHARS);
+      requireBoundedString(message, "message", PUBLIC_TASK_ERROR_MAX_CHARS);
       optionalOpaqueId(message, "requestId", 128);
       optionalBoolean(message, "recoverable");
       break;
     case "audio.output":
       requireOnlyKeys(message, ["type", "data", "mimeType", "itemId", "contentIndex"]);
-      requireString(message, "data");
-      requireString(message, "mimeType");
+      requireBoundedString(message, "data", PUBLIC_AUDIO_BASE64_MAX_CHARS);
+      requireBoundedString(message, "mimeType", PUBLIC_MIME_TYPE_MAX_CHARS);
       optionalOpaqueId(message, "itemId");
       optionalInteger(message, "contentIndex", { maximum: 100 });
       break;
     case "transcript.delta":
       requireOnlyKeys(message, ["type", "speaker", "text", "final"]);
       requireEnum(message, "speaker", ["user", "assistant", "system"]);
-      requireString(message, "text");
+      requireBoundedString(message, "text", PUBLIC_TRANSCRIPT_MAX_CHARS);
       optionalBoolean(message, "final");
       break;
     case "input.speech_started":
@@ -1554,7 +1595,7 @@ export function validateServerMessage(value) {
     case "response.failed":
       requireOnlyKeys(message, ["type", "responseId", "error"]);
       optionalOpaqueId(message, "responseId");
-      requireString(message, "error");
+      requireBoundedString(message, "error", PUBLIC_TASK_ERROR_MAX_CHARS);
       break;
     case "task.snapshot": {
       requireOnlyKeys(message, ["type", "reason", "requestId", "tasks", "truncated"]);
@@ -1582,20 +1623,16 @@ export function validateServerMessage(value) {
       break;
     }
     case "task.accepted":
-      requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "state", "title", "queuePosition"]);
+      requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "state", "title"]);
       validateTaskEventBase(message);
       optionalOpaqueId(message, "requestId", 128);
       requireEnum(message, "state", ["accepted", "queued"]);
-      optionalStringField(message, "title");
-      optionalInteger(message, "queuePosition", { positive: true, maximum: 10_000 });
-      if (message.queuePosition !== undefined && message.state !== "queued") {
-        throw new TypeError("Hermes Live task.accepted exposes queuePosition only for queued tasks.");
-      }
+      optionalBoundedStringField(message, "title", PUBLIC_TASK_TITLE_MAX_CHARS);
       break;
     case "task.started":
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "title"]);
       validateTaskEventBase(message);
-      optionalStringField(message, "title");
+      optionalBoundedStringField(message, "title", PUBLIC_TASK_TITLE_MAX_CHARS);
       break;
     case "task.progress":
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "progress"]);
@@ -1607,7 +1644,7 @@ export function validateServerMessage(value) {
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "reason"]);
       validateTaskEventBase(message);
       optionalOpaqueId(message, "requestId", 128);
-      optionalStringField(message, "reason", true);
+      optionalBoundedStringField(message, "reason", PUBLIC_TASK_REASON_MAX_CHARS, { allowEmpty: true });
       break;
     case "task.completed":
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "result"]);
@@ -1627,7 +1664,7 @@ export function validateServerMessage(value) {
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "reason"]);
       validateTaskEventBase(message);
       optionalOpaqueId(message, "requestId", 128);
-      optionalStringField(message, "reason", true);
+      optionalBoundedStringField(message, "reason", PUBLIC_TASK_REASON_MAX_CHARS, { allowEmpty: true });
       break;
     case "task.unknown":
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "error"]);
@@ -1646,8 +1683,8 @@ export function validateServerMessage(value) {
     case "log":
       requireOnlyKeys(message, ["type", "level", "message", "data"]);
       requireEnum(message, "level", ["debug", "info", "warn", "error"]);
-      requireString(message, "message");
-      if (message.data !== undefined) requirePlainObject(message.data, "log data");
+      requireBoundedString(message, "message", PUBLIC_LOG_MAX_CHARS);
+      if (message.data !== undefined) validateBoundedJsonObject(message.data, "log data");
       break;
     default:
       if (message.type.startsWith("run.")) {
@@ -1663,6 +1700,24 @@ function requireString(value, key, allowEmpty = false) {
   if (typeof value[key] !== "string" || (!allowEmpty && value[key].length === 0)) {
     throw new TypeError(`Hermes Live ${value.type} message requires ${key}.`);
   }
+}
+
+function requireBoundedString(value, key, maximum, options = {}) {
+  const string = value[key];
+  if (
+    typeof string !== "string" ||
+    (!options.allowEmpty && string.length === 0) ||
+    string.length > maximum
+  ) {
+    throw new TypeError(
+      `Hermes Live ${options.label ?? value.type} requires ${key} with at most ${maximum} characters.`,
+    );
+  }
+}
+
+function optionalBoundedStringField(value, key, maximum, options = {}) {
+  if (value[key] === undefined) return;
+  requireBoundedString(value, key, maximum, options);
 }
 
 function requireEnum(value, key, allowed) {
@@ -1682,6 +1737,112 @@ function requirePlainObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError(`Hermes Live ${label} must be an object.`);
   }
+}
+
+function validateBoundedJsonObject(value, label) {
+  // Parsed WebSocket JSON contains ordinary data objects. JavaScript offers no
+  // trap-free way to inspect a caller-supplied Proxy; any trap exception is
+  // therefore treated as validation failure. Accessor properties are rejected
+  // without invocation below so direct callers cannot smuggle executable reads
+  // into otherwise JSON-shaped metadata.
+  requirePlainObject(value, label);
+  const stack = [{ value, depth: 1, exit: false }];
+  const ancestors = new WeakSet();
+  let serializedChars = 0;
+  let keyCount = 0;
+  let nodeCount = 0;
+
+  const addSerializedChars = (count) => {
+    serializedChars += count;
+    if (serializedChars > PUBLIC_JSON_MAX_CHARS) {
+      throw new TypeError(`Hermes Live ${label} exceeds ${PUBLIC_JSON_MAX_CHARS} serialized characters.`);
+    }
+  };
+
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    if (entry.exit) {
+      ancestors.delete(entry.value);
+      continue;
+    }
+    nodeCount += 1;
+    if (nodeCount > PUBLIC_JSON_MAX_NODES || entry.depth > PUBLIC_JSON_MAX_DEPTH) {
+      throw new TypeError(`Hermes Live ${label} exceeds its safe JSON structure limit.`);
+    }
+
+    const current = entry.value;
+    if (current === null) {
+      addSerializedChars(4);
+      continue;
+    }
+    switch (typeof current) {
+      case "string":
+        addSerializedChars(JSON.stringify(current).length);
+        continue;
+      case "number": {
+        if (!Number.isFinite(current)) {
+          throw new TypeError(`Hermes Live ${label} contains a non-finite JSON number.`);
+        }
+        addSerializedChars(JSON.stringify(current).length);
+        continue;
+      }
+      case "boolean":
+        addSerializedChars(current ? 4 : 5);
+        continue;
+      case "object":
+        break;
+      default:
+        throw new TypeError(`Hermes Live ${label} contains a non-JSON value.`);
+    }
+
+    const array = Array.isArray(current);
+    if (!array && !isPlainJsonObject(current)) {
+      throw new TypeError(`Hermes Live ${label} contains a non-plain JSON object.`);
+    }
+    if (ancestors.has(current)) {
+      throw new TypeError(`Hermes Live ${label} contains a circular JSON value.`);
+    }
+    ancestors.add(current);
+    stack.push({ value: current, depth: entry.depth, exit: true });
+
+    if (array) {
+      addSerializedChars(2 + Math.max(0, current.length - 1));
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
+        if (!descriptor) {
+          throw new TypeError(`Hermes Live ${label} contains a sparse JSON array.`);
+        }
+        if (!("value" in descriptor)) {
+          throw new TypeError(`Hermes Live ${label} contains an accessor instead of JSON data.`);
+        }
+        stack.push({ value: descriptor.value, depth: entry.depth + 1, exit: false });
+      }
+      continue;
+    }
+
+    const keys = Object.keys(current);
+    keyCount += keys.length;
+    if (keyCount > PUBLIC_JSON_MAX_KEYS) {
+      throw new TypeError(`Hermes Live ${label} exceeds its safe JSON key limit.`);
+    }
+    addSerializedChars(2 + Math.max(0, keys.length - 1));
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index];
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (!descriptor || !("value" in descriptor)) {
+        throw new TypeError(`Hermes Live ${label} contains an accessor instead of JSON data.`);
+      }
+      addSerializedChars(JSON.stringify(key).length + 1);
+      stack.push({ value: descriptor.value, depth: entry.depth + 1, exit: false });
+    }
+  }
+
+  return value;
+}
+
+function isPlainJsonObject(value) {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function requireOnlyKeys(value, keys, label = value.type) {
@@ -1739,13 +1900,6 @@ function optionalFiniteNumber(value, key, options = {}) {
   }
 }
 
-function optionalStringField(value, key, allowEmpty = false, label = value.type) {
-  if (value[key] === undefined) return;
-  if (typeof value[key] !== "string" || (!allowEmpty && !value[key])) {
-    throw new TypeError(`Hermes Live ${label} requires valid ${key}.`);
-  }
-}
-
 function validateTaskCapabilities(value) {
   requireOnlyKeys(value, ["scope", "sequence", "reconnect", "durable", "parallel", "maxConcurrent", "maxRetained", "supports"], "session.ready tasks");
   const typed = { ...value, type: "session.ready tasks" };
@@ -1782,7 +1936,6 @@ function validateTaskSnapshot(value) {
     "updatedAt",
     "startedAt",
     "finishedAt",
-    "queuePosition",
     "progress",
     "result",
     "error",
@@ -1800,12 +1953,11 @@ function validateTaskSnapshot(value) {
     "cancelled",
     "unknown",
   ]);
-  optionalStringField(typed, "title");
+  optionalBoundedStringField(typed, "title", PUBLIC_TASK_TITLE_MAX_CHARS);
   requireInteger(typed, "createdAt");
   requireInteger(typed, "updatedAt");
   optionalInteger(typed, "startedAt");
   optionalInteger(typed, "finishedAt");
-  optionalInteger(typed, "queuePosition", { positive: true, maximum: 10_000 });
   const normalized = { ...value };
   if (value.progress !== undefined) normalized.progress = validateTaskProgress(value.progress);
   if (value.result !== undefined) normalized.result = validateTaskResult(value.result);
@@ -1816,9 +1968,6 @@ function validateTaskSnapshot(value) {
   if (["failed", "unknown"].includes(value.state) && !normalized.error) {
     throw new TypeError(`Hermes Live ${value.state} task snapshot requires an error.`);
   }
-  if (value.queuePosition !== undefined && value.state !== "queued") {
-    throw new TypeError("Hermes Live task snapshot exposes queuePosition only for queued tasks.");
-  }
   return freezeTaskSnapshot(normalized);
 }
 
@@ -1826,8 +1975,8 @@ function validateTaskProgress(value) {
   requirePlainObject(value, "task progress");
   requireOnlyKeys(value, ["message", "stage", "current", "total", "percent"], "task progress");
   const typed = { ...value, type: "task progress" };
-  requireString(typed, "message");
-  optionalStringField(typed, "stage");
+  requireBoundedString(typed, "message", PUBLIC_TASK_PROGRESS_MAX_CHARS);
+  optionalBoundedStringField(typed, "stage", PUBLIC_TASK_STAGE_MAX_CHARS);
   optionalInteger(typed, "current");
   optionalInteger(typed, "total", { positive: true });
   optionalFiniteNumber(typed, "percent", { minimum: 0, maximum: 100 });
@@ -1841,13 +1990,13 @@ function validateTaskResult(value) {
   requirePlainObject(value, "task result");
   requireOnlyKeys(value, ["summary", "output", "truncated", "usage"], "task result");
   const typed = { ...value, type: "task result" };
-  optionalStringField(typed, "summary");
-  optionalStringField(typed, "output", true);
+  optionalBoundedStringField(typed, "summary", PUBLIC_TASK_SUMMARY_MAX_CHARS);
+  optionalBoundedStringField(typed, "output", PUBLIC_TASK_OUTPUT_MAX_CHARS, { allowEmpty: true });
   if (typed.summary === undefined && typed.output === undefined) {
     throw new TypeError("Hermes Live task result requires a summary or output.");
   }
   requireBoolean(typed, "truncated");
-  if (typed.usage !== undefined) requirePlainObject(typed.usage, "task result usage");
+  if (typed.usage !== undefined) validateBoundedJsonObject(typed.usage, "task result usage");
   return Object.freeze({
     ...value,
     ...(value.usage === undefined ? {} : { usage: Object.freeze({ ...value.usage }) }),
@@ -1858,8 +2007,8 @@ function validateTaskError(value) {
   requirePlainObject(value, "task error");
   requireOnlyKeys(value, ["code", "message", "recoverable"], "task error");
   const typed = { ...value, type: "task error" };
-  requireString(typed, "code");
-  requireString(typed, "message");
+  requireBoundedString(typed, "code", PUBLIC_ERROR_CODE_MAX_CHARS);
+  requireBoundedString(typed, "message", PUBLIC_TASK_ERROR_MAX_CHARS);
   requireBoolean(typed, "recoverable");
   return Object.freeze({ ...value });
 }
@@ -1871,7 +2020,7 @@ function validateTaskNotification(value) {
   requireOpaqueId(typed, "notificationId");
   requireEnum(typed, "kind", ["completed", "failed", "cancelled", "unknown"]);
   requireEnum(typed, "delivery", ["interrupt", "when_idle", "silent"]);
-  requireString(typed, "message");
+  requireBoundedString(typed, "message", PUBLIC_NOTIFICATION_MAX_CHARS);
   requireInteger(typed, "createdAt");
   requireBoolean(typed, "acknowledged");
   return Object.freeze({ ...value });
@@ -1881,7 +2030,7 @@ function validateRealtimeCapabilities(value) {
   requireOnlyKeys(value, ["provider", "model", "audio"], "session.ready realtime");
   const realtime = { ...value, type: "session.ready realtime" };
   requireEnum(realtime, "provider", ["gemini", "openai", "mock"]);
-  requireString(realtime, "model");
+  requireBoundedString(realtime, "model", PUBLIC_MODEL_MAX_CHARS);
   requireObject(realtime, "audio");
   const audio = value.audio;
   requireOnlyKeys(audio, ["input", "output", "turnDetection"], "session.ready realtime audio");
@@ -1899,8 +2048,8 @@ function validateRealtimeCapabilities(value) {
   const output = { ...audio.output, type: "session.ready realtime audio output" };
   requireBoolean(input, "enabled");
   requireBoolean(output, "enabled");
-  optionalStringField(input, "mimeType");
-  optionalStringField(output, "mimeType");
+  optionalBoundedStringField(input, "mimeType", PUBLIC_MIME_TYPE_MAX_CHARS);
+  optionalBoundedStringField(output, "mimeType", PUBLIC_MIME_TYPE_MAX_CHARS);
   optionalInteger(input, "recommendedFrameMs", { positive: true, maximum: 1_000 });
   if (input.enabled && !input.mimeType) requireString(input, "mimeType");
   if (output.enabled && !output.mimeType) requireString(output, "mimeType");
@@ -1919,6 +2068,58 @@ function createSnapshot(connection) {
   });
 }
 
+function taskFromLifecycle(existing, message) {
+  switch (message.type) {
+    case "task.accepted":
+      return freezeTaskSnapshot({
+        ...(existing ?? {}),
+        taskId: message.taskId,
+        sequence: Math.max(existing?.sequence ?? 0, message.sequence),
+        state: message.state,
+        ...(message.title === undefined ? {} : { title: message.title }),
+        createdAt: existing?.createdAt ?? message.occurredAt,
+        updatedAt: Math.max(existing?.updatedAt ?? 0, message.occurredAt),
+      });
+    case "task.started":
+      return nextTaskSnapshot(existing, message, {
+        state: "running",
+        startedAt: existing.startedAt ?? message.occurredAt,
+        ...(message.title === undefined ? {} : { title: message.title }),
+      }, ["error"]);
+    case "task.progress":
+      return nextTaskSnapshot(existing, message, {
+        state: existing.state === "stopping" ? "stopping" : "running",
+        progress: message.progress,
+      }, ["error"]);
+    case "task.stopping":
+      return nextTaskSnapshot(existing, message, { state: "stopping" });
+    case "task.completed":
+      return nextTaskSnapshot(existing, message, {
+        state: "completed",
+        finishedAt: message.occurredAt,
+        result: message.result,
+      }, ["error"]);
+    case "task.failed":
+      return nextTaskSnapshot(existing, message, {
+        state: "failed",
+        finishedAt: message.occurredAt,
+        error: message.error,
+      }, ["result"]);
+    case "task.cancelled":
+      return nextTaskSnapshot(existing, message, {
+        state: "cancelled",
+        finishedAt: message.occurredAt,
+      }, ["result", "error"]);
+    case "task.unknown":
+      return nextTaskSnapshot(existing, message, {
+        state: "unknown",
+        error: message.error,
+      }, ["result"]);
+    default:
+      throw new Error(`Hermes Live cannot project ${message.type} as task lifecycle state.`);
+  }
+}
+
 function nextTaskSnapshot(existing, message, patch, cleared = []) {
   const next = {
     ...existing,
@@ -1929,6 +2130,172 @@ function nextTaskSnapshot(existing, message, patch, cleared = []) {
   };
   for (const key of cleared) delete next[key];
   return freezeTaskSnapshot(next);
+}
+
+function assertCompatibleTaskRevision(retained, incoming) {
+  const conflict = (field) => {
+    throw new Error(
+      `Hermes Live received conflicting ${field} for ${incoming.taskId} at sequence ${incoming.sequence}.`,
+    );
+  };
+  if (retained.taskId !== incoming.taskId) conflict("task id");
+  if (retained.createdAt !== incoming.createdAt) conflict("task creation time");
+  if (retained.state !== incoming.state) conflict("task state");
+  if (retained.sequence === incoming.sequence && retained.updatedAt !== incoming.updatedAt) {
+    conflict("task update time");
+  }
+  assertCompatibleOptional(retained.title, incoming.title, "task title", conflict);
+  assertCompatibleOptional(retained.startedAt, incoming.startedAt, "task start time", conflict);
+  assertCompatibleOptional(retained.finishedAt, incoming.finishedAt, "task finish time", conflict);
+  assertCompatibleOptional(retained.progress, incoming.progress, "task progress", conflict);
+
+  if (retained.result && incoming.result) {
+    assertCompatibleOptional(retained.result.summary, incoming.result.summary, "task result summary", conflict);
+    assertCompatibleOptional(retained.result.output, incoming.result.output, "task result output", conflict);
+    assertCompatibleOptional(retained.result.usage, incoming.result.usage, "task result usage", conflict);
+  } else if (Boolean(retained.result) !== Boolean(incoming.result) && incoming.state === "completed") {
+    conflict("task result");
+  }
+
+  if (retained.error && incoming.error) {
+    if (!sameStructuredValue(retained.error, incoming.error)) conflict("task error");
+  } else if (
+    Boolean(retained.error) !== Boolean(incoming.error) &&
+    (incoming.state === "failed" || incoming.state === "unknown")
+  ) {
+    conflict("task error");
+  }
+}
+
+function assertCompatibleOptional(retained, incoming, field, conflict) {
+  if (retained !== undefined && incoming !== undefined && !sameStructuredValue(retained, incoming)) {
+    conflict(field);
+  }
+}
+
+function mergeEqualSequenceTask(retained, incoming) {
+  const next = {
+    ...retained,
+    sequence: Math.max(retained.sequence, incoming.sequence),
+    updatedAt: Math.max(retained.updatedAt, incoming.updatedAt),
+  };
+  if (next.title === undefined && incoming.title !== undefined) next.title = incoming.title;
+  if (next.startedAt === undefined && incoming.startedAt !== undefined) next.startedAt = incoming.startedAt;
+  if (next.finishedAt === undefined && incoming.finishedAt !== undefined) next.finishedAt = incoming.finishedAt;
+  if (next.progress === undefined && incoming.progress !== undefined) next.progress = incoming.progress;
+  if (incoming.result) {
+    if (!next.result) {
+      next.result = incoming.result;
+    } else {
+      const result = { ...next.result };
+      if (result.summary === undefined && incoming.result.summary !== undefined) {
+        result.summary = incoming.result.summary;
+      }
+      if (result.output === undefined && incoming.result.output !== undefined) {
+        result.output = incoming.result.output;
+        result.truncated = incoming.result.truncated;
+      }
+      if (result.usage === undefined && incoming.result.usage !== undefined) {
+        result.usage = incoming.result.usage;
+      }
+      next.result = result;
+    }
+  }
+  if (!next.error && incoming.error) next.error = incoming.error;
+  return freezeTaskSnapshot(next);
+}
+
+function mergeNewerLifecycleSnapshot(retained, incoming) {
+  const next = {
+    ...incoming,
+    sequence: Math.max(retained.sequence, incoming.sequence),
+    updatedAt: Math.max(retained.updatedAt, incoming.updatedAt),
+  };
+  if (
+    retained.state === incoming.state &&
+    retained.result?.output !== undefined &&
+    next.result !== undefined &&
+    next.result.output === undefined
+  ) {
+    next.result = {
+      ...next.result,
+      output: retained.result.output,
+      truncated: retained.result.truncated,
+    };
+  }
+  return freezeTaskSnapshot(next);
+}
+
+function taskEventFingerprint(message) {
+  const { requestId: _requestId, ...content } = message;
+  return compactStableFingerprint(content);
+}
+
+function sameStructuredValue(left, right) {
+  return stableCanonicalValue(left) === stableCanonicalValue(right);
+}
+
+function compactStableFingerprint(value) {
+  const canonical = stableCanonicalValue(value);
+  // Retain a fixed-size replay discriminator instead of a second copy of a
+  // lifecycle payload: one completed event can carry 200k output characters
+  // and the client keeps revisions for as many as 2,048 task shells. Four
+  // independent 32-bit lanes plus canonical length and edge samples make an
+  // accidental collision negligible while keeping the bounded ledger below
+  // roughly 1 MiB. Authentication remains the WebSocket/session boundary;
+  // this fingerprint detects contradictory replays, it is not an auth token.
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  let third = 0x85ebca6b;
+  let fourth = 0xc2b2ae35;
+  for (let index = 0; index < canonical.length; index += 1) {
+    const code = canonical.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ code, 0x5bd1e995) >>> 0;
+    third = Math.imul(third + code, 0x27d4eb2d) >>> 0;
+    fourth = (Math.imul(fourth, 33) ^ code) >>> 0;
+  }
+  const digest = [canonical.length, first, second, third, fourth]
+    .map((part) => part.toString(36))
+    .join(":");
+  return `${digest}:${JSON.stringify(canonical.slice(0, 64))}:${JSON.stringify(canonical.slice(-64))}`;
+}
+
+function stableCanonicalValue(value) {
+  const output = [];
+  const stack = [{ kind: "value", value }];
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    if (entry.kind === "text") {
+      output.push(entry.value);
+      continue;
+    }
+    const current = entry.value;
+    if (current === undefined) {
+      output.push("undefined");
+    } else if (current === null || typeof current !== "object") {
+      output.push(JSON.stringify(current));
+    } else if (Array.isArray(current)) {
+      output.push("[");
+      stack.push({ kind: "text", value: "]" });
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        if (index < current.length - 1) stack.push({ kind: "text", value: "," });
+        stack.push({ kind: "value", value: current[index] });
+      }
+    } else {
+      output.push("{");
+      stack.push({ kind: "text", value: "}" });
+      const keys = Object.keys(current).sort();
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        if (index < keys.length - 1) stack.push({ kind: "text", value: "," });
+        const key = keys[index];
+        stack.push({ kind: "value", value: current[key] });
+        stack.push({ kind: "text", value: ":" });
+        stack.push({ kind: "text", value: JSON.stringify(key) });
+      }
+    }
+  }
+  return output.join("");
 }
 
 function freezeTaskSnapshot(value) {

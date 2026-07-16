@@ -338,7 +338,7 @@ def _sanitize_audio(value: dict[str, Any]) -> dict[str, Any]:
 
 def _sanitize_task_capabilities(value: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for name in ("durable", "disconnectContinuation", "hermesRestartRecovery"):
+    for name in ("durable", "disconnectContinuation", "hermesRestartRecovery", "declaredReadOnlyTrusted"):
         _copy_boolean(value, result, name)
     for name in ("scope", "persistence", "gatewayRestartRecovery", "ambiguousDispatch"):
         _copy_string(value, result, name)
@@ -384,9 +384,9 @@ def _sanitize_readiness(value: dict[str, Any]) -> dict[str, Any]:
         _copy_boolean(gateway, safe_gateway, name)
     for name in ("port", "maxSessions"):
         _copy_integer(gateway, safe_gateway, name)
-    tasks = _sanitize_task_readiness(_mapping(gateway.get("tasks")))
-    if tasks:
-        safe_gateway["tasks"] = tasks
+    gateway_tasks = _sanitize_task_readiness(_mapping(gateway.get("tasks")))
+    if gateway_tasks:
+        safe_gateway["tasks"] = gateway_tasks
     if safe_gateway:
         safe_checks["gateway"] = safe_gateway
 
@@ -416,6 +416,13 @@ def _sanitize_readiness(value: dict[str, Any]) -> dict[str, Any]:
     if safe_realtime:
         safe_checks["realtime"] = safe_realtime
 
+    tasks = _mapping(checks.get("tasks"))
+    safe_tasks: dict[str, Any] = {}
+    for name in ("ok", "checked", "durable"):
+        _copy_boolean(tasks, safe_tasks, name)
+    if safe_tasks:
+        safe_checks["tasks"] = safe_tasks
+
     if safe_checks:
         result["checks"] = safe_checks
     return result
@@ -424,7 +431,8 @@ def _sanitize_readiness(value: dict[str, Any]) -> dict[str, Any]:
 def _sanitize_task_readiness(value: dict[str, Any]) -> dict[str, Any]:
     """Project readiness task settings without exposing persistence paths."""
     result: dict[str, Any] = {}
-    _copy_boolean(value, result, "durable")
+    for name in ("durable", "declaredReadOnlyTrusted"):
+        _copy_boolean(value, result, name)
     for name in ("maxConcurrent", "maxQueued", "maxRetained", "retentionMs", "pollIntervalMs"):
         _copy_integer(value, result, name)
     return result
@@ -446,7 +454,7 @@ def _expected_success_shape(path: str, value: dict[str, Any]) -> bool:
         checks = _mapping(value.get("checks"))
         return value.get("status") == "ready" and all(
             _mapping(checks.get(name)).get("ok") is True
-            for name in ("gateway", "hermes", "realtime")
+            for name in ("gateway", "hermes", "realtime", "tasks")
         )
     return False
 

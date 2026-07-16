@@ -458,14 +458,11 @@ export class TerminalGatewaySession {
       case "task.accepted":
         base.state = message.state;
         if (message.title) base.title = message.title;
-        if (message.queuePosition) base.queuePosition = message.queuePosition;
-        else delete base.queuePosition;
         break;
       case "task.started":
         base.state = "running";
         base.startedAt ??= message.occurredAt;
         if (message.title) base.title = message.title;
-        delete base.queuePosition;
         break;
       case "task.progress":
         base.state = existing?.state === "stopping" ? "stopping" : "running";
@@ -739,7 +736,7 @@ export class TerminalGatewaySession {
   /quit                  Detach from the gateway; tasks keep running
   /help                  Show this help
 
-Interactive task approvals are unavailable in v0.5 and are contained fail-closed.
+Interactive task approvals are unavailable and are contained fail-closed.
 This console intentionally has no microphone/audio dependencies. For local voice,
 run Hermes and press Ctrl+B. For remote gateway audio, use the Dashboard/browser UI.`);
   }
@@ -1021,9 +1018,6 @@ function mergeEqualSequenceTask(
   if (next.startedAt === undefined && incoming.startedAt !== undefined) next.startedAt = incoming.startedAt;
   if (next.finishedAt === undefined && incoming.finishedAt !== undefined) next.finishedAt = incoming.finishedAt;
   if (next.progress === undefined && incoming.progress !== undefined) next.progress = { ...incoming.progress };
-  if (incoming.queuePosition !== undefined) next.queuePosition = incoming.queuePosition;
-  else if (incoming.state !== "queued") delete next.queuePosition;
-
   if (incoming.result) {
     if (!next.result) {
       next.result = cloneTaskSnapshot(incoming).result;

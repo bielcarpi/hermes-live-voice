@@ -26,7 +26,12 @@ export {
   normalizeOpenAIRealtimeEvent,
 } from "./adapters/outbound/realtime/openai-realtime.adapter.js";
 export { buildReadinessReport } from "./readiness.js";
-export type { BuildReadinessReportOptions, ReadinessReport, ReadinessSection } from "./readiness.js";
+export type {
+  BuildReadinessReportOptions,
+  ReadinessReport,
+  ReadinessSection,
+  TaskRuntimeHealthPort,
+} from "./readiness.js";
 export { createLiveModelAdapter } from "./adapters/outbound/realtime/factory.js";
 export { buildSystemInstruction } from "./application/live-gateway/system-instruction.js";
 export { runLiveProviderSmoke } from "./live-provider-smoke.js";

@@ -34,5 +34,9 @@ jobs:
       - run: npm run verify
       - run: npm audit --audit-level=moderate
       - run: npm pack --dry-run
-      - if: matrix.node-version == 20
+      - name: Build Docker image
+        if: matrix.node-version == 20
         run: docker build -t hermes-live-voice:ci .
+      - name: Smoke-test Docker runtime
+        if: matrix.node-version == 20
+        run: node scripts/gateway-smoke.mjs --docker-image hermes-live-voice:ci

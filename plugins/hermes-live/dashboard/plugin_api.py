@@ -318,7 +318,7 @@ def _readiness_is_ready(readiness: _Probe) -> bool:
         return False
     return all(
         isinstance(checks.get(name), dict) and checks[name].get("ok") is True
-        for name in ("gateway", "hermes", "realtime")
+        for name in ("gateway", "hermes", "realtime", "tasks")
     )
 
 
@@ -376,7 +376,7 @@ def _safe_task_capabilities(value: Any) -> dict[str, Any] | None:
         return None
 
     result: dict[str, Any] = {}
-    for name in ("durable", "disconnectContinuation"):
+    for name in ("durable", "disconnectContinuation", "declaredReadOnlyTrusted"):
         raw = value.get(name)
         if isinstance(raw, bool):
             result[name] = raw
@@ -384,8 +384,8 @@ def _safe_task_capabilities(value: Any) -> dict[str, Any] | None:
         raw = value.get(name)
         if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= 1_000_000:
             result[name] = raw
-    if "maxConcurrent" in result:
-        result["parallel"] = result["maxConcurrent"] > 1
+    if "maxConcurrent" in result and "declaredReadOnlyTrusted" in result:
+        result["parallel"] = result["maxConcurrent"] > 1 and result["declaredReadOnlyTrusted"]
     return result or None
 
 

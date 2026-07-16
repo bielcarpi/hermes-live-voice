@@ -12,7 +12,7 @@ export interface SubmitBackgroundTaskInput {
 export type TaskRecordListener = (record: TaskRecord) => void;
 
 export interface TaskNotificationAnnouncementClaim {
-  /** True only for the caller that durably persisted the first announcement claim. */
+  /** True only for the caller holding the gateway-local announcement lease. */
   claimed: boolean;
   task: TaskRecord;
 }
@@ -31,6 +31,14 @@ export interface TaskSupervisorPort {
   stop(ownerId: string, taskId: string, reason?: string): Promise<TaskRecord>;
   acknowledgeNotification(ownerId: string, taskId: string): Promise<TaskRecord>;
   markNotificationAnnounced(ownerId: string, taskId: string): Promise<TaskRecord>;
-  claimNotificationAnnouncement(ownerId: string, taskId: string): Promise<TaskNotificationAnnouncementClaim>;
+  claimNotificationAnnouncement(
+    ownerId: string,
+    taskId: string,
+    claimantId: string,
+  ): Promise<TaskNotificationAnnouncementClaim>;
+  /** Persist announcement only after the realtime provider accepts the handoff. */
+  completeNotificationAnnouncement(ownerId: string, taskId: string, claimantId: string): Promise<TaskRecord>;
+  /** Release an uncompleted gateway-local claim so another live session can retry it. */
+  releaseNotificationAnnouncement(ownerId: string, taskId: string, claimantId: string): void;
   subscribe(ownerId: string, listener: TaskRecordListener): () => void;
 }

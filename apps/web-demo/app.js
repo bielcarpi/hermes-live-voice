@@ -8,6 +8,7 @@ const ACTIVE_TASK_STATES = new Set([
   "unknown",
 ]);
 const MAX_VISIBLE_RECENT_TASKS = 12;
+const MAX_VISIBLE_UNREAD_TASKS = 2_048;
 const MAX_TASK_DETAIL_CHARS = 8_000;
 const MAX_CONVERSATION_ENTRIES = 100;
 
@@ -154,7 +155,7 @@ function handleMessage(message) {
     fatalSessionError = "";
     setStatus("Connected");
     setInteractive(true);
-    addLog("session", "Live voice connected. Background tasks will remain durable if this session disconnects.");
+    addLog("session", "Live voice connected. You can keep talking while tasks run.");
   } else if (message.type === "transcript.delta") {
     addLog(message.speaker ?? "assistant", message.text ?? "");
   } else if (message.type === "input.speech_started") {
@@ -206,21 +207,21 @@ function renderTaskInbox(snapshot) {
   const unreadNotifications = Array.isArray(snapshot?.unreadNotifications)
     ? snapshot.unreadNotifications
     : [];
-  const visibleTasks = activeTasks.concat(recentTasks.slice(0, MAX_VISIBLE_RECENT_TASKS));
-  const unreadByTask = new Map(unreadNotifications.map((notification) => [notification.taskId, notification]));
+  const inboxItems = taskInboxItems(activeTasks, recentTasks, unreadNotifications);
+  const visibleUnreadCount = inboxItems.filter((item) => item.notification).length;
 
-  taskBadgeEl.textContent = String(unreadNotifications.length);
-  taskBadgeEl.dataset.unread = unreadNotifications.length > 0 ? "true" : "false";
+  taskBadgeEl.textContent = String(visibleUnreadCount);
+  taskBadgeEl.dataset.unread = visibleUnreadCount > 0 ? "true" : "false";
   taskBadgeEl.setAttribute(
     "aria-label",
-    unreadNotifications.length === 0
+    visibleUnreadCount === 0
       ? "No unread task updates"
-      : `${unreadNotifications.length} unread task ${unreadNotifications.length === 1 ? "update" : "updates"}`,
+      : `${visibleUnreadCount} unread task ${visibleUnreadCount === 1 ? "update" : "updates"}`,
   );
   taskSummaryEl.textContent = taskInboxSummary(activeTasks.length, recentTasks.length);
   tasksEl.innerHTML = "";
 
-  if (visibleTasks.length === 0) {
+  if (inboxItems.length === 0) {
     const empty = document.createElement("div");
     empty.className = "task-empty";
     const mark = document.createElement("span");
@@ -233,9 +234,38 @@ function renderTaskInbox(snapshot) {
     return;
   }
 
-  for (const task of visibleTasks) {
-    tasksEl.append(createTaskCard(task, unreadByTask.get(task.taskId), snapshot?.connection === "ready"));
+  for (const { task, notification } of inboxItems) {
+    tasksEl.append(createTaskCard(task, notification, snapshot?.connection === "ready"));
   }
+}
+
+function taskInboxItems(activeTasks, recentTasks, unreadNotifications) {
+  const taskById = new Map();
+  for (const task of activeTasks.concat(recentTasks)) {
+    if (task?.taskId && !taskById.has(task.taskId)) taskById.set(task.taskId, task);
+  }
+  const unreadByTask = new Map();
+  for (const notification of unreadNotifications.slice(0, MAX_VISIBLE_UNREAD_TASKS)) {
+    if (
+      notification?.taskId &&
+      taskById.has(notification.taskId) &&
+      !unreadByTask.has(notification.taskId)
+    ) {
+      unreadByTask.set(notification.taskId, notification);
+    }
+  }
+
+  const items = [];
+  const seenTaskIds = new Set();
+  const appendTask = (task) => {
+    if (!task?.taskId || seenTaskIds.has(task.taskId)) return;
+    seenTaskIds.add(task.taskId);
+    items.push({ task, notification: unreadByTask.get(task.taskId) });
+  };
+  activeTasks.forEach(appendTask);
+  unreadByTask.forEach((_notification, taskId) => appendTask(taskById.get(taskId)));
+  recentTasks.slice(0, MAX_VISIBLE_RECENT_TASKS).forEach(appendTask);
+  return items;
 }
 
 function createTaskCard(task, notification, connected) {

@@ -22,6 +22,7 @@ services:
       HERMES_LIVE_DEMO_ENABLED: ${HERMES_LIVE_DEMO_ENABLED:-false}
       HERMES_LIVE_TASK_STATE_FILE: /var/lib/hermes-live/tasks-v1.json
       HERMES_LIVE_MAX_CONCURRENT_TASKS: ${HERMES_LIVE_MAX_CONCURRENT_TASKS:-3}
+      HERMES_LIVE_TRUST_DECLARED_READ_ONLY: ${HERMES_LIVE_TRUST_DECLARED_READ_ONLY:-false}
       HERMES_LIVE_MAX_QUEUED_TASKS: ${HERMES_LIVE_MAX_QUEUED_TASKS:-32}
       HERMES_LIVE_TASK_HISTORY_LIMIT: ${HERMES_LIVE_TASK_HISTORY_LIMIT:-200}
       HERMES_LIVE_TASK_RETENTION_HOURS: ${HERMES_LIVE_TASK_RETENTION_HOURS:-168}
@@ -45,7 +46,9 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
-    stop_grace_period: 10s
+    # Covers bounded provider, WebSocket, HTTP, and task-store shutdown before
+    # Docker escalates to SIGKILL and leaves the intentional single-writer lock.
+    stop_grace_period: 20s
 
 volumes:
   hermes-live-state:

@@ -52,11 +52,12 @@ export HERMES_LIVE_MAX_QUEUED_TASKS=32
 export HERMES_LIVE_TASK_HISTORY_LIMIT=200
 export HERMES_LIVE_TASK_RETENTION_HOURS=168
 export HERMES_LIVE_TASK_POLL_INTERVAL_MS=2000
+export HERMES_LIVE_TRUST_DECLARED_READ_ONLY=false
 ```
 
 The state-file override must be an absolute path in a dedicated directory owned by the gateway process user. The gateway creates private `0700`/`0600` permissions and refuses corrupt or symlinked state rather than resetting it.
 
-`exclusive` tasks run alone. Only tasks explicitly classified `parallel_read_only` can use multiple slots, and only when their resource keys are disjoint. See [Durable Background Tasks](background-tasks.md).
+`exclusive` tasks run alone. Read-only parallelism is disabled unless the operator sets `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true`; that opt-in trusts model-supplied mode and resource-key metadata. See [Durable Background Tasks](background-tasks.md#admission-and-parallelism).
 
 ## 4. Choose A Realtime Provider
 
@@ -98,9 +99,11 @@ The defaults are `gpt-realtime-2.1`, voice `marin`, reasoning effort `low`, PCM1
 
 ## 5. Check Readiness
 
-In another terminal:
+In another terminal, run the check with the same provider and Hermes key. For mock mode:
 
 ```sh
+HERMES_LIVE_PROVIDER=mock \
+HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
 npm run check
 curl http://127.0.0.1:8788/ready
 curl http://127.0.0.1:8788/v1/capabilities
@@ -112,7 +115,7 @@ If `HERMES_LIVE_AUTH_TOKEN` is set, add `Authorization: Bearer ...` to the two a
 
 Hermes JSON requests and initial SSE headers time out after `HERMES_LIVE_HERMES_TIMEOUT_MS` (default 30 seconds). An established event stream has an independent `HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS` watchdog (default 120 seconds) refreshed by events or keepalive bytes. Provider startup defaults to 15 seconds through `HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS`.
 
-## 6. Use The Development Demo
+## 6. Use The Bundled Browser Client
 
 Open:
 
@@ -195,7 +198,8 @@ The example:
 - publishes only to `127.0.0.1` by default;
 - uses a read-only root filesystem, bounded `/tmp`, dropped capabilities, and `no-new-privileges`;
 - runs as the image's non-root `node` user;
-- persists `/var/lib/hermes-live/tasks-v1.json` in the `hermes-live-state` volume.
+- persists `/var/lib/hermes-live/tasks-v1.json` in the `hermes-live-state` volume;
+- gives bounded provider, WebSocket, HTTP, and state-store shutdown 20 seconds before Docker may send `SIGKILL`.
 
 Do not remove that volume if you expect gateway-restart recovery or retained task history. Set `HERMES_LIVE_HOST_PORT` for a different loopback port and put a TLS reverse proxy in front for remote access.
 
@@ -209,4 +213,20 @@ Before relying on background work:
 4. Stop one exact task while another runs and confirm only the selected id changes.
 5. Exercise an approval-requiring task and confirm deny-all plus stop, with no approval buttons or commands.
 
-For ambiguous dispatch and state-file recovery, follow the [operator procedure](background-tasks.md#ambiguous-dispatch-fence) instead of editing JSON.
+For ambiguous dispatch and state-file recovery, follow the [operator procedure](background-tasks.md#ambiguous-dispatch-fence) instead of editing JSON. With the gateway stopped:
+
+```sh
+hermes-live tasks unresolved
+hermes-live tasks contain <taskId> --confirm-contained
+```
+
+An unclean exit leaves the single-writer lock intentionally, so `restart: unless-stopped` can restart-loop until an operator clears it. For the Compose example, use the same protected env file or exported variables as normal:
+
+```sh
+docker compose -f examples/docker-compose.yml stop hermes-live
+docker compose -f examples/docker-compose.yml run --rm --no-deps \
+  hermes-live node dist/cli.js tasks unlock --confirm-no-gateway
+docker compose -f examples/docker-compose.yml up -d hermes-live
+```
+
+The one-off command mounts the same `hermes-live-state` volume and targets `/var/lib/hermes-live/tasks-v1.json`. Run it only after the service is stopped and you have confirmed that no other gateway uses that volume. For a host install, use `hermes-live tasks unlock --confirm-no-gateway` instead.

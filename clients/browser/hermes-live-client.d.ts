@@ -49,7 +49,6 @@ export interface HermesLiveTask {
   updatedAt: number;
   startedAt?: number;
   finishedAt?: number;
-  queuePosition?: number;
   progress?: HermesLiveTaskProgress;
   result?: HermesLiveTaskResult;
   error?: HermesLiveTaskError;
@@ -125,7 +124,7 @@ export type HermesLiveKnownServerMessage =
   | { type: "response.cancelled"; responseId?: string }
   | { type: "response.failed"; responseId?: string; error: string }
   | { type: "task.snapshot"; reason: "initial" | "reconnect" | "list" | "get"; requestId?: string; tasks: HermesLiveTask[]; truncated: boolean }
-  | (HermesLiveTaskEventBase & { type: "task.accepted"; requestId?: string; state: "accepted" | "queued"; title?: string; queuePosition?: number })
+  | (HermesLiveTaskEventBase & { type: "task.accepted"; requestId?: string; state: "accepted" | "queued"; title?: string })
   | (HermesLiveTaskEventBase & { type: "task.started"; title?: string })
   | (HermesLiveTaskEventBase & { type: "task.progress"; progress: HermesLiveTaskProgress })
   | (HermesLiveTaskEventBase & { type: "task.stopping"; requestId?: string; reason?: string })
