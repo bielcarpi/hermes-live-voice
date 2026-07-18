@@ -183,8 +183,10 @@ export async function runSetup(
       configPath,
       runner,
     };
-    await runServiceAction("install", serviceOptions);
-    service = await runServiceAction("start", serviceOptions) as ServiceStatus;
+    const installedService = await runServiceAction("install", serviceOptions) as ServiceStatus;
+    service = installedService.running
+      ? installedService
+      : await runServiceAction("start", serviceOptions) as ServiceStatus;
     gateway = await waitForGateway(config, dependencies);
   } else if (options.service) {
     service = { skipped: true, reason: "Service was not installed because the readiness preflight failed." };

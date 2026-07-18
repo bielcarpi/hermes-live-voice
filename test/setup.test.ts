@@ -152,9 +152,17 @@ describe("setup", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected a TCP test server.");
     const calls: Array<[string, string[]]> = [];
+    let serviceStarted = false;
     const runner: CommandRunner = async (command, args) => {
       calls.push([command, [...args]]);
-      return commandResult(command, args, command === "systemctl" && args.includes("is-active") ? "active\n" : "");
+      if (command === "systemctl" && args.includes("start")) serviceStarted = true;
+      if (command === "systemctl" && args.includes("is-active")) {
+        return {
+          ...commandResult(command, args, serviceStarted ? "active\n" : "inactive\n"),
+          code: serviceStarted ? 0 : 3,
+        };
+      }
+      return commandResult(command, args);
     };
     try {
       const report = await runSetup({

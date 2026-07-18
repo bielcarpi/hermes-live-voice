@@ -95,6 +95,7 @@ export async function serviceStatus(options: ServiceManagerOptions = {}): Promis
     : await resolved.runner("systemctl", ["--user", "is-active", SERVICE_LABEL]);
   const running = result.code === 0 && (resolved.platform === "launchd"
     ? /(?:^|\n)\s*state = running\s*(?:\n|$)/u.test(result.stdout)
+      || /(?:^|\n)\s*pid = [1-9][0-9]*\s*(?:\n|$)/u.test(result.stdout)
     : result.stdout.trim() === "active");
   return {
     platform: resolved.platform,

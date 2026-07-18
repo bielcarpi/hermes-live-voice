@@ -129,9 +129,16 @@ describe("service manager", () => {
       uid: 501,
       runner: async (command, args) => result(command, args, 0, "state = running\n"),
     });
+    const starting = await serviceStatus({
+      home,
+      platform: "darwin",
+      uid: 501,
+      runner: async (command, args) => result(command, args, 0, "state = xpcproxy\npid = 4321\n"),
+    });
 
     expect(waiting.running).toBe(false);
     expect(running.running).toBe(true);
+    expect(starting.running).toBe(true);
   });
 
   it("refuses to start before the service is installed", async () => {
