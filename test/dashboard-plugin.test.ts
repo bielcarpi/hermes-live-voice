@@ -238,6 +238,15 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.negotiatedInputAudio({}, staleStatusInput)).toMatchObject(staleStatusInput);
     expect(source).toContain("if (!supportsBrowserPlayback(outputAudio)) return audio;");
   });
+
+  it("turns gateway failures into exact setup and repair commands", () => {
+    const utilities = loadDashboardUtilities();
+
+    expect(utilities.gatewayPresentation({ configured: false }).detail).toContain("hermes-live setup");
+    expect(utilities.gatewayPresentation({ reachable: false }).detail).toContain("hermes-live service status");
+    expect(utilities.gatewayPresentation({ ready: false, error: "Hermes is offline." }).detail)
+      .toBe("Hermes is offline. Run hermes-live doctor for the exact fix.");
+  });
 });
 
 function dashboardSource(): string {
@@ -272,6 +281,7 @@ function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
       connectedSessionNotice,
       connectionClosedNotice,
       disconnectSession,
+      gatewayPresentation,
       isTaskActive,
       microphoneActiveGuidance,
       negotiatedInputAudio,

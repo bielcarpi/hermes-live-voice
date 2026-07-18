@@ -230,20 +230,24 @@
     if (status.configured === false) return {
       label: "Setup needed",
       tone: "warning",
-      detail: "Configure the companion gateway in the Hermes environment.",
+      detail: "Run hermes-live setup, then restart Hermes Dashboard.",
     };
     if (status.reachable === false) return {
       label: "Offline",
       tone: "danger",
-      detail: "The companion gateway is configured but cannot be reached.",
+      detail: "The gateway is offline. Run hermes-live service status, then hermes-live doctor.",
     };
     if (status.ready === false) return {
       label: "Not ready",
       tone: "warning",
-      detail: status.error || "The gateway is reachable but its provider or Hermes bridge is not ready.",
+      detail: (status.error || "The provider or Hermes bridge is not ready.") + " Run hermes-live doctor for the exact fix.",
     };
     if (status.ready === true) return { label: "Ready", tone: "success", detail: "Gateway and Hermes bridge are ready." };
-    if (status.error) return { label: "Unavailable", tone: "danger", detail: status.error };
+    if (status.error) return {
+      label: "Unavailable",
+      tone: "danger",
+      detail: status.error + " Run hermes-live doctor for the exact fix.",
+    };
     return { label: "Unknown", tone: "neutral", detail: "Gateway readiness has not been reported." };
   }
 
