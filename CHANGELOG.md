@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-07-18
+
+- Add `hermes-live setup` as the normal installation path. It securely reuses Hermes's existing API Server key when available, prompts without echoing missing provider credentials, writes an allowlisted private config, installs and enables the matching plugin, verifies Hermes capabilities and a real Gemini/OpenAI session, and waits for the gateway to become ready.
+- Add a native user-service lifecycle through launchd on macOS and systemd on Linux. `hermes-live service install|uninstall|start|stop|restart|status|logs` keeps the gateway available without a dedicated terminal, while service definitions contain only the managed-config path and never API keys.
+- Add `hermes-live doctor` with human and JSON output for Node compatibility, config integrity, plugin/runtime version parity, Hermes CLI and durable-run capabilities, provider configuration and optional live session, service state, and gateway readiness. Every failed check includes an exact remediation.
+- Store managed settings under `~/.hermes/hermes-live/config.env` with private permissions, atomic writes, process-environment precedence, an explicit key allowlist, and strict rejection of symlinks, unsafe permissions, duplicate/unexpected settings, oversized input, and non-string values. Project `.env` files are never loaded or executed.
+- Make setup the primary README, plugin, Dashboard, and support path. The Dashboard now turns missing configuration, offline services, and failed readiness into the corresponding setup, service, and doctor commands.
+- Verify the complete activation path from a clean packed npm install: Hermes key import, managed config permissions, exact plugin version, gateway startup, real readiness response, and redacted doctor output. Protocol v3 and the durable background-task contract are unchanged.
+
 ## 0.5.0 - 2026-07-16
 
 - Keep the realtime conversation open while Hermes works. Delegated work is now owned by a durable server-side supervisor, survives client detachment, and reports retained results through an unread completion inbox after reconnect.
