@@ -18,30 +18,17 @@ The Dashboard tab supports browser voice, text fallback, transcript, speech inte
 
 ## Install The Published Plugin
 
-Install the package and copy its matching bundled plugin to `~/.hermes/plugins/hermes-live/`:
+The normal path installs, enables, verifies, and starts everything:
 
 ```sh
 npm install --global hermes-live-voice
-hermes-live plugin install --force
-hermes plugins enable hermes-live
-```
-
-Start the gateway:
-
-```sh
-HERMES_BASE_URL=http://127.0.0.1:8642 \
-HERMES_AGENT_API_SERVER_KEY=... \
-HERMES_LIVE_PROVIDER=mock \
-hermes-live serve
-```
-
-Then start or restart Dashboard:
-
-```sh
+hermes-live setup
 hermes dashboard
 ```
 
 Choose **Live Voice** in the plugin navigation group.
+
+Setup installs the exact plugin bundled with the CLI, reuses Hermes's existing `API_SERVER_KEY` when available, verifies required Hermes capabilities and a real voice-provider session, and installs a user service. Run `hermes-live doctor` for exact remediation.
 
 Useful installer commands:
 
@@ -52,6 +39,8 @@ hermes-live plugin install --force
 hermes-live plugin install --symlink
 hermes-live plugin install --dir /custom/hermes/plugins
 ```
+
+These lower-level commands are mainly for source development and custom layouts. See [Setup and service management](setup.md) for automation and lifecycle commands.
 
 Project-local plugins under `.hermes/plugins/` require `HERMES_ENABLE_PROJECT_PLUGINS=true` and should be enabled only for trusted repositories.
 

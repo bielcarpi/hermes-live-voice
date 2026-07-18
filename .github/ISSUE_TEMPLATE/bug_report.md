@@ -31,7 +31,7 @@ Include redacted output from:
 
 ```sh
 hermes-live print-config
-hermes-live check
+hermes-live doctor
 ```
 
 From a built source checkout, replace `hermes-live` with `node dist/cli.js`.

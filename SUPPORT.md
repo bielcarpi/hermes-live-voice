@@ -18,13 +18,12 @@ Run:
 ```sh
 node --version
 hermes-live --version
-hermes-live print-config
-hermes-live check
+hermes-live doctor
 ```
 
-`print-config` redacts configured secrets. Review the output again before publishing it.
+`doctor` reports config presence and paths but never credential values. Review the output again before publishing it.
 
-For provider problems, also run `hermes-live provider-smoke` with the same environment. This opens a real provider session but does not send audio or start a Hermes run.
+For provider problems, also run `hermes-live doctor --provider-smoke`. This opens a real provider session but does not send audio or start a Hermes run.
 
 From a source checkout, run `npm run verify` and replace `hermes-live` with `node dist/cli.js` in the diagnostics above.
 

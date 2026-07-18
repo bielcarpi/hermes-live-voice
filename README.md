@@ -33,44 +33,29 @@ Hermes still owns the intelligence and execution: its tools, memory, and skills 
 
 ## Quick start
 
-You need Node.js 20+, a running [Hermes Agent API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md), and its `API_SERVER_KEY`. Mock mode needs no speech-provider key.
+You need Node.js 20+, Hermes Agent with its API Server running, and a Gemini or OpenAI API key. Keep Hermes's `API_SERVER_KEY` in `~/.hermes/.env`; setup can reuse it without printing it.
 
 ```sh
 npm install --global hermes-live-voice
-hermes-live plugin install --force
-hermes plugins enable hermes-live
+hermes-live setup
+hermes dashboard
 ```
 
-Start the gateway with the same key configured in `~/.hermes/.env`:
+Choose **Live Voice** in Dashboard. Setup asks which voice provider to use, verifies a real provider connection, installs and enables the matching plugin, and keeps the gateway running as a user service.
+
+No clone, build, project `.env`, or second terminal is required. You can also open the local browser client at <http://127.0.0.1:8788> or use the terminal:
 
 ```sh
-HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
-HERMES_LIVE_PROVIDER=mock \
-hermes-live serve
+hermes-live terminal
 ```
 
-Then choose a client:
+If something is not ready, run:
 
 ```sh
-hermes dashboard       # open the Live Voice tab
-hermes-live terminal   # text control from a shell
+hermes-live doctor
 ```
 
-The development client is also available at <http://127.0.0.1:8788>. Ask it to inspect a repository or run a test suite. Mock mode exercises the real Hermes run bridge, task store, reconnect flow, and UI without using a microphone or provider credits.
-
-For speech, restart with a provider key:
-
-```sh
-# Gemini Live
-HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
-GEMINI_API_KEY=your-key HERMES_LIVE_PROVIDER=gemini hermes-live serve
-
-# OpenAI Realtime
-HERMES_AGENT_API_SERVER_KEY=your-hermes-api-server-key \
-OPENAI_API_KEY=your-key HERMES_LIVE_PROVIDER=openai hermes-live serve
-```
-
-Run `hermes-live provider-smoke` with the same environment before relying on speech. See [live provider testing](docs/live-provider-testing.md) for the microphone, playback, interruption, and notification checks.
+It checks Node, private config permissions, plugin/runtime version parity, Hermes capabilities, provider configuration, the managed service, and gateway readiness, then prints the exact fix. See [setup and service management](docs/setup.md) for noninteractive setup, mock mode, custom paths, and uninstalling the service.
 
 ## Pick a client
 
@@ -131,12 +116,13 @@ Read [background tasks](docs/background-tasks.md) for recovery details and [arch
 
 ## Deploy safely
 
-The gateway does not load `.env` automatically. Copy settings from [.env.example](.env.example), keep provider and Hermes credentials server-side, and use the hardened [Docker Compose example](examples/docker-compose.yml).
+`hermes-live setup` writes only supported keys to `~/.hermes/hermes-live/config.env` with private permissions. Environment variables override it. The gateway never loads a project `.env` or executes config as shell code. For containers and source deployments, use [.env.example](.env.example) and the hardened [Docker Compose example](examples/docker-compose.yml).
 
 For any non-loopback bind, set a strong `HERMES_LIVE_AUTH_TOKEN`, exact `HERMES_LIVE_ALLOW_ORIGIN`, TLS, and edge rate limits. Keep Hermes itself private. This package is self-hosted infrastructure, not turnkey public multi-tenancy. Review [the security model](docs/security.md) and report vulnerabilities through [GitHub private reporting](https://github.com/bielcarpi/hermes-live-voice/security/advisories/new).
 
 ## Documentation
 
+- [Setup and service](docs/setup.md) — one-command activation, diagnostics, and lifecycle controls
 - [Local setup](docs/local-setup.md) — source builds, providers, Dashboard, terminal, and Docker
 - [Dashboard plugin](docs/plugin.md) — install, relay, and Hermes integration
 - [Background tasks](docs/background-tasks.md) — scheduling, persistence, recovery, and notifications
