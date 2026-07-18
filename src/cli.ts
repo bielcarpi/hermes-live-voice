@@ -20,6 +20,7 @@ import {
 } from "./cli/plugin-installer.js";
 import { applyManagedConfigToProcess } from "./cli/managed-config.js";
 import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
+import { runSetupCommand } from "./cli/setup.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
@@ -42,6 +43,11 @@ async function main(): Promise<void> {
 
   if (command === "plugin") {
     await runPluginCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "setup") {
+    await runSetupCommand(process.argv.slice(3));
     return;
   }
 
@@ -226,6 +232,7 @@ function printHelp(): void {
 
 Usage:
   hermes-live --version     Print the installed package version
+  hermes-live setup         Configure, install, verify, and start Live Voice
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one prompt; wait for its exact task result
