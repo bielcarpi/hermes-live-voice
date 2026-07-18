@@ -231,7 +231,7 @@ async function assertSafeConfigDirectory(directory: string): Promise<void> {
   }
   if (isPosix()) {
     assertOwnedByCurrentUser(directory, stat.uid);
-    if ((stat.mode & 0o077) !== 0) {
+    if ((stat.mode & 0o777) !== CONFIG_DIRECTORY_MODE) {
       throw new Error(`Managed config directory permissions must be 0700: ${directory}`);
     }
   }
@@ -243,7 +243,7 @@ function assertSafeFileStat(path: string, stat: Stats): void {
   }
   if (isPosix()) {
     assertOwnedByCurrentUser(path, stat.uid);
-    if ((stat.mode & 0o177) !== 0) {
+    if ((stat.mode & 0o777) !== CONFIG_FILE_MODE) {
       throw new Error(`Managed config permissions must be 0600: ${path}`);
     }
   }

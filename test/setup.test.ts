@@ -113,6 +113,22 @@ describe("setup", () => {
     await expect(readManagedConfig({ home })).resolves.toMatchObject({ exists: false });
   });
 
+  it.runIf(process.platform !== "win32")("refuses a shared Hermes environment file", async () => {
+    const home = await temporaryHome();
+    await mkdir(join(home, ".hermes"), { recursive: true });
+    const path = join(home, ".hermes", ".env");
+    await writeFile(path, "API_SERVER_KEY=private\n", { mode: 0o644 });
+    await chmod(path, 0o644);
+
+    await expect(runSetup({
+      provider: "mock",
+      enablePlugin: false,
+      service: false,
+      nonInteractive: true,
+      json: true,
+    }, { home, env: {} })).rejects.toThrow(/must not be readable or writable by other users/u);
+  });
+
   it("installs a user service and waits for the gateway after preflight", async () => {
     const home = await temporaryHome();
     const server = createServer((request, response) => {
@@ -163,6 +179,52 @@ describe("setup", () => {
       expect(report.service).toMatchObject({ platform: "systemd", installed: true, running: true });
       expect(report.gateway).toMatchObject({ checked: true, ready: true });
       expect(calls).toContainEqual(["systemctl", ["--user", "start", "dev.hermes-live-voice.gateway"]]);
+    } finally {
+      await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    }
+  });
+
+  it("does not install a service when plugin enablement fails", async () => {
+    const home = await temporaryHome();
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        features: {
+          run_submission: true,
+          run_status: true,
+          run_events_sse: true,
+          run_stop: true,
+          run_approval_response: true,
+        },
+      }));
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP test server.");
+    const calls: Array<[string, string[]]> = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, [...args]]);
+      return { command, args, code: 1, stdout: "", stderr: "enable failed", timedOut: false };
+    };
+    try {
+      const report = await runSetup({
+        provider: "mock",
+        hermesUrl: `http://127.0.0.1:${address.port}`,
+        hermesCommand: process.execPath,
+        enablePlugin: true,
+        service: true,
+        nonInteractive: true,
+        json: true,
+      }, {
+        home,
+        platform: "linux",
+        env: { HERMES_AGENT_API_SERVER_KEY: "private" },
+        runner,
+      });
+
+      expect(report.ok).toBe(false);
+      expect(report.service).toMatchObject({ skipped: true });
+      expect(calls.some(([command]) => command === "systemctl")).toBe(false);
     } finally {
       await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
     }

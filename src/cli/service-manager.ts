@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, open, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { managedConfigPath } from "./managed-config.js";
@@ -6,6 +6,7 @@ import { packageRoot } from "./plugin-installer.js";
 import { runCommand, type CommandResult, type CommandRunner } from "./process.js";
 
 export const SERVICE_LABEL = "dev.hermes-live-voice.gateway";
+const MAX_SERVICE_LOG_BYTES = 256 * 1024;
 
 export type ServicePlatform = "launchd" | "systemd" | "unsupported";
 export type ServiceAction = "install" | "uninstall" | "start" | "stop" | "restart" | "status" | "logs";
@@ -92,7 +93,9 @@ export async function serviceStatus(options: ServiceManagerOptions = {}): Promis
   const result = resolved.platform === "launchd"
     ? await resolved.runner("launchctl", ["print", launchdDomain(resolved)])
     : await resolved.runner("systemctl", ["--user", "is-active", SERVICE_LABEL]);
-  const running = result.code === 0 && (resolved.platform === "launchd" || result.stdout.trim() === "active");
+  const running = result.code === 0 && (resolved.platform === "launchd"
+    ? /(?:^|\n)\s*state = running\s*(?:\n|$)/u.test(result.stdout)
+    : result.stdout.trim() === "active");
   return {
     platform: resolved.platform,
     definitionPath,
@@ -184,6 +187,7 @@ function resolveServiceOptions(options: ServiceManagerOptions = {}): ResolvedSer
     : platform === "systemd"
       ? join(home, ".config", "systemd", "user", `${SERVICE_LABEL}.service`)
       : undefined;
+  const uid = options.uid ?? process.getuid?.();
   const resolvedOptions: ResolvedServiceOptions = {
     home,
     platform,
@@ -191,7 +195,7 @@ function resolveServiceOptions(options: ServiceManagerOptions = {}): ResolvedSer
     cliPath: resolve(options.cliPath ?? join(packageRoot(), "dist", "cli.js")),
     configPath: managedConfigPath({ path: options.configPath, home }),
     ...(definitionPath ? { definitionPath } : {}),
-    ...(options.uid ?? process.getuid?.()) !== undefined ? { uid: options.uid ?? process.getuid?.() } : {},
+    ...(uid !== undefined ? { uid } : {}),
     runner: options.runner ?? runCommand,
   };
   assertSafeServicePath("home", resolvedOptions.home);
@@ -214,8 +218,8 @@ async function installService(options: ResolvedServiceOptions): Promise<void> {
   await chmod(definitionPath, 0o600);
 
   if (options.platform === "launchd") {
-    await options.runner("launchctl", ["bootout", `gui/${options.uid}`, definitionPath]).catch(() => undefined);
-    await expectSuccess(await options.runner("launchctl", ["bootstrap", `gui/${options.uid}`, definitionPath]));
+    await options.runner("launchctl", ["bootout", launchdUserDomain(options), definitionPath]).catch(() => undefined);
+    await expectSuccess(await options.runner("launchctl", ["bootstrap", launchdUserDomain(options), definitionPath]));
   } else {
     await expectSuccess(await options.runner("systemctl", ["--user", "daemon-reload"]));
     await expectSuccess(await options.runner("systemctl", ["--user", "enable", SERVICE_LABEL]));
@@ -225,7 +229,7 @@ async function installService(options: ResolvedServiceOptions): Promise<void> {
 async function uninstallService(options: ResolvedServiceOptions): Promise<void> {
   const definitionPath = options.definitionPath!;
   if (options.platform === "launchd") {
-    await options.runner("launchctl", ["bootout", `gui/${options.uid}`, definitionPath]);
+    await options.runner("launchctl", ["bootout", launchdUserDomain(options), definitionPath]);
   } else {
     await options.runner("systemctl", ["--user", "disable", "--now", SERVICE_LABEL]);
   }
@@ -236,7 +240,7 @@ async function uninstallService(options: ResolvedServiceOptions): Promise<void> 
 }
 
 async function startService(options: ResolvedServiceOptions): Promise<void> {
-  assertDefinitionInstalled(options);
+  await assertDefinitionInstalled(options);
   const result = options.platform === "launchd"
     ? await options.runner("launchctl", ["kickstart", "-k", launchdDomain(options)])
     : await options.runner("systemctl", ["--user", "start", SERVICE_LABEL]);
@@ -244,7 +248,7 @@ async function startService(options: ResolvedServiceOptions): Promise<void> {
 }
 
 async function stopService(options: ResolvedServiceOptions): Promise<void> {
-  assertDefinitionInstalled(options);
+  await assertDefinitionInstalled(options);
   const result = options.platform === "launchd"
     ? await options.runner("launchctl", ["kill", "SIGTERM", launchdDomain(options)])
     : await options.runner("systemctl", ["--user", "stop", SERVICE_LABEL]);
@@ -252,7 +256,7 @@ async function stopService(options: ResolvedServiceOptions): Promise<void> {
 }
 
 async function restartService(options: ResolvedServiceOptions): Promise<void> {
-  assertDefinitionInstalled(options);
+  await assertDefinitionInstalled(options);
   const result = options.platform === "launchd"
     ? await options.runner("launchctl", ["kickstart", "-k", launchdDomain(options)])
     : await options.runner("systemctl", ["--user", "restart", SERVICE_LABEL]);
@@ -263,10 +267,8 @@ async function serviceLogs(options: ServiceManagerOptions): Promise<CommandResul
   const resolved = resolveServiceOptions(options);
   assertSupported(resolved);
   if (resolved.platform === "launchd") {
-    const stdout = await readFile(join(resolved.home, ".hermes", "hermes-live", "logs", "gateway.log"), "utf8")
-      .catch(() => "");
-    const stderr = await readFile(join(resolved.home, ".hermes", "hermes-live", "logs", "gateway.error.log"), "utf8")
-      .catch(() => "");
+    const stdout = await readBoundedLogTail(join(resolved.home, ".hermes", "hermes-live", "logs", "gateway.log"));
+    const stderr = await readBoundedLogTail(join(resolved.home, ".hermes", "hermes-live", "logs", "gateway.error.log"));
     return {
       command: "launchd log files",
       args: [],
@@ -285,9 +287,9 @@ function assertSupported(options: ResolvedServiceOptions): void {
   }
 }
 
-function assertDefinitionInstalled(options: ResolvedServiceOptions): void {
-  if (!options.definitionPath) {
-    throw new Error("Service definition path is unavailable.");
+async function assertDefinitionInstalled(options: ResolvedServiceOptions): Promise<void> {
+  if (!options.definitionPath || !(await fileExists(options.definitionPath))) {
+    throw new Error("Gateway service is not installed. Run `hermes-live service install` or `hermes-live setup`.");
   }
 }
 
@@ -298,7 +300,12 @@ async function expectSuccess(result: CommandResult): Promise<void> {
 }
 
 function launchdDomain(options: ResolvedServiceOptions): string {
-  return `gui/${options.uid}/${SERVICE_LABEL}`;
+  return `${launchdUserDomain(options)}/${SERVICE_LABEL}`;
+}
+
+function launchdUserDomain(options: ResolvedServiceOptions): string {
+  if (options.uid === undefined) throw new Error("Could not determine the current user id for launchd.");
+  return `gui/${options.uid}`;
 }
 
 function commandDetail(result: CommandResult, fallback: string): string {
@@ -320,7 +327,7 @@ function xmlEscape(value: string): string {
 }
 
 function assertSafeServicePath(label: string, value: string): void {
-  if (/[ -]/u.test(value)) {
+  if (/[\u0000-\u001f\u007f]/u.test(value)) {
     throw new Error(`${label} path contains a control character.`);
   }
 }
@@ -331,9 +338,29 @@ function tailLines(value: string, count: number): string {
 
 async function fileExists(path: string): Promise<boolean> {
   try {
-    await readFile(path);
+    await access(path);
     return true;
   } catch {
     return false;
+  }
+}
+
+async function readBoundedLogTail(path: string): Promise<string> {
+  const fileStat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!fileStat) return "";
+  if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+    throw new Error(`Gateway log must be a regular file, not a symlink: ${path}`);
+  }
+  const length = Math.min(fileStat.size, MAX_SERVICE_LOG_BYTES);
+  const buffer = Buffer.alloc(length);
+  const handle = await open(path, "r");
+  try {
+    const { bytesRead } = await handle.read(buffer, 0, length, Math.max(0, fileStat.size - length));
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
   }
 }

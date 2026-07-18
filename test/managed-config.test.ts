@@ -94,6 +94,13 @@ describe("managed config", () => {
     await expect(readManagedConfig({ home })).rejects.toThrow(/0700/u);
   });
 
+  it.runIf(process.platform !== "win32")("refuses incomplete owner permissions", async () => {
+    const home = await temporaryHome();
+    const path = await writeManagedConfig({ HERMES_LIVE_PROVIDER: "mock" }, { home });
+    await chmod(path, 0o400);
+    await expect(readManagedConfig({ home })).rejects.toThrow(/0600/u);
+  });
+
   it("refuses a symlinked config file", async () => {
     const home = await temporaryHome();
     const directory = join(home, ".hermes", "hermes-live");

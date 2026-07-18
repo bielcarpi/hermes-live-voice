@@ -110,6 +110,38 @@ describe("service manager", () => {
       running: false,
     });
   });
+
+  it("distinguishes a loaded launch agent from a running process", async () => {
+    const home = await temporaryHome();
+    const definition = join(home, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
+    await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(definition, "definition");
+    const waiting = await serviceStatus({
+      home,
+      platform: "darwin",
+      uid: 501,
+      runner: async (command, args) => result(command, args, 0, "state = waiting\n"),
+    });
+    const running = await serviceStatus({
+      home,
+      platform: "darwin",
+      uid: 501,
+      runner: async (command, args) => result(command, args, 0, "state = running\n"),
+    });
+
+    expect(waiting.running).toBe(false);
+    expect(running.running).toBe(true);
+  });
+
+  it("refuses to start before the service is installed", async () => {
+    const home = await temporaryHome();
+    await expect(runServiceAction("start", {
+      home,
+      platform: "linux",
+      runner: async (command, args) => result(command, args, 0),
+    })).rejects.toThrow(/service is not installed/u);
+  });
 });
 
 function fakeRunner(

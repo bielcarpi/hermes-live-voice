@@ -171,7 +171,10 @@ export async function runSetup(
     url: `http://${config.server.host}:${config.server.port}/ready`,
   };
 
-  if (options.service && readiness.ok && providerSession.ok) {
+  const activationPreflightOk = readiness.ok
+    && providerSession.ok
+    && (hermesCli.enabled || hermesCli.skipped);
+  if (options.service && activationPreflightOk) {
     const serviceOptions = {
       home,
       platform: dependencies.platform,
@@ -387,11 +390,22 @@ async function readLegacyHermesEnvironment(home: string): Promise<Record<string,
   if (currentUid !== undefined && stat.uid !== currentUid) {
     throw new Error(`Hermes environment must be owned by the current user: ${path}`);
   }
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    throw new Error(`Hermes environment must not be readable or writable by other users: ${path}`);
+  }
   if (stat.size > MAX_LEGACY_ENV_BYTES) throw new Error(`Hermes environment exceeds ${MAX_LEGACY_ENV_BYTES} bytes.`);
   const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
   const handle = await open(path, fsConstants.O_RDONLY | noFollow);
   try {
-    const source = await handle.readFile("utf8");
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()) throw new Error(`Hermes environment must be a regular file: ${path}`);
+    if (currentUid !== undefined && openedStat.uid !== currentUid) {
+      throw new Error(`Hermes environment must be owned by the current user: ${path}`);
+    }
+    if (process.platform !== "win32" && (openedStat.mode & 0o077) !== 0) {
+      throw new Error(`Hermes environment must not be readable or writable by other users: ${path}`);
+    }
+    const source = await readBoundedFile(handle, MAX_LEGACY_ENV_BYTES, path);
     return parseLegacyEnvironment(source);
   } finally {
     await handle.close();
@@ -413,6 +427,7 @@ function parseLegacyEnvironment(source: string): Record<string, string | undefin
     "OPENAI_API_KEY",
   ]);
   const result: Record<string, string | undefined> = {};
+  const seen = new Set<string>();
   for (const raw of source.split(/\r?\n/u)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
@@ -421,9 +436,23 @@ function parseLegacyEnvironment(source: string): Record<string, string | undefin
     if (separator < 1) continue;
     const key = normalized.slice(0, separator).trim();
     if (!accepted.has(key)) continue;
+    if (seen.has(key)) throw new Error(`Hermes environment contains duplicate ${key}.`);
     result[key] = unquoteLegacyValue(normalized.slice(separator + 1).trim());
+    seen.add(key);
   }
   return result;
+}
+
+async function readBoundedFile(handle: Awaited<ReturnType<typeof open>>, maximumBytes: number, path: string): Promise<string> {
+  const buffer = Buffer.alloc(maximumBytes + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset > maximumBytes) throw new Error(`Hermes environment exceeds ${maximumBytes} bytes: ${path}`);
+  return buffer.subarray(0, offset).toString("utf8");
 }
 
 function unquoteLegacyValue(value: string): string {
