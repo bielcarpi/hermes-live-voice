@@ -1,11 +1,6 @@
 #!/usr/bin/env node
-import { constants as fsConstants } from "node:fs";
-import { access, cp, lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
 import { stdin as input } from "node:process";
-import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { assertRuntimeConfig, loadConfig, publicBaseUrl } from "./config.js";
 import type { AppConfig } from "./config.js";
@@ -17,6 +12,16 @@ import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
 import { normalizeGatewayWebSocketUrl, runInteractiveTerminal, sanitizeTerminalText } from "./cli/terminal-session.js";
 import { runOfflineTaskCommand } from "./cli/task-operator.js";
+import {
+  installHermesPlugin,
+  pluginInstallStatus,
+  pluginSourceDir,
+  type PluginInstallOptions,
+} from "./cli/plugin-installer.js";
+import { applyManagedConfigToProcess } from "./cli/managed-config.js";
+import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
+import { runSetupCommand } from "./cli/setup.js";
+import { runDoctorCommand } from "./cli/doctor.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
@@ -33,8 +38,27 @@ const MAX_TEXT_CLIENT_ID_CHARS = 256;
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";
 
+  if (usesManagedRuntimeConfig(command)) {
+    await applyManagedConfigToProcess();
+  }
+
   if (command === "plugin") {
     await runPluginCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "setup") {
+    await runSetupCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "doctor") {
+    await runDoctorCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "service") {
+    await runServiceCommand(process.argv.slice(3));
     return;
   }
 
@@ -185,6 +209,21 @@ async function main(): Promise<void> {
   process.exitCode = 1;
 }
 
+function usesManagedRuntimeConfig(command: string): boolean {
+  return [
+    "serve",
+    "dev",
+    "client",
+    "terminal",
+    "chat",
+    "check",
+    "provider-smoke",
+    "check-live-provider",
+    "tasks",
+    "print-config",
+  ].includes(command);
+}
+
 function redact(value: string | undefined): string | undefined {
   return value ? "***" : undefined;
 }
@@ -199,6 +238,8 @@ function printHelp(): void {
 
 Usage:
   hermes-live --version     Print the installed package version
+  hermes-live setup         Configure, install, verify, and start Live Voice
+  hermes-live doctor        Check the installation and print exact fixes
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one prompt; wait for its exact task result
@@ -213,6 +254,9 @@ Usage:
   hermes-live plugin install Install the Hermes plugin into ~/.hermes/plugins
   hermes-live plugin status  Show Hermes plugin install status
   hermes-live plugin path    Print this package's Hermes plugin directory
+  hermes-live service install Install and load the user gateway service
+  hermes-live service status  Show whether the gateway service is running
+  hermes-live service logs    Show the most recent gateway service logs
 
 Required environment:
   HERMES_BASE_URL           Hermes API Server URL, default http://127.0.0.1:8642
@@ -253,6 +297,24 @@ Plugin options:
 `);
 }
 
+async function runServiceCommand(args: string[]): Promise<void> {
+  const action = (args[0] ?? "status") as ServiceAction;
+  if (!["install", "uninstall", "start", "stop", "restart", "status", "logs"].includes(action)) {
+    throw new Error(`Unknown service action: ${action}`);
+  }
+  if (args.length > 1) {
+    throw new Error(`Unknown service option: ${args[1]}`);
+  }
+  const result = await runServiceAction(action);
+  if (action === "logs" && "stdout" in result) {
+    if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`);
+    if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`);
+    if (result.code !== 0) process.exitCode = result.code;
+    return;
+  }
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function runPluginCommand(args: string[]): Promise<void> {
   const subcommand = args[0] ?? "status";
   const options = parsePluginOptions(args.slice(1));
@@ -274,25 +336,8 @@ async function runPluginCommand(args: string[]): Promise<void> {
   process.exitCode = 1;
 }
 
-interface PluginOptions {
-  dir?: string;
-  mode: "copy" | "symlink";
-  force: boolean;
-}
-
-interface PluginInstallStatus {
-  source: string;
-  target: string;
-  installed: boolean;
-  manifestFound: boolean;
-  symlink: boolean;
-  symlinkTarget?: string;
-  mode?: "copy" | "symlink";
-  enabledHint: string;
-}
-
-function parsePluginOptions(args: string[]): PluginOptions {
-  const options: PluginOptions = { mode: "copy", force: false };
+function parsePluginOptions(args: string[]): PluginInstallOptions {
+  const options: PluginInstallOptions = { mode: "copy", force: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--copy") {
@@ -315,77 +360,6 @@ function parsePluginOptions(args: string[]): PluginOptions {
     }
   }
   return options;
-}
-
-async function installHermesPlugin(options: PluginOptions): Promise<PluginInstallStatus> {
-  const source = pluginSourceDir();
-  const target = pluginTargetDir(options);
-  await assertPluginSource(source);
-  await mkdir(dirname(target), { recursive: true });
-  const existing = await pluginInstallStatus(options);
-  if (existing.installed) {
-    if (!options.force) {
-      return { ...existing, mode: existing.symlink ? "symlink" : "copy" };
-    }
-    await rm(target, { recursive: true, force: true });
-  }
-
-  if (options.mode === "symlink") {
-    await symlink(source, target, process.platform === "win32" ? "junction" : "dir");
-  } else {
-    await cp(source, target, {
-      recursive: true,
-      filter: (path) => !path.includes("__pycache__") && !path.endsWith(".pyc"),
-    });
-  }
-  return { ...(await pluginInstallStatus(options)), mode: options.mode };
-}
-
-async function pluginInstallStatus(options: PluginOptions): Promise<PluginInstallStatus> {
-  const source = pluginSourceDir();
-  const target = pluginTargetDir(options);
-  const stat = await lstat(target).catch(() => undefined);
-  const symlinkTarget = stat?.isSymbolicLink() ? await readlink(target).catch(() => undefined) : undefined;
-  return {
-    source,
-    target,
-    installed: Boolean(stat),
-    manifestFound: await fileExists(join(target, "plugin.yaml")),
-    symlink: Boolean(stat?.isSymbolicLink()),
-    ...(symlinkTarget ? { symlinkTarget } : {}),
-    enabledHint: "Run `hermes plugins enable hermes-live` after installation.",
-  };
-}
-
-async function assertPluginSource(source: string): Promise<void> {
-  if (!(await fileExists(join(source, "plugin.yaml"))) || !(await fileExists(join(source, "__init__.py")))) {
-    throw new Error(`Hermes plugin source is incomplete: ${source}`);
-  }
-}
-
-function pluginTargetDir(options: PluginOptions): string {
-  return join(hermesPluginsDir(options), "hermes-live");
-}
-
-function hermesPluginsDir(options: PluginOptions): string {
-  return resolve(options.dir ?? process.env.HERMES_LIVE_HERMES_PLUGINS_DIR ?? join(homedir(), ".hermes", "plugins"));
-}
-
-function pluginSourceDir(): string {
-  return join(packageRoot(), "plugins", "hermes-live");
-}
-
-function packageRoot(): string {
-  return dirname(dirname(fileURLToPath(import.meta.url)));
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function runTextClient(config: AppConfig, text: string): Promise<void> {

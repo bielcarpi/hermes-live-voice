@@ -17,12 +17,11 @@ This documents compatibility with Hermes Agent and community projects, not endor
 
 ## Hermes Dashboard
 
-Install the package/plugin, start the companion gateway, and restart Dashboard:
+Install the package, activate Live Voice, and start Dashboard:
 
 ```sh
 npm install --global hermes-live-voice
-hermes-live plugin install --force
-hermes plugins enable hermes-live
+hermes-live setup
 hermes dashboard
 ```
 

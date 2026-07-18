@@ -53,6 +53,12 @@ try {
     "dist/cli.js",
     "dist/cli/task-operator.js",
     "dist/cli/terminal-session.js",
+    "dist/cli/doctor.js",
+    "dist/cli/managed-config.js",
+    "dist/cli/plugin-installer.js",
+    "dist/cli/process.js",
+    "dist/cli/service-manager.js",
+    "dist/cli/setup.js",
     "dist/config.js",
     "dist/live-provider-smoke.js",
     "dist/adapters/inbound/http/server.js",
@@ -88,6 +94,7 @@ try {
     "docs/background-tasks.md",
     "docs/client-protocol.md",
     "docs/live-provider-testing.md",
+    "docs/setup.md",
     "examples/docker-compose.yml",
     "plugins/hermes-live/plugin.yaml",
     "plugins/hermes-live/__init__.py",
@@ -167,6 +174,9 @@ try {
     help.status !== 0 ||
     !help.stdout.includes("hermes-live") ||
     !help.stdout.includes("terminal") ||
+    !help.stdout.includes("setup") ||
+    !help.stdout.includes("doctor") ||
+    !help.stdout.includes("service") ||
     !help.stdout.includes("provider-smoke") ||
     !help.stdout.includes("HERMES_LIVE_PROVIDER")
   ) {
@@ -179,6 +189,20 @@ try {
       `Installed CLI version failed with status ${version.status ?? "null"}; expected ${packageJson.version}.\n${version.stdout}\n${version.stderr}`,
     );
   }
+
+  const activation = spawnSync(process.execPath, [
+    "scripts/packed-activation-smoke.mjs",
+    bin,
+    workDir,
+    packageJson.version,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, npm_config_cache: cacheDir, NPM_CONFIG_CACHE: cacheDir },
+  });
+  if (activation.status !== 0) {
+    throw new Error(`Installed activation smoke failed with status ${activation.status ?? "null"}\n${activation.stdout}\n${activation.stderr}`);
+  }
+  process.stdout.write(activation.stdout);
 
   const hermesPluginsDir = join(workDir, "hermes-plugins");
   mkdirSync(hermesPluginsDir, { recursive: true });
