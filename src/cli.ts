@@ -19,6 +19,7 @@ import {
   type PluginInstallOptions,
 } from "./cli/plugin-installer.js";
 import { applyManagedConfigToProcess } from "./cli/managed-config.js";
+import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
@@ -41,6 +42,11 @@ async function main(): Promise<void> {
 
   if (command === "plugin") {
     await runPluginCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "service") {
+    await runServiceCommand(process.argv.slice(3));
     return;
   }
 
@@ -234,6 +240,9 @@ Usage:
   hermes-live plugin install Install the Hermes plugin into ~/.hermes/plugins
   hermes-live plugin status  Show Hermes plugin install status
   hermes-live plugin path    Print this package's Hermes plugin directory
+  hermes-live service install Install and load the user gateway service
+  hermes-live service status  Show whether the gateway service is running
+  hermes-live service logs    Show the most recent gateway service logs
 
 Required environment:
   HERMES_BASE_URL           Hermes API Server URL, default http://127.0.0.1:8642
@@ -272,6 +281,24 @@ Plugin options:
   --symlink                 Symlink plugin directory instead of copying
   --force                   Replace an existing hermes-live plugin install
 `);
+}
+
+async function runServiceCommand(args: string[]): Promise<void> {
+  const action = (args[0] ?? "status") as ServiceAction;
+  if (!["install", "uninstall", "start", "stop", "restart", "status", "logs"].includes(action)) {
+    throw new Error(`Unknown service action: ${action}`);
+  }
+  if (args.length > 1) {
+    throw new Error(`Unknown service option: ${args[1]}`);
+  }
+  const result = await runServiceAction(action);
+  if (action === "logs" && "stdout" in result) {
+    if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`);
+    if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`);
+    if (result.code !== 0) process.exitCode = result.code;
+    return;
+  }
+  console.log(JSON.stringify(result, null, 2));
 }
 
 async function runPluginCommand(args: string[]): Promise<void> {
