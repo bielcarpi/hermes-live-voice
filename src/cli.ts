@@ -1,11 +1,6 @@
 #!/usr/bin/env node
-import { constants as fsConstants } from "node:fs";
-import { access, cp, lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
 import { stdin as input } from "node:process";
-import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { assertRuntimeConfig, loadConfig, publicBaseUrl } from "./config.js";
 import type { AppConfig } from "./config.js";
@@ -17,6 +12,12 @@ import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
 import { normalizeGatewayWebSocketUrl, runInteractiveTerminal, sanitizeTerminalText } from "./cli/terminal-session.js";
 import { runOfflineTaskCommand } from "./cli/task-operator.js";
+import {
+  installHermesPlugin,
+  pluginInstallStatus,
+  pluginSourceDir,
+  type PluginInstallOptions,
+} from "./cli/plugin-installer.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
@@ -274,25 +275,8 @@ async function runPluginCommand(args: string[]): Promise<void> {
   process.exitCode = 1;
 }
 
-interface PluginOptions {
-  dir?: string;
-  mode: "copy" | "symlink";
-  force: boolean;
-}
-
-interface PluginInstallStatus {
-  source: string;
-  target: string;
-  installed: boolean;
-  manifestFound: boolean;
-  symlink: boolean;
-  symlinkTarget?: string;
-  mode?: "copy" | "symlink";
-  enabledHint: string;
-}
-
-function parsePluginOptions(args: string[]): PluginOptions {
-  const options: PluginOptions = { mode: "copy", force: false };
+function parsePluginOptions(args: string[]): PluginInstallOptions {
+  const options: PluginInstallOptions = { mode: "copy", force: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--copy") {
@@ -315,77 +299,6 @@ function parsePluginOptions(args: string[]): PluginOptions {
     }
   }
   return options;
-}
-
-async function installHermesPlugin(options: PluginOptions): Promise<PluginInstallStatus> {
-  const source = pluginSourceDir();
-  const target = pluginTargetDir(options);
-  await assertPluginSource(source);
-  await mkdir(dirname(target), { recursive: true });
-  const existing = await pluginInstallStatus(options);
-  if (existing.installed) {
-    if (!options.force) {
-      return { ...existing, mode: existing.symlink ? "symlink" : "copy" };
-    }
-    await rm(target, { recursive: true, force: true });
-  }
-
-  if (options.mode === "symlink") {
-    await symlink(source, target, process.platform === "win32" ? "junction" : "dir");
-  } else {
-    await cp(source, target, {
-      recursive: true,
-      filter: (path) => !path.includes("__pycache__") && !path.endsWith(".pyc"),
-    });
-  }
-  return { ...(await pluginInstallStatus(options)), mode: options.mode };
-}
-
-async function pluginInstallStatus(options: PluginOptions): Promise<PluginInstallStatus> {
-  const source = pluginSourceDir();
-  const target = pluginTargetDir(options);
-  const stat = await lstat(target).catch(() => undefined);
-  const symlinkTarget = stat?.isSymbolicLink() ? await readlink(target).catch(() => undefined) : undefined;
-  return {
-    source,
-    target,
-    installed: Boolean(stat),
-    manifestFound: await fileExists(join(target, "plugin.yaml")),
-    symlink: Boolean(stat?.isSymbolicLink()),
-    ...(symlinkTarget ? { symlinkTarget } : {}),
-    enabledHint: "Run `hermes plugins enable hermes-live` after installation.",
-  };
-}
-
-async function assertPluginSource(source: string): Promise<void> {
-  if (!(await fileExists(join(source, "plugin.yaml"))) || !(await fileExists(join(source, "__init__.py")))) {
-    throw new Error(`Hermes plugin source is incomplete: ${source}`);
-  }
-}
-
-function pluginTargetDir(options: PluginOptions): string {
-  return join(hermesPluginsDir(options), "hermes-live");
-}
-
-function hermesPluginsDir(options: PluginOptions): string {
-  return resolve(options.dir ?? process.env.HERMES_LIVE_HERMES_PLUGINS_DIR ?? join(homedir(), ".hermes", "plugins"));
-}
-
-function pluginSourceDir(): string {
-  return join(packageRoot(), "plugins", "hermes-live");
-}
-
-function packageRoot(): string {
-  return dirname(dirname(fileURLToPath(import.meta.url)));
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function runTextClient(config: AppConfig, text: string): Promise<void> {
