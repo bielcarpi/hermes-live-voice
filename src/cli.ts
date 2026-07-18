@@ -18,6 +18,7 @@ import {
   pluginSourceDir,
   type PluginInstallOptions,
 } from "./cli/plugin-installer.js";
+import { applyManagedConfigToProcess } from "./cli/managed-config.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
@@ -33,6 +34,10 @@ const MAX_TEXT_CLIENT_ID_CHARS = 256;
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";
+
+  if (usesManagedRuntimeConfig(command)) {
+    await applyManagedConfigToProcess();
+  }
 
   if (command === "plugin") {
     await runPluginCommand(process.argv.slice(3));
@@ -184,6 +189,21 @@ async function main(): Promise<void> {
   console.error(`Unknown command: ${command}`);
   printHelp();
   process.exitCode = 1;
+}
+
+function usesManagedRuntimeConfig(command: string): boolean {
+  return [
+    "serve",
+    "dev",
+    "client",
+    "terminal",
+    "chat",
+    "check",
+    "provider-smoke",
+    "check-live-provider",
+    "tasks",
+    "print-config",
+  ].includes(command);
 }
 
 function redact(value: string | undefined): string | undefined {
