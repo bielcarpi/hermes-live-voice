@@ -75,8 +75,8 @@ const managedKeySet = new Set<string>(MANAGED_CONFIG_KEYS);
 export function managedConfigPath(options: ManagedConfigOptions = {}): string {
   return resolve(
     options.path
-      ?? process.env.HERMES_LIVE_CONFIG_FILE
-      ?? join(options.home ?? homedir(), ".hermes", "hermes-live", "config.env"),
+      || process.env.HERMES_LIVE_CONFIG_FILE
+      || join(options.home ?? homedir(), ".hermes", "hermes-live", "config.env"),
   );
 }
 

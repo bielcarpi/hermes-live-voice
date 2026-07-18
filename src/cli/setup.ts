@@ -359,8 +359,8 @@ async function waitForGateway(
         signal: AbortSignal.timeout(Math.min(2_000, Math.max(1, deadline - Date.now()))),
       });
       if (response.ok) {
-        const body = await response.json() as { ok?: boolean };
-        if (body.ok === true) return { checked: true, ready: true, url };
+        const body = await response.json() as { ok?: boolean; status?: string };
+        if (body.ok === true || body.status === "ready") return { checked: true, ready: true, url };
         lastError = "Gateway responded but its dependencies were not ready.";
       } else {
         lastError = `Gateway readiness returned HTTP ${response.status}.`;

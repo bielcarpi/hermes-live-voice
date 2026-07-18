@@ -42,6 +42,19 @@ describe("managed config", () => {
     expect(resolved.HERMES_LIVE_PROVIDER).toBe("gemini");
   });
 
+  it("treats an empty config-path environment override as unset", async () => {
+    const home = await temporaryHome();
+    const previous = process.env.HERMES_LIVE_CONFIG_FILE;
+    process.env.HERMES_LIVE_CONFIG_FILE = "";
+    try {
+      const path = await writeManagedConfig({ HERMES_LIVE_PROVIDER: "mock" }, { home });
+      expect(path).toBe(join(home, ".hermes", "hermes-live", "config.env"));
+    } finally {
+      if (previous === undefined) delete process.env.HERMES_LIVE_CONFIG_FILE;
+      else process.env.HERMES_LIVE_CONFIG_FILE = previous;
+    }
+  });
+
   it("rejects unapproved keys, duplicates, and non-string values", () => {
     expect(() => parseManagedConfig('NODE_OPTIONS="--import=evil"')).toThrow(/not a supported/u);
     expect(() => parseManagedConfig('HERMES_LIVE_PORT="8788"\nHERMES_LIVE_PORT="9999"')).toThrow(/duplicate/u);

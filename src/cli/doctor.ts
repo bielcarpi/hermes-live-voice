@@ -251,8 +251,8 @@ async function probeGateway(config: AppConfig, fetchImplementation: typeof globa
       signal: AbortSignal.timeout(3_000),
     });
     if (!response.ok) return { ok: false, error: `Readiness returned HTTP ${response.status}.` };
-    const body = await response.json() as { ok?: boolean };
-    return body.ok === true
+    const body = await response.json() as { ok?: boolean; status?: string };
+    return body.ok === true || body.status === "ready"
       ? { ok: true }
       : { ok: false, error: "Gateway responded but reported that a dependency is not ready." };
   } catch (error) {

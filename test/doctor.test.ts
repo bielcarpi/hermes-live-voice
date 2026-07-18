@@ -64,7 +64,7 @@ describe("doctor", () => {
         env: {},
         runner,
         findCommand: async () => "/usr/local/bin/hermes",
-        fetch: async () => new Response(JSON.stringify({ ok: true }), {
+        fetch: async () => new Response(JSON.stringify({ status: "ready", checks: {} }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),

@@ -153,7 +153,7 @@ describe("setup", () => {
         platform: "linux",
         env: { HERMES_AGENT_API_SERVER_KEY: "private" },
         runner,
-        fetch: async () => new Response(JSON.stringify({ ok: true }), {
+        fetch: async () => new Response(JSON.stringify({ status: "ready", checks: {} }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
