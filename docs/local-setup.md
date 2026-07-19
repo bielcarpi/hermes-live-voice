@@ -109,7 +109,7 @@ curl http://127.0.0.1:8788/ready
 curl http://127.0.0.1:8788/v1/capabilities
 ```
 
-`/ready` reports gateway, task limits, Hermes, and provider configuration. `sessionChecked: false` is expected because readiness does not spend quota opening a provider session. `/v1/capabilities` should report `protocolVersion: 3`, durable background tasks, disconnect continuation, exact task stop, and the documented restart limits.
+`/ready` reports gateway, task limits, Hermes, and provider configuration. `sessionChecked: false` is expected because readiness does not spend quota opening a provider session. `/v1/capabilities` should report `protocolVersion: 4`, supported versions `[3, 4]`, persisted Hermes conversations, durable background tasks, disconnect continuation, exact task stop, and the documented restart limits.
 
 If `HERMES_LIVE_AUTH_TOKEN` is set, add `Authorization: Bearer ...` to the two authenticated HTTP requests.
 

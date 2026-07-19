@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MockLiveAdapter } from "../src/adapters/outbound/realtime/mock-live.adapter.js";
 
 describe("Mock Live task delegation and notifications", () => {
-  it("delegates text through the protocol-v3 background-task tool", async () => {
+  it("delegates text through the protocol-v4 background-task tool", async () => {
     const onEvent = vi.fn();
     const session = await new MockLiveAdapter().connect({
       sessionId: "live_mock_task",

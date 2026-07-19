@@ -1721,7 +1721,7 @@ export function validateServerMessage(value) {
     default:
       if (message.type.startsWith("run.")) {
         throw new TypeError(
-          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v3 client accepts task.* lifecycle messages only.`,
+          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v4 client accepts task.* lifecycle messages only.`,
         );
       }
   }

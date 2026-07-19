@@ -156,7 +156,7 @@ const SessionCloseMessageSchema = z
   .object({
     type: z.literal("session.close"),
     id: OptionalRequestIdSchema,
-    // Protocol v3 detaches durable tasks. Cancellation is always an explicit
+    // Protocol v4 detaches durable tasks. Cancellation is always an explicit
     // task.stop operation against one stable taskId.
     detach: z.literal(true).default(true),
   })

@@ -58,8 +58,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("protocol-v3 live gateway WebSocket", () => {
-  it("opens with protocol v3 capabilities and an empty initial task snapshot", async () => {
+describe("live gateway WebSocket", () => {
+  it("keeps protocol v3 clients in unbound compatibility mode", async () => {
     const config = testConfig();
     const hermes = new HermesHarness();
     const provider = new RecordingLiveAdapter();

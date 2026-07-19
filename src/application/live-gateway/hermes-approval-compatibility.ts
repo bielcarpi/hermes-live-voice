@@ -33,7 +33,7 @@ export async function negotiateHermesApprovalCompatibility(
 
 function approvalCompatibility(upstreamTargetingAdvertised: boolean, negotiated: boolean): HermesApprovalCompatibility {
   return {
-    // Protocol v3 deliberately does not expose an approval UI until Hermes can
+    // Protocol v4 deliberately does not expose an approval UI until Hermes can
     // prove stable approval identity across both events and targeted mutation.
     // A capability bit alone is not sufficient proof at this boundary.
     uiSupported: false,

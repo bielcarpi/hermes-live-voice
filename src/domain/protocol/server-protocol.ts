@@ -419,7 +419,7 @@ export type TaskSnapshotMessage = Extract<ServerMessage, { type: "task.snapshot"
 export type TaskLifecycleMessage = Extract<ServerMessage, { type: `task.${string}` }>;
 
 // HermesRunEvent remains an internal upstream-adapter type. Raw run events are
-// deliberately not members of the public protocol-v3 ServerMessage union.
+// deliberately not members of the public protocol-v4 ServerMessage union.
 export interface HermesRunEvent {
   event?: string;
   run_id?: string;

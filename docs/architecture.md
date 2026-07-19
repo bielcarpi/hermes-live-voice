@@ -8,9 +8,10 @@ It is an independent community integration, not a replacement for Hermes or an o
 
 ```txt
 Hermes Dashboard / browser / terminal / native client
-  -> authenticated Hermes Live protocol v3 WebSocket
+  -> authenticated Hermes Live protocol v4 WebSocket
   -> LiveGatewaySession (conversation and client subscription)
        -> Gemini Live or OpenAI Realtime (speech and delegation decisions)
+       -> Hermes Sessions Chat (selected conversation memory and canonical turns)
        -> TaskSupervisor (server-owned queue, persistence, reconciliation)
             -> Hermes Agent API Server /v1/runs
             -> private tasks-v1.json
@@ -52,8 +53,9 @@ The plugin stays small and Hermes-specific. The companion gateway remains a sepa
 `LiveGatewaySession` owns one client/provider conversation:
 
 - protocol negotiation, client authentication, and browser origin checks;
+- creation or resumption of one persisted Hermes conversation;
 - realtime provider connection and interruption state;
-- the four narrow background-task tools;
+- canonical Hermes chat turns plus five narrow background-task tools;
 - subscription to the owner's durable task stream;
 - safe completion announcements while the conversation is idle.
 
@@ -65,6 +67,7 @@ A session does not own task lifetime. Closing it detaches from tasks and closes 
 
 - persist-before-publish task creation;
 - owner-scoped list, get, stop, subscription, and notification acknowledgement;
+- terminal-task follow-ups with explicit parent/root lineage;
 - bounded queueing and safe admission;
 - exclusive execution by default, with operator-enabled disjoint read-only parallelism;
 - Hermes run creation, SSE consumption, periodic status reconciliation, and exact stop;
@@ -77,11 +80,13 @@ See [Durable Background Tasks](background-tasks.md) for the state and recovery c
 
 ### Realtime Provider
 
-The realtime provider owns speech recognition/generation, conversational flow, and the decision to delegate. It receives only these gateway tools:
+The realtime provider owns speech recognition/generation, conversational flow, and the decision to continue the saved chat or delegate. It receives only these gateway tools:
 
+- `continue_hermes_conversation`
 - `start_background_task`
 - `list_background_tasks`
 - `get_background_task`
+- `follow_up_background_task`
 - `stop_background_task`
 
 It never receives Hermes credentials, raw Hermes tools, upstream run ids, the local state file, or approval authority. A task receipt returns quickly, so the provider can continue talking while Hermes works.
@@ -98,7 +103,9 @@ Hermes owns the actual delegated work. The gateway currently requires these Herm
 - `run_stop`
 - `run_approval_response`
 
-The adapter uses `POST /v1/runs`, `GET /v1/runs/{run_id}`, `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/stop`, and the approval endpoint only for fail-closed denial. These upstream details never appear in protocol v3.
+Canonical chat uses Hermes Sessions Chat so the selected conversation keeps its persisted history and compression lineage. Background workers use `POST /v1/runs`, `GET /v1/runs/{run_id}`, `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/stop`, and the approval endpoint only for fail-closed denial. These upstream details never appear in protocol v4.
+
+These are two separate execution planes. The conversation plane serializes canonical turns into one selected Hermes session. The task plane starts independent Hermes `AIAgent` runs so long work can continue after voice disconnects. Hermes Live does not automatically decompose every request into subagents; the realtime model delegates only when work should outlive or run beside the current conversation.
 
 Hermes currently retains active run state in its process. The gateway can reconcile after its own restart if that Hermes process remains alive; it cannot make an in-progress Hermes run survive a Hermes restart.
 
@@ -118,7 +125,7 @@ agent:main:hermes-live:profile:default:user:voice
 
 The same value defines the task owner scope and is hashed before persistence. Client `profileId` and `userLabel` are ignored unless `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`. That option is for already-trusted clients and does not create multi-tenant authorization.
 
-Each background task receives a separate Hermes session id derived from its stable `task_<id>`. This isolates task execution history from the realtime conversation while the owner scope controls who may inspect or stop it.
+Each background task receives a separate Hermes session id derived from its stable `task_<id>`. This isolates task execution history from the realtime conversation while the owner scope controls who may inspect or stop it. A follow-up is another independent worker whose prompt includes the bounded retained result of its terminal parent; parent/root ids make that lineage visible without exposing private worker history.
 
 ## Persistence Boundary
 
@@ -128,11 +135,11 @@ Every state is persisted before subscribers see it. The store uses atomic replac
 
 ## Public Projection
 
-Hermes event streams are internal. Protocol v3 exposes only bounded task snapshots and lifecycle facts:
+Hermes event streams are internal. Protocol v4 exposes only bounded task snapshots and lifecycle facts:
 
 - no upstream run id;
-- no raw reasoning, tool arguments, approval identity, paths, or provider envelopes;
-- bounded progress summaries;
+- no raw reasoning, tool arguments/output, approval identity, or provider envelopes;
+- bounded progress summaries with obvious credential patterns redacted;
 - retained output only for completion lifecycle or an exact `task.get`;
 - generic durable notifications.
 
