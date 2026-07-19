@@ -8,7 +8,7 @@ import {
 } from "../clients/browser/hermes-live-client.js";
 
 describe("HermesLiveClient", () => {
-  it("negotiates protocol v3 and sends the exact task command envelopes", async () => {
+  it("negotiates protocol v4 and sends the exact task command envelopes", async () => {
     const client = createClient();
     const connection = client.connect();
     const socket = await nextSocket();
@@ -17,12 +17,13 @@ describe("HermesLiveClient", () => {
     expect(socket.sent[0]).toEqual({
       type: "session.start",
       id: "req_1",
-      protocolVersion: 3,
+      protocolVersion: 4,
       profileId: "demo",
+      conversation: { mode: "new" },
     });
     socket.message(readyMessage("live_1"));
 
-    await expect(connection).resolves.toMatchObject({ sessionId: "live_1", protocolVersion: 3 });
+    await expect(connection).resolves.toMatchObject({ sessionId: "live_1", protocolVersion: 4 });
     expect(client.connected).toBe(true);
     expect(client.getSnapshot()).toMatchObject({
       connection: "ready",
@@ -48,6 +49,69 @@ describe("HermesLiveClient", () => {
     });
     await flushMessages();
     expect(client.tasks[0]).toMatchObject({ taskId: "task_one", state: "running" });
+  });
+
+  it("can resume a selected Hermes conversation without application glue", async () => {
+    const client = createClient({ conversation: { mode: "resume", sessionId: "saved_chat" } });
+    const connection = client.connect();
+    const socket = await nextSocket();
+
+    socket.open();
+    expect(socket.sent[0]).toMatchObject({
+      type: "session.start",
+      protocolVersion: 4,
+      conversation: { mode: "resume", sessionId: "saved_chat" },
+    });
+    socket.message({
+      ...readyMessage("live_resume"),
+      conversation: { mode: "resume", sessionId: "saved_chat", title: "Saved chat" },
+    });
+    await expect(connection).resolves.toMatchObject({
+      conversation: { mode: "resume", sessionId: "saved_chat", title: "Saved chat" },
+    });
+  });
+
+  it("starts and correlates an exact durable task follow-up", async () => {
+    const { client, socket } = await connectedClient("live_follow_up");
+    const parentId = "task_parent";
+    socket.message({
+      type: "task.snapshot",
+      reason: "initial",
+      tasks: [taskSnapshot(parentId, "completed", 4, {
+        finishedAt: 400,
+        result: { summary: "Audit complete", truncated: true },
+      })],
+      truncated: false,
+    });
+    await flushMessages();
+
+    expect(client.followUpTask(parentId, "Fix the missing entry", { title: "Finish release" })).toBe("req_2");
+    expect(socket.sent.at(-1)).toEqual({
+      type: "task.follow_up",
+      id: "req_2",
+      taskId: parentId,
+      message: "Fix the missing entry",
+      title: "Finish release",
+    });
+    const childId = "task_child";
+    socket.message({
+      type: "task.accepted",
+      requestId: "req_2",
+      taskId: childId,
+      sequence: 1,
+      occurredAt: 500,
+      state: "queued",
+      title: "Finish release",
+      kind: "follow_up",
+      parentTaskId: parentId,
+      rootTaskId: parentId,
+    });
+    await flushMessages();
+    expect(client.tasks.find((task) => task.taskId === childId)).toMatchObject({
+      kind: "follow_up",
+      parentTaskId: parentId,
+      rootTaskId: parentId,
+    });
   });
 
   it("tracks overlapping tasks independently and ignores out-of-order events per task", async () => {
@@ -837,7 +901,7 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready", protocolVersion: 3 });
+    socket.message({ type: "session.ready", protocolVersion: 4 });
 
     await expect(connection).rejects.toThrow(/requires sessionId/);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
@@ -1076,7 +1140,7 @@ describe("HermesLiveClient", () => {
     socket.open();
     socket.message({ ...readyMessage("legacy"), protocolVersion: 2 });
 
-    await expect(connection).rejects.toThrow(/protocol v2.*protocol v3.*upgrade/i);
+    await expect(connection).rejects.toThrow(/protocol version 2.*protocol v4.*upgrade/i);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
   });
 });
@@ -1606,7 +1670,7 @@ function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient
 function readyMessage(sessionId: string) {
   return {
     type: "session.ready",
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId,
     model: "mock-live",
     hermes: {},
@@ -1623,8 +1687,9 @@ function readyMessage(sessionId: string) {
       parallel: true,
       maxConcurrent: 4,
       maxRetained: 256,
-      supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+      supports: { list: true, get: true, stop: true, followUp: true, resume: false, notificationAck: true },
     },
+    conversation: { mode: "new", sessionId: "hermes_session" },
   };
 }
 

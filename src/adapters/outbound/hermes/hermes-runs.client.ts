@@ -3,6 +3,7 @@ import type { ApprovalChoice } from "../../../domain/protocol/client-protocol.js
 import type { HermesRunEvent } from "../../../domain/protocol/server-protocol.js";
 import type {
   ApprovalResult,
+  CreateHermesSessionOptions,
   HermesCapabilities,
   HermesRequestOptions,
   HermesRunSnapshot,
@@ -10,6 +11,11 @@ import type {
   HermesRunStatus,
   HermesRunUsage,
   HermesRunsPort,
+  HermesSessionChatResult,
+  HermesSessionHistory,
+  HermesSessionMessage,
+  HermesSessionSummary,
+  ListHermesSessionsOptions,
   StartRunParams,
   StartRunResult,
 } from "../../../application/live-gateway/ports/hermes-runs.port.js";
@@ -21,6 +27,9 @@ export const MAX_HERMES_RETRY_AFTER_CHARS = 128;
 const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 const MAX_HERMES_RETRY_AFTER_SECONDS = 86_400;
 const MAX_HERMES_RUN_METADATA_CHARS = 512;
+const MAX_HERMES_SESSION_TITLE_CHARS = 100;
+const MAX_HERMES_SESSION_TEXT_CHARS = 20_000;
+const MAX_HERMES_SESSION_MESSAGES = 10_000;
 const HERMES_RUN_STATUSES = new Set<HermesRunStatus>([
   "queued",
   "running",
@@ -83,6 +92,124 @@ export class HermesClient implements HermesRunsPort {
       throw new Error(`Hermes API Server is missing required features: ${missing.join(", ")}`);
     }
     return capabilities;
+  }
+
+  async assertSessionsSupported(signal?: AbortSignal): Promise<HermesCapabilities> {
+    const capabilities = await this.capabilities(signal);
+    const features = capabilities.features ?? {};
+    const required = ["session_resources", "session_chat", "session_chat_streaming"];
+    const missing = required.filter((name) => features[name] !== true);
+    if (missing.length > 0) {
+      throw new Error(`Hermes API Server is missing required session features: ${missing.join(", ")}`);
+    }
+    return capabilities;
+  }
+
+  async listSessions(options: ListHermesSessionsOptions = {}): Promise<HermesSessionSummary[]> {
+    const limit = boundedInteger(options.limit ?? 50, 1, 200, "Hermes session list limit");
+    const offset = boundedInteger(options.offset ?? 0, 0, 1_000_000, "Hermes session list offset");
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (options.source !== undefined) {
+      query.set("source", boundedSafeText(options.source, 64, "Hermes session source"));
+    }
+    const response = await this.requestJson<unknown>(`/api/sessions?${query.toString()}`, {
+      method: "GET",
+      ...signalInit(options.signal),
+    });
+    if (!isRecord(response) || response.object !== "list" || !Array.isArray(response.data)) {
+      throw new Error("Hermes returned an invalid session list.");
+    }
+    if (response.data.length > 200) {
+      throw new Error("Hermes returned too many sessions.");
+    }
+    return response.data.map((value) => parseHermesSessionSummary(value));
+  }
+
+  async createSession(options: CreateHermesSessionOptions = {}): Promise<HermesSessionSummary> {
+    const body: Record<string, unknown> = { model: this.model };
+    if (options.title !== undefined) {
+      body.title = boundedSafeText(options.title, MAX_HERMES_SESSION_TITLE_CHARS, "Hermes session title");
+    }
+    const response = await this.requestJson<unknown>("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+      ...signalInit(options.signal),
+    });
+    if (!isRecord(response) || response.object !== "hermes.session") {
+      throw new Error("Hermes returned an invalid created session.");
+    }
+    return parseHermesSessionSummary(response.session);
+  }
+
+  async getSession(sessionId: string, signal?: AbortSignal): Promise<HermesSessionSummary> {
+    requireHermesSessionId(sessionId);
+    const response = await this.requestJson<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "GET",
+      ...signalInit(signal),
+    });
+    if (!isRecord(response) || response.object !== "hermes.session") {
+      throw new Error("Hermes returned an invalid session.");
+    }
+    return parseHermesSessionSummary(response.session, sessionId);
+  }
+
+  async getSessionHistory(sessionId: string, signal?: AbortSignal): Promise<HermesSessionHistory> {
+    requireHermesSessionId(sessionId);
+    const response = await this.requestJson<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: "GET",
+      ...signalInit(signal),
+    });
+    if (
+      !isRecord(response)
+      || response.object !== "list"
+      || !isBoundedHermesIdentifier(response.session_id)
+      || !Array.isArray(response.data)
+    ) {
+      throw new Error("Hermes returned an invalid session history.");
+    }
+    if (response.data.length > MAX_HERMES_SESSION_MESSAGES) {
+      throw new Error(`Hermes session history exceeds ${MAX_HERMES_SESSION_MESSAGES} messages.`);
+    }
+    return {
+      sessionId: response.session_id,
+      messages: response.data.map((value) => parseHermesSessionMessage(value)),
+    };
+  }
+
+  async chatSession(
+    sessionId: string,
+    message: string,
+    options: { signal?: AbortSignal; sessionKey?: string; instructions?: string } = {},
+  ): Promise<HermesSessionChatResult> {
+    requireHermesSessionId(sessionId);
+    const input = boundedSafeText(message, 100_000, "Hermes session message", true);
+    const body: Record<string, unknown> = { message: input };
+    if (options.instructions !== undefined) {
+      body.instructions = boundedSafeText(options.instructions, 100_000, "Hermes session instructions", true);
+    }
+    const response = await this.requestJson<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/chat`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: this.sessionHeaders(options.sessionKey),
+      ...signalInit(options.signal),
+    });
+    if (
+      !isRecord(response)
+      || response.object !== "hermes.session.chat.completion"
+      || !isBoundedHermesIdentifier(response.session_id)
+      || !isRecord(response.message)
+      || response.message.role !== "assistant"
+      || typeof response.message.content !== "string"
+    ) {
+      throw new Error("Hermes returned an invalid session chat completion.");
+    }
+    const content = response.message.content.slice(0, MAX_HERMES_RUN_OUTPUT_CHARS);
+    const usage = safeParseHermesRunUsage(response.usage);
+    return {
+      sessionId: response.session_id,
+      content,
+      ...(usage ? { usage } : {}),
+    };
   }
 
   async startRun(params: StartRunParams, signal?: AbortSignal): Promise<StartRunResult> {
@@ -410,6 +537,104 @@ function parseHermesRunUsage(value: unknown): HermesRunUsage {
   };
 }
 
+function safeParseHermesRunUsage(value: unknown): HermesRunUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = boundedTokenCount(value.input_tokens);
+  const outputTokens = boundedTokenCount(value.output_tokens);
+  const totalTokens = boundedTokenCount(value.total_tokens);
+  return inputTokens === undefined || outputTokens === undefined || totalTokens === undefined
+    ? undefined
+    : { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: totalTokens };
+}
+
+function parseHermesSessionSummary(value: unknown, expectedId?: string): HermesSessionSummary {
+  if (!isRecord(value) || !isBoundedHermesIdentifier(value.id)) {
+    throw new Error("Hermes returned an invalid session summary.");
+  }
+  if (expectedId !== undefined && value.id !== expectedId) {
+    throw new Error("Hermes returned a different session than requested.");
+  }
+  const summary: HermesSessionSummary = { id: value.id };
+  copyOptionalSessionText(value, summary, "source", 64);
+  copyOptionalSessionText(value, summary, "model", MAX_HERMES_RUN_METADATA_CHARS);
+  copyOptionalSessionText(value, summary, "title", MAX_HERMES_SESSION_TITLE_CHARS);
+  copyOptionalSessionText(value, summary, "preview", MAX_HERMES_SESSION_TEXT_CHARS);
+  copyOptionalSessionTimestamp(value, summary, "started_at", "startedAt");
+  copyOptionalSessionTimestamp(value, summary, "ended_at", "endedAt");
+  copyOptionalSessionTimestamp(value, summary, "last_active", "lastActive");
+  if (value.message_count !== undefined) {
+    const messageCount = boundedTokenCount(value.message_count);
+    if (messageCount === undefined) throw new Error("Hermes returned an invalid session message count.");
+    summary.messageCount = messageCount;
+  }
+  if (value.parent_session_id !== undefined && value.parent_session_id !== null) {
+    if (!isBoundedHermesIdentifier(value.parent_session_id)) {
+      throw new Error("Hermes returned an invalid parent session id.");
+    }
+    summary.parentSessionId = value.parent_session_id;
+  }
+  return summary;
+}
+
+function parseHermesSessionMessage(value: unknown): HermesSessionMessage {
+  if (!isRecord(value) || !["system", "user", "assistant", "tool"].includes(String(value.role))) {
+    throw new Error("Hermes returned an invalid session message.");
+  }
+  const content = value.content === null || value.content === undefined ? "" : value.content;
+  if (typeof content !== "string" || content.length > MAX_HERMES_SESSION_TEXT_CHARS * 10) {
+    throw new Error("Hermes returned an invalid session message content.");
+  }
+  return {
+    role: value.role as HermesSessionMessage["role"],
+    content,
+  };
+}
+
+function copyOptionalSessionText(
+  source: Record<string, unknown>,
+  target: HermesSessionSummary,
+  key: "source" | "model" | "title" | "preview",
+  maximum: number,
+): void {
+  const value = source[key];
+  if (value === undefined || value === null || value === "") return;
+  target[key] = boundedSafeText(value, maximum, `Hermes session ${key}`);
+}
+
+function copyOptionalSessionTimestamp(
+  source: Record<string, unknown>,
+  target: HermesSessionSummary,
+  sourceKey: "started_at" | "ended_at" | "last_active",
+  targetKey: "startedAt" | "endedAt" | "lastActive",
+): void {
+  const value = source[sourceKey];
+  if (value === undefined || value === null) return;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`Hermes returned an invalid session ${sourceKey}.`);
+  }
+  // Hermes session timestamps use seconds; the public Hermes Live protocol
+  // consistently uses integer milliseconds.
+  target[targetKey] = Math.round(value * 1_000);
+}
+
+function boundedSafeText(value: unknown, maximum: number, label: string, multiline = false): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > maximum) {
+    throw new Error(`${label} must be non-empty text of at most ${maximum} characters.`);
+  }
+  const unsafe = multiline
+    ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u
+    : /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
+  if (unsafe.test(value)) throw new Error(`${label} contains unsafe characters.`);
+  return value;
+}
+
+function boundedInteger(value: number, minimum: number, maximum: number, label: string): number {
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${label} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return value;
+}
+
 function boundedTokenCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
@@ -474,6 +699,12 @@ function requireHermesRunId(runId: string): void {
   }
 }
 
+function requireHermesSessionId(sessionId: string): void {
+  if (!isBoundedHermesIdentifier(sessionId)) {
+    throw new Error("Hermes session id must be a bounded identifier.");
+  }
+}
+
 function boundedRetryAfter(response: Response): string | undefined {
   return boundedRetryAfterValue(response.headers.get("retry-after") ?? undefined);
 }
@@ -522,6 +753,10 @@ function isBoundedHermesIdentifier(value: unknown): value is string {
 
 function publicHermesRequestPath(path: string): string {
   if (["/health", "/v1/capabilities", "/v1/runs"].includes(path)) return path;
+  if (/^\/api\/sessions(?:\?.*)?$/u.test(path)) return "/api/sessions";
+  if (/^\/api\/sessions\/[^/]+\/messages$/u.test(path)) return "/api/sessions/{session_id}/messages";
+  if (/^\/api\/sessions\/[^/]+\/chat$/u.test(path)) return "/api/sessions/{session_id}/chat";
+  if (/^\/api\/sessions\/[^/]+$/u.test(path)) return "/api/sessions/{session_id}";
   if (/^\/v1\/runs\/[^/]+\/events$/u.test(path)) return "/v1/runs/{run_id}/events";
   if (/^\/v1\/runs\/[^/]+\/stop$/u.test(path)) return "/v1/runs/{run_id}/stop";
   if (/^\/v1\/runs\/[^/]+\/approval$/u.test(path)) return "/v1/runs/{run_id}/approval";

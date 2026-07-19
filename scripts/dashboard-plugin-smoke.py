@@ -254,7 +254,7 @@ def test_url_and_payload_guards(plugin: Any) -> None:
         else:
             os.environ["HERMES_LIVE_AUTH_TOKEN"] = old_token
 
-    assert plugin._is_bounded_json_message('{"type":"session.start","protocolVersion":3}')
+    assert plugin._is_bounded_json_message('{"type":"session.start","protocolVersion":4}')
     assert not plugin._is_bounded_json_message("[]")
     assert not plugin._is_bounded_json_message('{"type":"audio.input","data":NaN}')
     assert not plugin._is_bounded_json_message('{"notType":"session.start"}')
@@ -309,6 +309,20 @@ def test_capability_sanitizing(plugin: Any) -> None:
         "maxRetained": 200,
         "parallel": True,
     }
+
+    assert plugin._safe_conversation({
+        "id": "session_1",
+        "title": "Saved chat",
+        "preview": "Continue here",
+        "lastActive": 1_784_131_200_000,
+        "ignored": "private",
+    }) == {
+        "id": "session_1",
+        "title": "Saved chat",
+        "preview": "Continue here",
+        "lastActive": 1_784_131_200_000,
+    }
+    assert plugin._safe_conversation({"id": "unsafe session"}) is None
     assert "statePath" not in json.dumps(tasks)
 
     reflected = "configured-dashboard-bearer"

@@ -1,6 +1,6 @@
 # Durable Background Tasks
 
-Hermes Live protocol v3 separates the realtime conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
+Hermes Live protocol v4 separates the realtime conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
 
 ```txt
 voice or text turn
@@ -15,14 +15,15 @@ The gateway is the task owner. A browser tab, terminal, realtime-provider connec
 
 ## Task Contract
 
-The realtime provider has four narrow tools:
+The realtime provider has five narrow task tools:
 
 - `start_background_task`: submit work and return a stable `task_id` quickly;
 - `list_background_tasks`: inspect the current owner's active and recent inbox;
 - `get_background_task`: fetch one exact state or retained result;
+- `follow_up_background_task`: start a new worker from one terminal task's retained result;
 - `stop_background_task`: request cooperative cancellation of one exact task.
 
-Clients do not send a `task.start` protocol message. They send speech or `text.input`; the realtime model decides when to delegate through `start_background_task`. Direct client controls are `task.list`, `task.get`, `task.stop`, and `task.notification.ack`.
+Clients do not send a `task.start` protocol message. They send speech or `text.input`; the realtime model decides when to delegate through `start_background_task`. Direct client controls are `task.list`, `task.get`, `task.follow_up`, `task.stop`, and `task.notification.ack`.
 
 The public states are:
 
@@ -37,7 +38,15 @@ The public states are:
 | `cancelled` | Hermes confirmed cancellation, or a queued task was cancelled before dispatch. |
 | `unknown` | The gateway cannot prove the outcome. It must not be described as success or failure. |
 
-Every task has a monotonically increasing, per-task `sequence`, but clients retain two independent revisions: lifecycle state by `taskId` and notification state by `taskId`, `notificationId`, and acknowledgement. Lifecycle and notification messages can share one sequence and arrive in either order; both must be applied. Exact repeats within one channel are idempotent, while conflicting content at the same channel sequence must fail closed. The upstream Hermes run id is private and is never part of protocol v3.
+Every task has a monotonically increasing, per-task `sequence`, but clients retain two independent revisions: lifecycle state by `taskId` and notification state by `taskId`, `notificationId`, and acknowledgement. Lifecycle and notification messages can share one sequence and arrive in either order; both must be applied. Exact repeats within one channel are idempotent, while conflicting content at the same channel sequence must fail closed. The upstream Hermes run id is private and is never part of protocol v4.
+
+Hermes `tool.started` and `tool.completed` events can advance `task.progress` with a sanitized tool name and bounded preview. Raw arguments, output, reasoning, credentials, and upstream event envelopes remain private. This is enough to answer “what is that task doing?” without turning the public protocol into a trace viewer.
+
+## Follow-ups And Worker Lineage
+
+`task.follow_up` and `follow_up_background_task` accept only a terminal task in the same owner scope. The supervisor creates a new exclusive Hermes worker, includes the parent's bounded retained result as untrusted context, and publishes `parentTaskId` plus `rootTaskId`.
+
+This is durable continuation at the work-product boundary, not process resumption. The original worker may no longer exist, and its full tool-call stack is never copied. Several independent background tasks can run when the configured scheduling policy permits it, but Hermes Live does not automatically create a team of subagents for every request.
 
 ## Ownership And Subscriptions
 
@@ -67,9 +76,9 @@ The default state file is:
 
 The store writes a complete bounded document through a private temporary file, `fsync`, atomic rename, and directory `fsync`. Its directory is forced to mode `0700` and the file to `0600` on supported Unix systems. A lifetime lock allows one writer. Invalid JSON, schema corruption, symlinks, wrong directory ownership, oversized state, or an unconfirmed post-rename commit stop the gateway instead of silently resetting history.
 
-Stable v0.5 reads state created by the v0.5 beta. A beta file that already filled the old byte ceiling can use bounded migration headroom while its accepted work drains; with the default limit, the absolute read/write ceiling is 96 MiB plus 64 KiB. New tasks still have to fit the normal 64 MiB budget, and migration never deletes queued or active work. The store returns to the normal ceiling as soon as the document and its reserves fit.
+Current releases read state created by the v0.5 beta. A beta file that already filled the old byte ceiling can use bounded migration headroom while its accepted work drains; with the default limit, the absolute read/write ceiling is 96 MiB plus 64 KiB. New tasks still have to fit the normal 64 MiB budget, and migration never deletes queued or active work. The store returns to the normal ceiling as soon as the document and its reserves fit.
 
-The upgrade is forward-only once stable writes a confirmed-missing or operator-containment field: the older beta's strict parser will reject that newer record. Back up the private state file while the gateway is stopped before upgrading; do not roll back the binary against state already written by stable v0.5.
+The upgrade is forward-only once a current release writes a confirmed-missing, operator-containment, conversation-lineage, or follow-up field: older strict parsers can reject the newer record. Back up the private state file while the gateway is stopped before upgrading; do not roll back the binary against state already written by a newer release.
 
 Recovery depends on what restarted:
 
@@ -110,7 +119,7 @@ The durable source of truth is the task inbox, not whether a provider spoke. Ann
 
 ## Approval Boundary
 
-Protocol v3 has no interactive approval messages, buttons, or terminal commands. If Hermes enters `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all`, then stops that exact upstream run. Clients see a non-actionable stopping/progress state.
+Protocol v4 has no interactive approval messages, buttons, or terminal commands. If Hermes enters `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all`, then stops that exact upstream run. Clients see a non-actionable stopping/progress state.
 
 This is fail-closed. Do not advertise that approvals can be completed in another Hermes Live surface. A future approval workflow requires a proven upstream identity contract that targets exactly one request.
 

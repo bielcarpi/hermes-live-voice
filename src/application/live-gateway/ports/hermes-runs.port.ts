@@ -24,6 +24,48 @@ export interface StartRunResult {
   status: string;
 }
 
+export interface HermesSessionSummary {
+  id: string;
+  source?: string;
+  model?: string;
+  title?: string;
+  preview?: string;
+  startedAt?: number;
+  endedAt?: number;
+  lastActive?: number;
+  messageCount?: number;
+  parentSessionId?: string;
+}
+
+export interface HermesSessionMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+}
+
+export interface HermesSessionHistory {
+  /** Hermes resolves compression lineage and returns the current writable tip. */
+  sessionId: string;
+  messages: HermesSessionMessage[];
+}
+
+export interface ListHermesSessionsOptions {
+  limit?: number;
+  offset?: number;
+  source?: string;
+  signal?: AbortSignal;
+}
+
+export interface CreateHermesSessionOptions {
+  title?: string;
+  signal?: AbortSignal;
+}
+
+export interface HermesSessionChatResult {
+  sessionId: string;
+  content: string;
+  usage?: HermesRunUsage;
+}
+
 export type HermesRunStatus =
   | "queued"
   | "running"
@@ -97,6 +139,16 @@ export interface HermesRunsPort {
   health(signal?: AbortSignal): Promise<Record<string, unknown>>;
   capabilities(signal?: AbortSignal): Promise<HermesCapabilities>;
   assertRunsSupported(signal?: AbortSignal): Promise<HermesCapabilities>;
+  assertSessionsSupported?(signal?: AbortSignal): Promise<HermesCapabilities>;
+  listSessions?(options?: ListHermesSessionsOptions): Promise<HermesSessionSummary[]>;
+  createSession?(options?: CreateHermesSessionOptions): Promise<HermesSessionSummary>;
+  getSession?(sessionId: string, signal?: AbortSignal): Promise<HermesSessionSummary>;
+  getSessionHistory?(sessionId: string, signal?: AbortSignal): Promise<HermesSessionHistory>;
+  chatSession?(
+    sessionId: string,
+    message: string,
+    options?: { signal?: AbortSignal; sessionKey?: string; instructions?: string },
+  ): Promise<HermesSessionChatResult>;
   startRun(params: StartRunParams, signal?: AbortSignal): Promise<StartRunResult>;
   getRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<HermesRunSnapshot>;
   stopRun(runId: string, options?: AbortSignal | HermesRequestOptions): Promise<{ run_id: string; status: "stopping" }>;

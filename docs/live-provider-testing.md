@@ -62,7 +62,7 @@ curl -H "Authorization: Bearer $HERMES_LIVE_AUTH_TOKEN" \
   http://127.0.0.1:8788/v1/capabilities
 ```
 
-Confirm `protocolVersion: 3`, `background_tasks`, durable local persistence, exact stop, reconnect snapshots, notification support, configured task bounds, gateway-restart reconciliation, `hermesRestartRecovery: false`, and fenced ambiguous dispatch.
+Confirm `protocolVersion: 4`, supported versions `[3, 4]`, `hermes_conversations`, `conversation_resume`, `background_tasks`, durable local persistence, exact stop, reconnect snapshots, notification support, configured task bounds, gateway-restart reconciliation, `hermesRestartRecovery: false`, and fenced ambiguous dispatch.
 
 ## 2. Open And Close A Real Provider Session
 
@@ -129,10 +129,10 @@ Open the Dashboard or demo and send text before enabling the microphone. Ask for
 
 Required evidence:
 
-1. `session.ready` negotiates protocol v3 and a `task.snapshot` follows.
+1. `session.ready` negotiates protocol v4, includes the selected persisted conversation, and a `task.snapshot` follows.
 2. The task receives a stable `task_<id>` and `task.accepted` quickly, before Hermes completes.
 3. The provider conversation remains responsive while the task is active.
-4. Lifecycle advances through `task.started`/bounded progress to a truthful terminal state.
+4. Lifecycle advances through `task.started`, sanitized bounded tool activity, and a truthful terminal state.
 5. The durable inbox shows the same task once; upstream run ids and raw Hermes events are absent.
 6. `task.get` returns the exact retained result; list/reconnect snapshots remain summary-only.
 
@@ -145,6 +145,8 @@ Then exercise supervision:
 - stop one exact task while another continues;
 - interrupt provider speech and confirm background tasks do not stop;
 - close the tab/terminal and confirm tasks continue.
+- resume the same Hermes chat in a new voice session and confirm canonical conversation history continues;
+- start `task.follow_up` from a terminal task and confirm it has a new task id plus the expected parent/root lineage;
 
 Do not use destructive targets to test these rules.
 

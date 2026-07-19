@@ -7,7 +7,6 @@ import {
   TaskIdSchema,
   TaskSequenceSchema,
 } from "./client-protocol.js";
-import { HERMES_LIVE_PROTOCOL_VERSION } from "./version.js";
 
 const PUBLIC_MODEL_MAX_CHARS = 256;
 const PUBLIC_MIME_TYPE_MAX_CHARS = 128;
@@ -23,6 +22,8 @@ const PUBLIC_JSON_MAX_CHARS = 64_000;
 const PUBLIC_AUDIO_BASE64_MAX_CHARS = 8_000_000;
 const PUBLIC_TASK_MAX_RETAINED = 10_000;
 const PUBLIC_TASK_MAX_CONCURRENT = 64;
+const PUBLIC_CONVERSATION_TITLE_MAX_CHARS = 100;
+const PUBLIC_CONVERSATION_PREVIEW_MAX_CHARS = 500;
 
 const PublicIdSchema = z
   .string()
@@ -82,6 +83,7 @@ export const TaskCapabilitiesSchema = z
         list: z.boolean(),
         get: z.boolean(),
         stop: z.boolean(),
+        followUp: z.boolean(),
         resume: z.literal(false),
         notificationAck: z.boolean(),
       })
@@ -145,6 +147,9 @@ export type PublicTaskError = z.infer<typeof PublicTaskErrorSchema>;
 export const PublicTaskSnapshotSchema = z
   .object({
     taskId: TaskIdSchema,
+    kind: z.enum(["background", "follow_up"]).optional(),
+    parentTaskId: TaskIdSchema.optional(),
+    rootTaskId: TaskIdSchema.optional(),
     sequence: PositiveTaskSequenceSchema,
     state: PublicTaskStateSchema,
     title: z.string().min(1).max(PUBLIC_TASK_TITLE_MAX_CHARS).optional(),
@@ -179,6 +184,26 @@ export const TaskNotificationSchema = z
   .strict();
 export type TaskNotification = z.infer<typeof TaskNotificationSchema>;
 
+export const PublicConversationSchema = z
+  .object({
+    mode: z.enum(["new", "resume", "unbound"]),
+    sessionId: PublicIdSchema.optional(),
+    title: z.string().min(1).max(PUBLIC_CONVERSATION_TITLE_MAX_CHARS).optional(),
+    source: z.string().min(1).max(64).optional(),
+    preview: z.string().max(PUBLIC_CONVERSATION_PREVIEW_MAX_CHARS).optional(),
+    lastActiveAt: PublicTimestampSchema.optional(),
+  })
+  .strict()
+  .superRefine((conversation, context) => {
+    if (conversation.mode !== "unbound" && conversation.sessionId === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "A bound conversation requires sessionId." });
+    }
+    if (conversation.mode === "unbound" && conversation.sessionId !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "An unbound conversation cannot include sessionId." });
+    }
+  });
+export type PublicConversation = z.infer<typeof PublicConversationSchema>;
+
 const TaskEventBase = {
   sequence: PositiveTaskSequenceSchema,
   taskId: TaskIdSchema,
@@ -188,7 +213,7 @@ const TaskEventBase = {
 const SessionReadyMessageSchema = z
   .object({
     type: z.literal("session.ready"),
-    protocolVersion: z.literal(HERMES_LIVE_PROTOCOL_VERSION),
+    protocolVersion: z.union([z.literal(3), z.literal(4)]),
     requestId: RequestIdSchema.optional(),
     sessionId: PublicIdSchema,
     model: z.string().min(1).max(PUBLIC_MODEL_MAX_CHARS),
@@ -200,6 +225,7 @@ const SessionReadyMessageSchema = z
       .strict(),
     realtime: RealtimeClientCapabilitiesSchema,
     tasks: TaskCapabilitiesSchema,
+    conversation: PublicConversationSchema.optional(),
   })
   .strict();
 
@@ -283,6 +309,9 @@ const TaskAcceptedMessageSchema = z
     requestId: RequestIdSchema.optional(),
     state: z.enum(["accepted", "queued"]),
     title: z.string().min(1).max(PUBLIC_TASK_TITLE_MAX_CHARS).optional(),
+    kind: z.enum(["background", "follow_up"]).optional(),
+    parentTaskId: TaskIdSchema.optional(),
+    rootTaskId: TaskIdSchema.optional(),
   })
   .strict();
 
@@ -390,14 +419,14 @@ export type TaskSnapshotMessage = Extract<ServerMessage, { type: "task.snapshot"
 export type TaskLifecycleMessage = Extract<ServerMessage, { type: `task.${string}` }>;
 
 // HermesRunEvent remains an internal upstream-adapter type. Raw run events are
-// deliberately not members of the public protocol-v3 ServerMessage union.
+// deliberately not members of the public protocol-v4 ServerMessage union.
 export interface HermesRunEvent {
   event?: string;
   run_id?: string;
   timestamp?: number;
   delta?: string;
   output?: string;
-  error?: string;
+  error?: string | boolean;
   usage?: Record<string, unknown>;
   [key: string]: unknown;
 }

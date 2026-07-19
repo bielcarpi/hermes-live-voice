@@ -36,6 +36,75 @@ import {
 } from "../src/domain/tasks/index.js";
 
 describe("TaskSupervisor", () => {
+  it("creates durable follow-up work from a finished task with explicit lineage", async () => {
+    const store = new MemoryTaskStore();
+    const hermes = new HermesHarness();
+    const supervisor = new TaskSupervisor({ store, hermes, maxConcurrent: 2 });
+    await supervisor.initialize();
+    const ownerId = supervisor.registerOwner("alice", "session-a");
+    const root = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Audit the release",
+    });
+    await waitFor(() => hermes.startCalls.length === 1);
+    const rootRunId = (await store.load(root.taskId))?.runId!;
+    hermes.pushEvent(rootRunId, {
+      event: "run.completed",
+      run_id: rootRunId,
+      output: "The audit found one missing changelog entry.",
+      usage: { input_tokens: 8, output_tokens: 7, total_tokens: 15 },
+    });
+    await waitFor(async () => (await store.load(root.taskId))?.status === "completed");
+
+    const followUp = await supervisor.followUp({
+      ownerIdentity: "alice",
+      ownerId,
+      sessionKey: "session-a",
+      parentTaskId: root.taskId,
+      input: "Add the missing entry and verify it.",
+      originConversationId: "saved_chat",
+    });
+    expect(followUp).toMatchObject({
+      kind: "follow_up",
+      parentTaskId: root.taskId,
+      rootTaskId: root.taskId,
+      originConversationId: "saved_chat",
+      status: "queued",
+    });
+    await waitFor(() => hermes.startCalls.length === 2);
+    expect(hermes.startCalls[1]?.input).toContain("The audit found one missing changelog entry.");
+    expect(hermes.startCalls[1]?.input).toContain("Add the missing entry and verify it.");
+    await supervisor.close();
+  });
+
+  it("persists useful sanitized tool activity without leaking credentials", async () => {
+    const store = new MemoryTaskStore();
+    const hermes = new HermesHarness();
+    const supervisor = new TaskSupervisor({ store, hermes });
+    await supervisor.initialize();
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Inspect the repository",
+    });
+    await waitFor(async () => Boolean((await store.load(task.taskId))?.runId));
+    const runId = (await store.load(task.taskId))?.runId!;
+    hermes.pushEvent(runId, {
+      event: "tool.started",
+      run_id: runId,
+      tool: "terminal",
+      preview: "git status token=secret-value sk-examplecredential123",
+    });
+    await waitFor(async () => (await store.load(task.taskId))?.events.at(-1)?.type === "progress");
+    const summary = (await store.load(task.taskId))?.events.at(-1)?.summary;
+    expect(summary).toContain("Hermes is using terminal: git status");
+    expect(summary).toContain("[redacted]");
+    expect(summary).not.toContain("secret-value");
+    expect(summary).not.toContain("examplecredential123");
+    await supervisor.close();
+  });
+
   it("persists an immediate queued receipt before dispatch and never persists the session key", async () => {
     const deferred = deferredValue<StartRunResult>();
     const store = new MemoryTaskStore();
@@ -498,6 +567,45 @@ describe("TaskSupervisor", () => {
 
     expect(hermes.getCalls).toHaveLength(7);
     expect(hermes.streamCalls).toHaveLength(7);
+    await supervisor.close();
+  });
+
+  it("quietly falls back to status polling when a recovered run's SSE stream is gone", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new MemoryTaskStore();
+    const running = transitionTask(
+      transitionTask(createTaskRecord({ ownerIdentity: "alice", input: "Recover quietly", now: 1 }), "dispatching", { now: 2 }),
+      "running",
+      { now: 3, runId: "run_sse_gone" },
+    );
+    await store.put(running);
+    const hermes = new HermesHarness();
+    hermes.getBehavior = async (runId) => hermes.getCalls.length === 1
+      ? { object: "hermes.run", run_id: runId, status: "running" }
+      : {
+        object: "hermes.run",
+        run_id: runId,
+        status: "completed",
+        output: "Recovered from status.",
+        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+      };
+    hermes.streamBehavior = async function* () {
+      throw Object.assign(new Error("stream already removed"), { status: 404 });
+    };
+    const errors: unknown[] = [];
+    const supervisor = new TaskSupervisor({ store, hermes, scheduler, onError: (error) => errors.push(error) });
+
+    await supervisor.initialize();
+    await waitFor(() => hermes.streamCalls.includes("run_sse_gone"));
+    await settle();
+    scheduler.advanceBy(0);
+    await waitFor(async () => (await store.load(running.taskId))?.status === "completed");
+
+    expect(await store.load(running.taskId)).toMatchObject({
+      status: "completed",
+      output: "Recovered from status.",
+    });
+    expect(errors).toEqual([]);
     await supervisor.close();
   });
 
@@ -1295,6 +1403,10 @@ class HermesHarness implements HermesRunsPort {
     runId: string,
     options?: AbortSignal | HermesRequestOptions,
   ) => Promise<{ run_id: string; status: "stopping" }>;
+  streamBehavior?: (
+    runId: string,
+    options?: AbortSignal | HermesRequestOptions,
+  ) => AsyncGenerator<HermesRunEvent>;
   private runCounter = 0;
   private readonly snapshots = new Map<string, HermesRunSnapshot>();
   private readonly streams = new Map<string, EventQueue>();
@@ -1349,7 +1461,7 @@ class HermesHarness implements HermesRunsPort {
 
   streamRunEvents(runId: string, options?: AbortSignal | HermesRequestOptions): AsyncGenerator<HermesRunEvent> {
     this.streamCalls.push(runId);
-    return this.queue(runId).iterate(requestSignal(options));
+    return this.streamBehavior?.(runId, options) ?? this.queue(runId).iterate(requestSignal(options));
   }
 
   pushEvent(runId: string, event: HermesRunEvent): void {

@@ -10,7 +10,7 @@ When `HERMES_LIVE_HOST` is network-accessible, startup requires a `HERMES_LIVE_A
 
 When gateway auth is enabled:
 
-- `WS /v1/live`, `GET /ready`, and `GET /v1/capabilities` require the bearer;
+- `WS /v1/live`, `GET /ready`, `GET /v1/capabilities`, and `GET|POST /v1/conversations` require the bearer;
 - `GET /health` remains public;
 - server-side clients use `Authorization: Bearer <token>`;
 - direct browser WebSockets may use a query token only when they cannot set upgrade headers.
@@ -46,7 +46,7 @@ Do not use the shared bearer plus trusted client identity as a multi-tenant auth
 
 ## Durable State File
 
-`HERMES_LIVE_TASK_STATE_FILE` contains task prompts, titles, hashed owner ids, internal Hermes run/session ids, bounded event summaries, results, usage, and notification state. It does not contain provider or Hermes API keys, but task content may include credentials, source code, paths, customer data, or other sensitive material.
+`HERMES_LIVE_TASK_STATE_FILE` contains task prompts, titles, hashed owner ids, internal Hermes run/session ids, origin conversation ids, follow-up lineage, bounded event summaries, results, usage, and notification state. It does not contain provider or Hermes API keys, but task content may include credentials, source code, paths, customer data, or other sensitive material.
 
 The store:
 
@@ -66,9 +66,10 @@ Back up the state file as sensitive data. Stop the gateway before copying or mov
 The selected realtime provider receives:
 
 - user audio/text;
-- the gateway system instruction and four background-task tool definitions;
+- the gateway system instruction, the saved-chat continuation tool, and five background-task tool definitions;
+- bounded Hermes answers returned through the continuation tool;
 - task prompts/context that the provider chooses to delegate;
-- immediate task receipts and bounded list/get/stop tool results;
+- immediate task receipts and bounded list/get/follow-up/stop tool results;
 - a generic completion digest used for spoken notification.
 
 An exact retained result reaches the provider only when it calls `get_background_task`, normally because the user asks for details. Connected protocol clients receive their own sanitized task lifecycle independently.
@@ -79,7 +80,7 @@ Task titles, summaries, and results are untrusted data. The realtime instruction
 
 ## Delegation And Concurrency
 
-The provider can request only the gateway's four task operations. Task access remains owner-scoped and exact-id based.
+The provider can request only the gateway's five task operations. Task access remains owner-scoped and exact-id based. Follow-ups require a terminal parent and create a separate exclusive worker from its bounded retained result.
 
 Mutating or uncertain work must use `exclusive`. By default, the gateway clamps every provider request to that mode. `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true` opts into `parallel_read_only` work across model-declared disjoint resource keys. This metadata is policy input, not a sandbox; Hermes permissions, container isolation, filesystem permissions, network controls, and tool policy remain necessary.
 
@@ -95,7 +96,7 @@ An ambiguous stop also becomes `unknown`. The gateway never treats “stop reque
 
 ## Approvals
 
-Protocol v3 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
+Protocol v4 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
 
 When Hermes reports `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all: true` and requests stop for that exact upstream run. The public projection is non-actionable. Hermes exposes a run-scoped response endpoint, but not enough per-request identity for safe concurrent approval from Hermes Live, so there is no human approval path.
 

@@ -1,12 +1,12 @@
 # Client Protocol
 
-Hermes Live protocol v3 is strict JSON over WebSocket:
+Hermes Live protocol v4 is strict JSON over WebSocket:
 
 ```txt
 ws://127.0.0.1:8788/v1/live
 ```
 
-Use `wss://` behind TLS for non-local clients. Protocol v3 is a breaking replacement for the old synchronous run lifecycle: every client must send `protocolVersion: 3`, and the gateway exposes stable server-owned tasks rather than upstream Hermes run ids.
+Use `wss://` behind TLS for non-local clients. Protocol v4 adds persisted Hermes conversation binding and durable task follow-ups. The gateway still accepts protocol v3 as an unbound compatibility mode, but new clients should send v4.
 
 The TypeScript schemas in `src/domain/protocol/` and the browser validator in `clients/browser/hermes-live-client.js` are the normative contract.
 
@@ -17,6 +17,7 @@ When `HERMES_LIVE_AUTH_TOKEN` is configured, authenticate:
 - `WS /v1/live`
 - `GET /ready`
 - `GET /v1/capabilities`
+- `GET|POST /v1/conversations`
 
 Server-side clients should send:
 
@@ -34,18 +35,19 @@ The first client message must be:
 {
   "type": "session.start",
   "id": "start_1",
-  "protocolVersion": 3
+  "protocolVersion": 4,
+  "conversation": { "mode": "resume", "sessionId": "saved_session_id" }
 }
 ```
 
-Optional `profileId` and `userLabel` values are ignored unless the operator enables trusted client identity. The gateway rejects missing or unsupported versions before opening a provider session.
+`conversation.mode` is `new`, `resume`, or `unbound`. New sessions accept an optional `title`; resumed sessions require the exact Hermes `sessionId`. Hermes Live resolves compressed-session lineage to its current writable tip before opening voice. Optional `profileId` and `userLabel` values are ignored unless the operator enables trusted client identity.
 
 On success, the server sends `session.ready` followed by one or more bounded initial/reconnect snapshot frames:
 
 ```json
 {
   "type": "session.ready",
-  "protocolVersion": 3,
+  "protocolVersion": 4,
   "requestId": "start_1",
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
@@ -79,9 +81,15 @@ On success, the server sends `session.ready` followed by one or more bounded ini
       "list": true,
       "get": true,
       "stop": true,
+      "followUp": true,
       "resume": false,
       "notificationAck": true
     }
+  },
+  "conversation": {
+    "mode": "resume",
+    "sessionId": "saved_session_id",
+    "title": "Release planning"
   }
 }
 ```
@@ -125,7 +133,7 @@ End a push-to-talk stream:
 { "type": "audio.end", "id": "audio_end_1" }
 ```
 
-The realtime provider may answer directly or call `start_background_task`. There is deliberately no client `task.start`: task creation goes through the provider's narrow delegation tool and returns a fast receipt so conversation can continue.
+For a bound session, the realtime provider calls `continue_hermes_conversation` for canonical chat turns so Hermes owns memory and history. Long or independent work uses `start_background_task`, which returns a fast receipt so voice can continue. There is deliberately no client `task.start`.
 
 Server conversation events are:
 
@@ -168,6 +176,20 @@ Stop exactly one task:
 
 A queued task can become `task.cancelled` immediately. An active task normally emits `task.stopping` and remains non-terminal until Hermes confirms completion, failure, or cancellation. A stop with an ambiguous upstream outcome becomes `task.unknown`; the gateway never stops a different task by inference.
 
+Start a durable follow-up after a task reaches any terminal state:
+
+```json
+{
+  "type": "task.follow_up",
+  "id": "follow_up_1",
+  "taskId": "task_0123456789abcdef0123456789abcdef",
+  "message": "Apply the fix you proposed, then rerun the checks.",
+  "title": "Apply and verify the fix"
+}
+```
+
+The new task is an independent Hermes worker seeded with the selected task's bounded retained result. Its `task.accepted` event carries `kind: "follow_up"`, `parentTaskId`, and `rootTaskId`. Follow-ups preserve explicit lineage; they do not reuse the original worker's hidden process or tool-call history.
+
 ## Task Lifecycle
 
 Lifecycle events have a stable `taskId`, a positive per-task `sequence`, and `occurredAt` in Unix milliseconds. Examples:
@@ -179,7 +201,8 @@ Lifecycle events have a stable `taskId`, a positive per-task `sequence`, and `oc
   "sequence": 1,
   "occurredAt": 1780000000000,
   "state": "queued",
-  "title": "Inspect repository"
+  "title": "Inspect repository",
+  "kind": "background"
 }
 ```
 
@@ -189,7 +212,7 @@ Lifecycle events have a stable `taskId`, a positive per-task `sequence`, and `oc
   "taskId": "task_0123456789abcdef0123456789abcdef",
   "sequence": 4,
   "occurredAt": 1780000001200,
-  "progress": { "message": "Hermes completed a tool." }
+  "progress": { "message": "Hermes is using terminal: git status" }
 }
 ```
 
@@ -218,7 +241,7 @@ The lifecycle types are:
 - `task.cancelled`
 - `task.unknown`
 
-Public snapshots use states `accepted`, `queued`, `running`, `stopping`, `completed`, `failed`, `cancelled`, or `unknown`. Internal Hermes run ids, raw SSE events, reasoning, tool arguments, and approval identities are never exposed.
+Public snapshots use states `accepted`, `queued`, `running`, `stopping`, `completed`, `failed`, `cancelled`, or `unknown`. While a task runs, `task.progress` may include the sanitized tool name and a bounded preview with obvious credential patterns redacted. Internal Hermes run ids, raw SSE events, reasoning, full tool arguments/output, and approval identities are never exposed. Treat activity previews as sensitive task content: commands and ordinary paths can still be visible to authenticated owner clients.
 
 List/reconnect snapshots omit full completed output and mark it truncated from that view; use `task.get` for retained output. A connected owner also receives bounded output on the live `task.completed` event.
 
@@ -313,6 +336,7 @@ const client = new HermesLiveClient({
     if (!response.ok) throw new Error("Live Voice is unavailable");
     return (await response.json()).url;
   },
+  conversation: { mode: "resume", sessionId: savedHermesSessionId },
 });
 
 client.subscribe(({ tasks, unreadNotifications }) => renderInbox(tasks, unreadNotifications));
@@ -331,6 +355,7 @@ Task methods return their generated request id:
 ```js
 client.listTasks({ limit: 50 });
 client.getTask(taskId);
+client.followUpTask(taskId, "Apply the fix, then rerun the checks.");
 client.stopTask(taskId, "user cancelled");
 client.acknowledgeNotification(taskId, notificationId);
 ```
@@ -343,6 +368,8 @@ client.acknowledgeNotification(taskId, notificationId);
 
 `GET /v1/capabilities` reports protocol version, audio contract, task persistence/admission limits, disconnect continuation, restart semantics, ambiguity fencing, and feature flags. `hermes_approval` and `hermes_approval_ui` are false; the advertised fallback is deny-all then stop.
 
+`GET /v1/conversations?limit=20&offset=0` lists persisted Hermes sessions and `POST /v1/conversations` with optional JSON `{ "title": "Voice planning" }` creates one. Both use the same HTTP authentication as readiness. A Dashboard relay should keep the shared bearer server-side.
+
 ## Limits And Errors
 
 Protocol fields are bounded before dispatch: ids, identity strings, reasons, MIME types, text, audio, task snapshots, results, usage, notifications, logs, and provider messages all have hard ceilings. PCM input must declare one integer sample rate between 8,000 and 192,000 Hz. Browser audio currently supports PCM16; it rejects G.711 output rather than misdecoding it.
@@ -353,7 +380,7 @@ Errors use:
 {
   "type": "session.error",
   "code": "unsupported_protocol_version",
-  "message": "Hermes Live protocol v2 is incompatible with protocol v3. Upgrade hermes-live-voice and every connected client to the same release before reconnecting.",
+  "message": "Hermes Live protocol v2 is incompatible with protocol v4. Upgrade hermes-live-voice and every connected client to the same release before reconnecting.",
   "requestId": "start_1",
   "recoverable": false
 }

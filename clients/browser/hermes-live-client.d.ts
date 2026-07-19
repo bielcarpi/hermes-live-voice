@@ -7,7 +7,21 @@ export type HermesLiveClientState =
   | "closed"
   | "failed";
 
-export const HERMES_LIVE_PROTOCOL_VERSION: 3;
+export const HERMES_LIVE_PROTOCOL_VERSION: 4;
+
+export type HermesLiveConversationSelection =
+  | { mode: "new"; title?: string }
+  | { mode: "resume"; sessionId: string }
+  | { mode: "unbound" };
+
+export interface HermesLiveConversation {
+  mode: "new" | "resume" | "unbound";
+  sessionId?: string;
+  title?: string;
+  source?: string;
+  preview?: string;
+  lastActiveAt?: number;
+}
 
 export type HermesLiveTaskState =
   | "accepted"
@@ -42,6 +56,9 @@ export interface HermesLiveTaskError {
 
 export interface HermesLiveTask {
   taskId: string;
+  kind?: "background" | "follow_up";
+  parentTaskId?: string;
+  rootTaskId?: string;
   sequence: number;
   state: HermesLiveTaskState;
   title?: string;
@@ -77,6 +94,7 @@ export interface HermesLiveTaskCapabilities {
     list: boolean;
     get: boolean;
     stop: boolean;
+    followUp: boolean;
     resume: false;
     notificationAck: boolean;
   };
@@ -84,7 +102,7 @@ export interface HermesLiveTaskCapabilities {
 
 export interface HermesLiveSessionReady {
   type: "session.ready";
-  protocolVersion: 3;
+  protocolVersion: 4;
   requestId?: string;
   sessionId: string;
   model: string;
@@ -99,6 +117,7 @@ export interface HermesLiveSessionReady {
     };
   };
   tasks: HermesLiveTaskCapabilities;
+  conversation: HermesLiveConversation;
 }
 
 export interface HermesLiveTruncation {
@@ -124,7 +143,15 @@ export type HermesLiveKnownServerMessage =
   | { type: "response.cancelled"; responseId?: string }
   | { type: "response.failed"; responseId?: string; error: string }
   | { type: "task.snapshot"; reason: "initial" | "reconnect" | "list" | "get"; requestId?: string; tasks: HermesLiveTask[]; truncated: boolean }
-  | (HermesLiveTaskEventBase & { type: "task.accepted"; requestId?: string; state: "accepted" | "queued"; title?: string })
+  | (HermesLiveTaskEventBase & {
+      type: "task.accepted";
+      requestId?: string;
+      state: "accepted" | "queued";
+      title?: string;
+      kind?: "background" | "follow_up";
+      parentTaskId?: string;
+      rootTaskId?: string;
+    })
   | (HermesLiveTaskEventBase & { type: "task.started"; title?: string })
   | (HermesLiveTaskEventBase & { type: "task.progress"; progress: HermesLiveTaskProgress })
   | (HermesLiveTaskEventBase & { type: "task.stopping"; requestId?: string; reason?: string })
@@ -148,6 +175,7 @@ export interface HermesLiveClientOptions {
   token?: string | (() => string | undefined | Promise<string | undefined>);
   profileId?: string;
   userLabel?: string;
+  conversation?: HermesLiveConversationSelection;
   connectTimeoutMs?: number;
   disconnectTimeoutMs?: number;
   maxBufferedAmountBytes?: number;
@@ -175,6 +203,7 @@ export interface HermesLiveSnapshot {
 export type HermesLivePendingRequest =
   | { type: "task.list" }
   | { type: "task.get"; taskId: string }
+  | { type: "task.follow_up"; taskId: string }
   | { type: "task.stop"; taskId: string }
   | { type: "task.notification.ack"; taskId: string; notificationId: string };
 
@@ -229,7 +258,7 @@ export class HermesLiveClient {
   on<K extends keyof HermesLiveClientEventMap>(type: K, listener: (event: HermesLiveClientEventMap[K]) => void): () => void;
   subscribe(listener: (snapshot: HermesLiveSnapshot) => void): () => void;
   getSnapshot(): HermesLiveSnapshot;
-  connect(options?: { signal?: AbortSignal }): Promise<HermesLiveSessionReady>;
+  connect(options?: { signal?: AbortSignal; conversation?: HermesLiveConversationSelection }): Promise<HermesLiveSessionReady>;
   disconnect(reason?: string): Promise<void>;
   sendText(text: string, options?: { id?: string }): string;
   sendAudio(data: string | ArrayBuffer | ArrayBufferView, mimeType?: string, options?: { id?: string }): string | undefined;
@@ -237,6 +266,7 @@ export class HermesLiveClient {
   cancelResponse(reason?: string, truncate?: HermesLiveTruncation, options?: { id?: string }): string;
   listTasks(options?: { id?: string; limit?: number }): string;
   getTask(taskId: string, options?: { id?: string }): string;
+  followUpTask(taskId: string, message: string, options?: { id?: string; title?: string }): string;
   stopTask(taskId: string, reason?: string, options?: { id?: string }): string;
   acknowledgeNotification(taskId: string, notificationId: string, options?: { id?: string }): string;
   sendMessage(message: Record<string, unknown> & { type: string; id?: string }): string;

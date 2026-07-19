@@ -25,7 +25,10 @@ import { buildReadinessReport } from "../../../readiness.js";
 import { serveStatic } from "./static.js";
 import { WebSocketClientConnection } from "./websocket-client-connection.js";
 import { errorToMessage } from "../../../domain/error-message.js";
-import { HERMES_LIVE_PROTOCOL_VERSION } from "../../../domain/protocol/version.js";
+import {
+  HERMES_LIVE_PROTOCOL_VERSION,
+  HERMES_LIVE_SUPPORTED_PROTOCOL_VERSIONS,
+} from "../../../domain/protocol/version.js";
 import { realtimeClientCapabilities } from "../../../application/live-gateway/client-capabilities.js";
 import { negotiateHermesApprovalCompatibility } from "../../../application/live-gateway/hermes-approval-compatibility.js";
 
@@ -438,6 +441,7 @@ async function handleHttp(
       object: "hermes_live.capabilities",
       service: "hermes-live",
       protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+      supportedProtocolVersions: HERMES_LIVE_SUPPORTED_PROTOCOL_VERSIONS,
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },
       realtime: realtimeClientCapabilities(options.config),
       hermes: { approvals },
@@ -464,6 +468,9 @@ async function handleHttp(
         openai_realtime: options.config.realtime.provider === "openai",
         mock_live: options.config.realtime.provider === "mock",
         hermes_runs: true,
+        hermes_conversations: true,
+        conversation_create: true,
+        conversation_resume: true,
         background_tasks: true,
         durable_task_state: true,
         task_reconnect_snapshot: true,
@@ -482,6 +489,59 @@ async function handleHttp(
         optional_hermes_plugin: true,
       },
     });
+    return;
+  }
+  if (url.pathname === "/v1/conversations") {
+    const assertSessionsSupported = options.hermes.assertSessionsSupported;
+    const listSessions = options.hermes.listSessions;
+    const createSession = options.hermes.createSession;
+    if (!assertSessionsSupported || !listSessions || !createSession) {
+      json(req, res, 503, { status: "unavailable", error: "Hermes session continuity is unavailable." });
+      return;
+    }
+    if (isGetOrHead(req)) {
+      const limit = boundedQueryInteger(url, "limit", 20, 1, 100);
+      const offset = boundedQueryInteger(url, "offset", 0, 0, 100_000);
+      if (limit === undefined || offset === undefined) {
+        json(req, res, 400, { status: "invalid_request", error: "Conversation pagination is invalid." });
+        return;
+      }
+      const source = url.searchParams.get("source")?.trim();
+      if (source !== undefined && (source.length === 0 || source.length > 64)) {
+        json(req, res, 400, { status: "invalid_request", error: "Conversation source is invalid." });
+        return;
+      }
+      await assertSessionsSupported.call(options.hermes);
+      const conversations = await listSessions.call(options.hermes, {
+        limit,
+        offset,
+        ...(source ? { source } : {}),
+      });
+      json(req, res, 200, { object: "list", conversations });
+      return;
+    }
+    if (req.method === "POST") {
+      const parsed = await readBoundedJsonObject(req, 16_384);
+      if (!parsed.ok) {
+        json(req, res, parsed.status, { status: "invalid_request", error: parsed.error });
+        return;
+      }
+      const keys = Object.keys(parsed.value);
+      const title = parsed.value.title;
+      if (keys.some((key) => key !== "title") || (title !== undefined && (
+        typeof title !== "string" || title.trim().length === 0 || title.trim().length > 100
+      ))) {
+        json(req, res, 400, { status: "invalid_request", error: "Conversation title is invalid." });
+        return;
+      }
+      await assertSessionsSupported.call(options.hermes);
+      const conversation = await createSession.call(options.hermes, {
+        ...(typeof title === "string" ? { title: title.trim() } : {}),
+      });
+      json(req, res, 201, { object: "hermes_live.conversation", conversation });
+      return;
+    }
+    methodNotAllowed(req, res, "GET, HEAD, POST");
     return;
   }
   if (options.config.server.demoEnabled && serveStatic(req, res, { root: options.demoRoot })) {
@@ -507,7 +567,7 @@ function isAuthorized(req: IncomingMessage, config: AppConfig, url: URL, options
 }
 
 function requiresHttpAuth(pathname: string): boolean {
-  return pathname === "/ready" || pathname === "/v1/capabilities";
+  return pathname === "/ready" || pathname === "/v1/capabilities" || pathname === "/v1/conversations";
 }
 
 function isWebSocketOriginAllowed(req: IncomingMessage, config: AppConfig): boolean {
@@ -608,7 +668,49 @@ function addCors(req: IncomingMessage, res: ServerResponse, config: AppConfig): 
     res.setHeader("access-control-allow-origin", origin);
     res.setHeader("vary", "origin");
     res.setHeader("access-control-allow-headers", "authorization, content-type");
-    res.setHeader("access-control-allow-methods", "GET, HEAD, OPTIONS");
+    res.setHeader("access-control-allow-methods", "GET, HEAD, POST, OPTIONS");
+  }
+}
+
+function boundedQueryInteger(
+  url: URL,
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  const raw = url.searchParams.get(name);
+  if (raw === null) return fallback;
+  if (!/^(?:0|[1-9]\d*)$/u.test(raw)) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= minimum && value <= maximum ? value : undefined;
+}
+
+async function readBoundedJsonObject(
+  req: IncomingMessage,
+  maxBytes: number,
+): Promise<
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; status: 400 | 413; error: string }
+> {
+  const contentLength = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    return { ok: false, status: 413, error: "Request body is too large." };
+  }
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > maxBytes) return { ok: false, status: 413, error: "Request body is too large." };
+    chunks.push(buffer);
+  }
+  try {
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid");
+    return { ok: true, value: value as Record<string, unknown> };
+  } catch {
+    return { ok: false, status: 400, error: "Request body must be a JSON object." };
   }
 }
 

@@ -20,6 +20,9 @@ export function projectTaskSnapshot(record: TaskRecord, options: ProjectTaskOpti
   const finishedAt = firstEventTimestamp(record, ["completed", "failed", "cancelled"]);
   const snapshot: PublicTaskSnapshot = {
     taskId: record.taskId,
+    kind: record.kind ?? "background",
+    ...(record.parentTaskId ? { parentTaskId: record.parentTaskId } : {}),
+    rootTaskId: record.rootTaskId ?? record.taskId,
     sequence: record.sequence,
     state,
     title: record.title.slice(0, PUBLIC_TITLE_CHARS),
@@ -74,6 +77,9 @@ export function projectTaskLifecycle(record: TaskRecord, requestId?: string): Se
         ...(requestId ? { requestId } : {}),
         state: "queued",
         title: record.title.slice(0, PUBLIC_TITLE_CHARS),
+        kind: record.kind ?? "background",
+        ...(record.parentTaskId ? { parentTaskId: record.parentTaskId } : {}),
+        rootTaskId: record.rootTaskId ?? record.taskId,
       };
     case "dispatching":
       return {
@@ -82,9 +88,14 @@ export function projectTaskLifecycle(record: TaskRecord, requestId?: string): Se
         ...(requestId ? { requestId } : {}),
         state: "accepted",
         title: record.title.slice(0, PUBLIC_TITLE_CHARS),
+        kind: record.kind ?? "background",
+        ...(record.parentTaskId ? { parentTaskId: record.parentTaskId } : {}),
+        rootTaskId: record.rootTaskId ?? record.taskId,
       };
     case "running":
-      return { type: "task.started", ...base, title: record.title.slice(0, PUBLIC_TITLE_CHARS) };
+      return record.events.at(-1)?.type === "progress"
+        ? { type: "task.progress", ...base, progress: { message: summary } }
+        : { type: "task.started", ...base, title: record.title.slice(0, PUBLIC_TITLE_CHARS) };
     case "waiting_for_approval":
       // Current Hermes releases cannot target approval responses safely. The
       // supervisor immediately contains these runs, so clients receive a

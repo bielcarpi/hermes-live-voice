@@ -35,6 +35,7 @@ MAX_STATUS_BODY_BYTES = 256_000
 MAX_TOKEN_BYTES = 8_192
 MAX_GATEWAY_URL_CHARS = 2_048
 STATUS_TIMEOUT_SECONDS = 2.5
+MAX_CONVERSATIONS = 50
 
 
 class GatewayConfigurationError(ValueError):
@@ -226,6 +227,44 @@ async def gateway_status() -> dict[str, Any]:
     }
 
 
+@router.get("/conversations")
+async def gateway_conversations() -> dict[str, Any]:
+    """Return a bounded, sanitized list of persisted Hermes chats."""
+
+    try:
+        gateway_url = _gateway_url()
+        token = _gateway_token()
+    except GatewayConfigurationError:
+        return {"conversations": [], "error": "invalid_gateway_configuration"}
+
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    timeout = httpx.Timeout(STATUS_TIMEOUT_SECONDS, connect=min(1.5, STATUS_TIMEOUT_SECONDS))
+    async with httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=timeout,
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+        trust_env=False,
+        headers={"Accept": "application/json"},
+    ) as client:
+        probe = await _fetch_json(
+            client,
+            f"{gateway_url}/v1/conversations?limit={MAX_CONVERSATIONS}",
+            headers,
+        )
+
+    if not probe.ok or not isinstance(probe.body, dict):
+        return {"conversations": [], "error": "conversations_unavailable"}
+    raw = probe.body.get("conversations")
+    if not isinstance(raw, list):
+        return {"conversations": [], "error": "conversations_unavailable"}
+    conversations = []
+    for item in raw[:MAX_CONVERSATIONS]:
+        safe = _safe_conversation(item, sensitive_values=(token,) if token else ())
+        if safe is not None:
+            conversations.append(safe)
+    return {"conversations": conversations, "error": None}
+
+
 def _empty_status(*, configured: bool, error: str) -> dict[str, Any]:
     return {
         "configured": configured,
@@ -239,6 +278,27 @@ def _empty_status(*, configured: bool, error: str) -> dict[str, Any]:
         "tasks": None,
         "error": error,
     }
+
+
+def _safe_conversation(
+    value: Any,
+    *,
+    sensitive_values: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    session_id = _safe_text(value.get("id"), maximum=256, sensitive_values=sensitive_values)
+    if session_id is None or not all(character.isalnum() or character in "._:-" for character in session_id):
+        return None
+    result: dict[str, Any] = {"id": session_id}
+    for key, maximum in (("title", 100), ("preview", 500), ("source", 64)):
+        text = _safe_text(value.get(key), maximum=maximum, sensitive_values=sensitive_values)
+        if text is not None:
+            result[key] = text
+    last_active = value.get("lastActive")
+    if isinstance(last_active, int) and not isinstance(last_active, bool) and 0 <= last_active <= 8_640_000_000_000_000:
+        result["lastActive"] = last_active
+    return result
 
 
 async def _fetch_json(

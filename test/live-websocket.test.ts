@@ -14,6 +14,9 @@ import type {
   HermesRequestOptions,
   HermesRunSnapshot,
   HermesRunsPort,
+  HermesSessionChatResult,
+  HermesSessionHistory,
+  HermesSessionSummary,
   StartRunParams,
   StartRunResult,
 } from "../src/application/live-gateway/ports/hermes-runs.port.js";
@@ -55,8 +58,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("protocol-v3 live gateway WebSocket", () => {
-  it("opens with protocol v3 capabilities and an empty initial task snapshot", async () => {
+describe("live gateway WebSocket", () => {
+  it("keeps protocol v3 clients in unbound compatibility mode", async () => {
     const config = testConfig();
     const hermes = new HermesHarness();
     const provider = new RecordingLiveAdapter();
@@ -85,7 +88,7 @@ describe("protocol-v3 live gateway WebSocket", () => {
         durable: true,
         parallel: false,
         maxConcurrent: 3,
-        supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+        supports: { list: true, get: true, stop: true, followUp: false, resume: false, notificationAck: true },
       },
     });
     expect(ready.sessionKey).toBeUndefined();
@@ -94,6 +97,65 @@ describe("protocol-v3 live gateway WebSocket", () => {
     expect(provider.latest.params.safetyIdentifier).toBe(
       createHash("sha256").update(defaultSessionKey).digest("hex"),
     );
+  });
+
+  it("resumes the writable Hermes conversation tip and keeps canonical chat in that session", async () => {
+    const hermes = new HermesHarness();
+    hermes.sessions.set("session_original", {
+      id: "session_original",
+      title: "Release planning",
+      source: "web",
+      preview: "Plan the release",
+      lastActive: 1_784_131_200_000,
+    });
+    hermes.sessions.set("session_tip", {
+      id: "session_tip",
+      title: "Release planning",
+      source: "web",
+      preview: "Continue the release",
+      lastActive: 1_784_131_300_000,
+    });
+    hermes.historyBehavior = async () => ({ sessionId: "session_tip", messages: [] });
+    hermes.chatBehavior = async (sessionId, message) => ({
+      sessionId,
+      content: `Hermes answered: ${message}`,
+      usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 },
+    });
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config: testConfig(), hermes, provider });
+    const client = await connectClient(server.url);
+
+    send(client.socket, {
+      type: "session.start",
+      id: "resume_start",
+      protocolVersion: 4,
+      conversation: { mode: "resume", sessionId: "session_original" },
+    });
+    await expect(client.messages.wait("session.ready")).resolves.toMatchObject({
+      protocolVersion: 4,
+      conversation: {
+        mode: "resume",
+        sessionId: "session_tip",
+        title: "Release planning",
+      },
+    });
+    await client.messages.wait("task.snapshot");
+    expect(provider.latest.params.systemInstruction).toContain("continue_hermes_conversation");
+
+    provider.emit({
+      type: "tool_call",
+      call: { id: "continue_chat", name: "continue_hermes_conversation", args: { message: "What changed?" } },
+    });
+    await expect(provider.latest.toolResponses.wait()).resolves.toMatchObject({
+      response: {
+        ok: true,
+        session_id: "session_tip",
+        message: "Hermes answered: What changed?",
+        usage: { total_tokens: 14 },
+      },
+    });
+    expect(hermes.historyCalls).toEqual(["session_original"]);
+    expect(hermes.chatCalls).toEqual([{ sessionId: "session_tip", message: "What changed?" }]);
   });
 
   it("rejects adversarial request ids without reflecting them or breaking the connection", async () => {
@@ -1071,7 +1133,7 @@ describe("protocol-v3 live gateway WebSocket", () => {
       code: "unsupported_protocol_version",
       requestId: "legacy_v2",
       recoverable: false,
-      message: expect.stringMatching(/protocol v2.*protocol v3.*Upgrade/),
+      message: expect.stringMatching(/protocol v2.*protocols v3, v4.*Upgrade/),
     });
     expect(hermes.assertRunsCalls).toBe(0);
     expect(provider.connections).toHaveLength(0);
@@ -2105,6 +2167,9 @@ class HermesHarness implements HermesRunsPort {
   readonly getCalls: string[] = [];
   readonly streamCalls: string[] = [];
   readonly stopCalls: string[] = [];
+  readonly historyCalls: string[] = [];
+  readonly chatCalls: Array<{ sessionId: string; message: string }> = [];
+  readonly sessions = new Map<string, HermesSessionSummary>();
   readonly approvalCalls: Array<{
     runId: string;
     choice: ApprovalChoice;
@@ -2114,6 +2179,8 @@ class HermesHarness implements HermesRunsPort {
   assertError?: Error;
   startBehavior?: (params: StartRunParams, signal?: AbortSignal) => Promise<StartRunResult>;
   stopBehavior?: (runId: string) => Promise<{ run_id: string; status: "stopping" }>;
+  historyBehavior?: (sessionId: string) => Promise<HermesSessionHistory>;
+  chatBehavior?: (sessionId: string, message: string) => Promise<HermesSessionChatResult>;
   private runCounter = 0;
   private readonly snapshots = new Map<string, HermesRunSnapshot>();
   private readonly streams = new Map<string, HermesEventQueue>();
@@ -2130,6 +2197,36 @@ class HermesHarness implements HermesRunsPort {
     this.assertRunsCalls += 1;
     if (this.assertError) throw this.assertError;
     return this.supportedCapabilities();
+  }
+
+  async assertSessionsSupported(): Promise<HermesCapabilities> {
+    return this.supportedCapabilities();
+  }
+
+  async listSessions(): Promise<HermesSessionSummary[]> {
+    return [...this.sessions.values()].map((session) => structuredClone(session));
+  }
+
+  async createSession(options?: { title?: string }): Promise<HermesSessionSummary> {
+    const session = { id: `session_${this.sessions.size + 1}`, ...(options?.title ? { title: options.title } : {}) };
+    this.sessions.set(session.id, session);
+    return structuredClone(session);
+  }
+
+  async getSession(sessionId: string): Promise<HermesSessionSummary> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error("Hermes session was not found.");
+    return structuredClone(session);
+  }
+
+  async getSessionHistory(sessionId: string): Promise<HermesSessionHistory> {
+    this.historyCalls.push(sessionId);
+    return this.historyBehavior?.(sessionId) ?? { sessionId, messages: [] };
+  }
+
+  async chatSession(sessionId: string, message: string): Promise<HermesSessionChatResult> {
+    this.chatCalls.push({ sessionId, message });
+    return this.chatBehavior?.(sessionId, message) ?? { sessionId, content: "Hermes answer" };
   }
 
   async startRun(params: StartRunParams, signal?: AbortSignal): Promise<StartRunResult> {

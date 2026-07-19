@@ -196,7 +196,8 @@ describe("HTTP server", () => {
     });
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       object: "hermes_live.capabilities",
-      protocolVersion: 3,
+      protocolVersion: 4,
+      supportedProtocolVersions: [3, 4],
       realtime: {
         provider: "openai",
         model: "gpt-realtime-2.1",
@@ -228,6 +229,9 @@ describe("HTTP server", () => {
         maxRetained: 200,
       },
       features: {
+        hermes_conversations: true,
+        conversation_create: true,
+        conversation_resume: true,
         background_tasks: true,
         durable_task_state: true,
         task_reconnect_snapshot: true,
@@ -241,6 +245,43 @@ describe("HTTP server", () => {
         hermes_approval_requires_targeted_response: true,
       },
     });
+  });
+
+  it("lists and creates persisted Hermes conversations through the authenticated gateway", async () => {
+    const hermes = fakeHermes();
+    const server = await startServer({
+      config: testConfig(),
+      hermes,
+      liveModel: new MockLiveAdapter(),
+      logger: fakeLogger(),
+    });
+    openServers.push(server);
+
+    const listed = await fetch(`${server.url}/v1/conversations?limit=10&offset=2&source=web`);
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toEqual({
+      object: "list",
+      conversations: [{ id: "session_existing", title: "Existing chat" }],
+    });
+    expect(hermes.listSessions).toHaveBeenCalledWith({ limit: 10, offset: 2, source: "web" });
+
+    const created = await fetch(`${server.url}/v1/conversations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Voice planning" }),
+    });
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({
+      object: "hermes_live.conversation",
+      conversation: { id: "session_created", title: "Voice planning" },
+    });
+    expect(hermes.createSession).toHaveBeenCalledWith({ title: "Voice planning" });
+
+    expect(await fetch(`${server.url}/v1/conversations?limit=-1`).then((response) => response.status)).toBe(400);
+    expect(await fetch(`${server.url}/v1/conversations`, {
+      method: "POST",
+      body: JSON.stringify({ title: "", extra: true }),
+    }).then((response) => response.status)).toBe(400);
   });
 
   it("keeps approvals fail-closed even when Hermes advertises targeted responses", async () => {
@@ -718,8 +759,7 @@ describe("HTTP server", () => {
     const response = await fetch(`${server.url}/health`, { headers: { origin: "https://app.example.com" } });
 
     expect(response.headers.get("access-control-allow-origin")).toBe("https://app.example.com");
-    expect(response.headers.get("access-control-allow-methods")).toBe("GET, HEAD, OPTIONS");
-    expect(response.headers.get("access-control-allow-methods")).not.toContain("POST");
+    expect(response.headers.get("access-control-allow-methods")).toBe("GET, HEAD, POST, OPTIONS");
   });
 
   it("limits JSON endpoints to GET and HEAD", async () => {
@@ -742,7 +782,7 @@ describe("HTTP server", () => {
     await expect(post.json()).resolves.toMatchObject({ status: "method_not_allowed" });
   });
 
-  it("keeps health public but protects readiness and capabilities when auth is configured", async () => {
+  it("keeps health public but protects readiness, capabilities, and conversations when auth is configured", async () => {
     const server = await startServer({
       config: testConfig({ server: { authToken: "secret-token" } }),
       hermes: fakeHermes(),
@@ -754,6 +794,7 @@ describe("HTTP server", () => {
     expect(await fetch(`${server.url}/health`).then((res) => res.status)).toBe(200);
     expect(await fetch(`${server.url}/ready`).then((res) => res.status)).toBe(401);
     expect(await fetch(`${server.url}/v1/capabilities`).then((res) => res.status)).toBe(401);
+    expect(await fetch(`${server.url}/v1/conversations`).then((res) => res.status)).toBe(401);
     expect(await fetch(`${server.url}/v1/capabilities?token=secret-token`).then((res) => res.status)).toBe(401);
 
     const authorized = await fetch(`${server.url}/v1/capabilities`, {
@@ -859,6 +900,12 @@ function fakeHermes(extraFeatures: Record<string, unknown> = {}): HermesRunsPort
     baseUrl: "http://127.0.0.1:8642",
     capabilities: vi.fn(async () => capabilities),
     assertRunsSupported: vi.fn(async () => capabilities),
+    assertSessionsSupported: vi.fn(async () => capabilities),
+    listSessions: vi.fn(async () => [{ id: "session_existing", title: "Existing chat" }]),
+    createSession: vi.fn(async (options?: { title?: string }) => ({
+      id: "session_created",
+      ...(options?.title ? { title: options.title } : {}),
+    })),
   } as unknown as HermesRunsPort;
 }
 

@@ -10,11 +10,12 @@ The plugin makes Hermes Live discoverable inside Hermes and adds the Dashboard U
 - `/hermes-live` slash command;
 - Hermes Dashboard **Live Voice** tab;
 - same-origin Dashboard status and WebSocket routes authenticated by Hermes;
+- a sanitized saved-conversation listing route;
 - server-side gateway credential injection;
 - packaged browser client, microphone worklet, and styles;
 - gateway URL, readiness, capabilities, and WebSocket metadata.
 
-The Dashboard tab supports browser voice, text fallback, transcript, speech interruption, durable task inbox, exact task stop, reconnect snapshots, unread completion notices, and retained results. Protocol v3 has no approval controls; approval-requiring tasks are denied and stopped by the gateway.
+The Dashboard tab supports new or resumed Hermes chats, browser voice, text fallback, transcript, speech interruption, live task activity, durable follow-ups, exact task stop, reconnect snapshots, unread completion notices, and retained results. Protocol v4 has no approval controls; approval-requiring tasks are denied and stopped by the gateway.
 
 ## Install The Published Plugin
 
@@ -67,6 +68,10 @@ That command shallow-clones unpinned `main`; it does not install the gateway CLI
 The browser connects only to same-origin Hermes routes:
 
 ```txt
+Dashboard browser
+  -> Hermes-authenticated /api/plugins/hermes-live/conversations
+  -> plugin_api.py -> gateway /v1/conversations
+
 Dashboard browser
   -> Hermes-authenticated /api/plugins/hermes-live/live
   -> plugin_api.py
@@ -132,9 +137,10 @@ Persistent text control:
 
 ```sh
 hermes-live terminal
+hermes-live terminal --resume <sessionId>
 ```
 
-The terminal is text-only but exposes the same durable inbox, reconnect, exact result, speech interruption, and exact task-stop contract. It still opens a realtime-provider session and can incur provider usage. Use Hermes Voice Mode or Desktop for first-party local audio, and the Dashboard/browser client for gateway audio.
+The terminal is text-only but exposes saved-chat binding, the durable inbox, live activity, `/followup`, reconnect, exact result, speech interruption, and exact task stop. It still opens a realtime-provider session and can incur provider usage. Use Hermes Voice Mode or Desktop for first-party local audio, and the Dashboard/browser client for gateway audio.
 
 Docker:
 
@@ -148,8 +154,8 @@ The Compose example persists task state in `hermes-live-state`; keep that volume
 
 ## Trust Boundary
 
-The realtime provider receives four narrow gateway tools that start, list, inspect, and stop owner-scoped tasks. It does not receive Hermes tools, credentials, raw events, upstream run ids, or approval authority. Hermes remains responsible for memory, tools, skills, MCP, and execution; the gateway supervises lifetime, persistence, scheduling, and client projection.
+The realtime provider can continue the selected Hermes chat and receives five narrow task tools to start, list, inspect, follow up, and stop owner-scoped work. It does not receive Hermes tools, credentials, raw events, upstream run ids, or approval authority. Hermes remains responsible for memory, tools, skills, MCP, and execution; the gateway supervises lifetime, persistence, scheduling, and client projection.
 
 Closing Dashboard or the provider session detaches from tasks. Only an exact `task.stop` cancels work. If Hermes requests approval, the supervisor attempts deny-all and stops that task fail-closed; the plugin has no approval control.
 
-For custom/community clients, see [UI Integration](ui-integration.md). Generic OpenAI-compatible chat support does not implement the Hermes Live protocol v3 audio/task/notification contract by itself.
+For custom/community clients, see [UI Integration](ui-integration.md). Generic OpenAI-compatible chat support does not implement the Hermes Live protocol v4 audio/task/notification contract by itself.

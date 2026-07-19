@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acknowledgeTaskNotification,
+  appendTaskEvent,
   createTaskRecord,
   markTaskStopRequested,
   markTaskNotificationAnnounced,
@@ -15,6 +16,25 @@ import {
 } from "../src/application/live-gateway/task-public-projection.js";
 
 describe("task public projection", () => {
+  it("projects retained tool activity as live progress instead of repeating task.started", () => {
+    const queued = createTaskRecord({ ownerIdentity: "owner", input: "Inspect", now: 10 });
+    const dispatching = transitionTask(queued, "dispatching", { now: 20 });
+    const running = transitionTask(dispatching, "running", { now: 30, runId: "run_activity" });
+    const active = appendTaskEvent(running, {
+      now: 40,
+      summary: "Hermes is using terminal: git status",
+    });
+
+    expect(projectTaskLifecycle(active)).toMatchObject({
+      type: "task.progress",
+      progress: { message: "Hermes is using terminal: git status" },
+    });
+    expect(projectTaskSnapshot(active)).toMatchObject({
+      state: "running",
+      progress: { message: "Hermes is using terminal: git status" },
+    });
+  });
+
   it("never exposes upstream run ids or retained output in list snapshots", () => {
     const queued = createTaskRecord({ ownerIdentity: "owner", input: "Inspect repository", now: 10 });
     const dispatching = transitionTask(queued, "dispatching", { now: 20 });

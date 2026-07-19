@@ -33,6 +33,8 @@ const PUBLIC_AUDIO_BASE64_MAX_CHARS = 8_000_000;
 const PUBLIC_ERROR_CODE_MAX_CHARS = 128;
 const PUBLIC_TASK_STAGE_MAX_CHARS = 128;
 const PUBLIC_TASK_REASON_MAX_CHARS = 1_000;
+const PUBLIC_CONVERSATION_TITLE_MAX_CHARS = 100;
+const PUBLIC_CONVERSATION_PREVIEW_MAX_CHARS = 500;
 const DEFAULT_TASK_LIST_LIMIT = 50;
 const MAX_TASK_LIST_LIMIT = 100;
 // Server configuration can retain history (1000) + queued work (512) +
@@ -70,7 +72,7 @@ const TASK_STOP_RESPONSE_TYPES = new Set([
   "task.unknown",
 ]);
 const OPEN = 1;
-export const HERMES_LIVE_PROTOCOL_VERSION = 3;
+export const HERMES_LIVE_PROTOCOL_VERSION = 4;
 
 const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "session.ready",
@@ -144,6 +146,7 @@ export class HermesLiveClient {
     this.#tokenProvider = options.token;
     this.profileId = optionalString(options.profileId);
     this.userLabel = optionalString(options.userLabel);
+    this.conversation = normalizeConversationSelection(options.conversation ?? { mode: "new" });
     this.connectTimeoutMs = positiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     this.disconnectTimeoutMs = positiveInteger(options.disconnectTimeoutMs, DEFAULT_DISCONNECT_TIMEOUT_MS);
     this.maxBufferedAmountBytes = positiveInteger(
@@ -209,7 +212,8 @@ export class HermesLiveClient {
 
     const generation = ++this.generation;
     this.setState("connecting");
-    const attempt = this.openConnection(generation, options.signal);
+    const conversation = normalizeConversationSelection(options.conversation ?? this.conversation);
+    const attempt = this.openConnection(generation, options.signal, conversation);
     this.connectPromise = attempt;
     try {
       return await attempt;
@@ -221,7 +225,7 @@ export class HermesLiveClient {
     }
   }
 
-  async openConnection(generation, signal) {
+  async openConnection(generation, signal, conversation) {
     const startedAt = Date.now();
     let socketUrl;
     try {
@@ -291,6 +295,7 @@ export class HermesLiveClient {
             protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
             ...(this.profileId ? { profileId: this.profileId } : {}),
             ...(this.userLabel ? { userLabel: this.userLabel } : {}),
+            conversation,
           });
         } catch (error) {
           failStartup(error, "session_start_send_failed");
@@ -504,6 +509,25 @@ export class HermesLiveClient {
     );
   }
 
+  followUpTask(taskId, message, options = {}) {
+    const normalizedTaskId = requireClientId(taskId, "taskId");
+    const normalizedMessage = String(message ?? "").trim();
+    if (!normalizedMessage) throw new TypeError("Hermes Live task follow-up cannot be empty.");
+    const title = optionalBoundedString(options.title, PUBLIC_TASK_TITLE_MAX_CHARS, "task follow-up title")?.trim();
+    if (options.title !== undefined && !title) throw new TypeError("Hermes Live task follow-up title cannot be empty.");
+    const id = options.id ?? this.createRequestId();
+    return this.sendCorrelated(
+      {
+        type: "task.follow_up",
+        id,
+        taskId: normalizedTaskId,
+        message: normalizedMessage,
+        ...(title ? { title } : {}),
+      },
+      { type: "task.follow_up", taskId: normalizedTaskId },
+    );
+  }
+
   stopTask(taskId, reason = "user stopped background task", options = {}) {
     const normalizedTaskId = requireClientId(taskId, "taskId");
     const task = this.taskMap.get(normalizedTaskId);
@@ -553,6 +577,7 @@ export class HermesLiveClient {
     if ([
       "task.list",
       "task.get",
+      "task.follow_up",
       "task.stop",
       "task.notification.ack",
       "session.close",
@@ -629,6 +654,9 @@ export class HermesLiveClient {
         }
         this.sessionStartRequestId = undefined;
         this.session = message;
+        if (message.conversation?.sessionId) {
+          this.conversation = { mode: "resume", sessionId: message.conversation.sessionId };
+        }
         this.reconnectSnapshotPending = true;
         this.setState("ready");
         this.updateSnapshot({ session: message, lastError: undefined });
@@ -871,6 +899,12 @@ export class HermesLiveClient {
       this.pendingRequests.get(message.requestId)?.type === "task.stop"
     ) {
       expected = { type: "task.stop", taskId: message.taskId };
+    } else if (
+      message.type === "task.accepted" &&
+      message.requestId &&
+      this.pendingRequests.get(message.requestId)?.type === "task.follow_up"
+    ) {
+      expected = { type: "task.follow_up" };
     } else if (message.type === "task.notification" && message.requestId) {
       expected = {
         type: "task.notification.ack",
@@ -1528,16 +1562,11 @@ export function validateServerMessage(value) {
   const message = value;
   switch (message.type) {
     case "session.ready": {
-      requireOnlyKeys(message, ["type", "protocolVersion", "requestId", "sessionId", "model", "hermes", "realtime", "tasks"]);
+      requireOnlyKeys(message, ["type", "protocolVersion", "requestId", "sessionId", "model", "hermes", "realtime", "tasks", "conversation"]);
       requireInteger(message, "protocolVersion", { positive: true, maximum: 1_000 });
       if (message.protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
-        if (message.protocolVersion === 2) {
-          throw new TypeError(
-            "Hermes Live protocol v2 is incompatible with this protocol v3 client. Upgrade the gateway and client together to use durable background tasks.",
-          );
-        }
         throw new TypeError(
-          `Hermes Live protocol version ${message.protocolVersion} is not supported by this client.`,
+          `Hermes Live protocol version ${message.protocolVersion} is not supported by this protocol v4 client. Upgrade the gateway and client together.`,
         );
       }
       optionalOpaqueId(message, "requestId", 128);
@@ -1558,6 +1587,8 @@ export function validateServerMessage(value) {
       validateRealtimeCapabilities(message.realtime);
       requireObject(message, "tasks");
       validateTaskCapabilities(message.tasks);
+      requireObject(message, "conversation");
+      validatePublicConversation(message.conversation);
       break;
     }
     case "session.error":
@@ -1623,11 +1654,12 @@ export function validateServerMessage(value) {
       break;
     }
     case "task.accepted":
-      requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "state", "title"]);
+      requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "state", "title", "kind", "parentTaskId", "rootTaskId"]);
       validateTaskEventBase(message);
       optionalOpaqueId(message, "requestId", 128);
       requireEnum(message, "state", ["accepted", "queued"]);
       optionalBoundedStringField(message, "title", PUBLIC_TASK_TITLE_MAX_CHARS);
+      optionalTaskLineage(message);
       break;
     case "task.started":
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "title"]);
@@ -1689,7 +1721,7 @@ export function validateServerMessage(value) {
     default:
       if (message.type.startsWith("run.")) {
         throw new TypeError(
-          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v3 client accepts task.* lifecycle messages only.`,
+          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v4 client accepts task.* lifecycle messages only.`,
         );
       }
   }
@@ -1911,11 +1943,28 @@ function validateTaskCapabilities(value) {
   requireInteger(typed, "maxConcurrent", { positive: true, maximum: 64 });
   requireInteger(typed, "maxRetained", { positive: true, maximum: 10_000 });
   requireObject(typed, "supports");
-  requireOnlyKeys(value.supports, ["list", "get", "stop", "resume", "notificationAck"], "session.ready task supports");
+  requireOnlyKeys(value.supports, ["list", "get", "stop", "followUp", "resume", "notificationAck"], "session.ready task supports");
   const supports = { ...value.supports, type: "session.ready task supports" };
-  for (const key of ["list", "get", "stop", "notificationAck"]) requireBoolean(supports, key);
+  for (const key of ["list", "get", "stop", "followUp", "notificationAck"]) requireBoolean(supports, key);
   if (supports.resume !== false) {
     throw new TypeError("Hermes Live session.ready task supports must declare resume as false.");
+  }
+}
+
+function validatePublicConversation(value) {
+  requireOnlyKeys(value, ["mode", "sessionId", "title", "source", "preview", "lastActiveAt"], "session.ready conversation");
+  const typed = { ...value, type: "session.ready conversation" };
+  requireEnum(typed, "mode", ["new", "resume", "unbound"]);
+  optionalOpaqueId(typed, "sessionId");
+  optionalBoundedStringField(typed, "title", PUBLIC_CONVERSATION_TITLE_MAX_CHARS);
+  optionalBoundedStringField(typed, "source", 64);
+  optionalBoundedStringField(typed, "preview", PUBLIC_CONVERSATION_PREVIEW_MAX_CHARS, { allowEmpty: true });
+  optionalInteger(typed, "lastActiveAt");
+  if (typed.mode === "unbound" && typed.sessionId !== undefined) {
+    throw new TypeError("Hermes Live session.ready conversation cannot bind an unbound session.");
+  }
+  if (typed.mode !== "unbound" && typed.sessionId === undefined) {
+    throw new TypeError("Hermes Live session.ready conversation is missing its Hermes sessionId.");
   }
 }
 
@@ -1929,6 +1978,9 @@ function validateTaskSnapshot(value) {
   requirePlainObject(value, "task snapshot");
   requireOnlyKeys(value, [
     "taskId",
+    "kind",
+    "parentTaskId",
+    "rootTaskId",
     "sequence",
     "state",
     "title",
@@ -1942,6 +1994,7 @@ function validateTaskSnapshot(value) {
   ], "task snapshot");
   const typed = { ...value, type: "task snapshot" };
   requireOpaqueId(typed, "taskId");
+  optionalTaskLineage(typed);
   requireInteger(typed, "sequence", { positive: true });
   requireEnum(typed, "state", [
     "accepted",
@@ -1969,6 +2022,15 @@ function validateTaskSnapshot(value) {
     throw new TypeError(`Hermes Live ${value.state} task snapshot requires an error.`);
   }
   return freezeTaskSnapshot(normalized);
+}
+
+function optionalTaskLineage(value) {
+  if (value.kind !== undefined) requireEnum(value, "kind", ["background", "follow_up"]);
+  optionalOpaqueId(value, "parentTaskId");
+  optionalOpaqueId(value, "rootTaskId");
+  if (value.kind === "follow_up" && (!value.parentTaskId || !value.rootTaskId)) {
+    throw new TypeError("Hermes Live follow-up task is missing its lineage.");
+  }
 }
 
 function validateTaskProgress(value) {
@@ -2077,6 +2139,9 @@ function taskFromLifecycle(existing, message) {
         sequence: Math.max(existing?.sequence ?? 0, message.sequence),
         state: message.state,
         ...(message.title === undefined ? {} : { title: message.title }),
+        ...(message.kind === undefined ? {} : { kind: message.kind }),
+        ...(message.parentTaskId === undefined ? {} : { parentTaskId: message.parentTaskId }),
+        ...(message.rootTaskId === undefined ? {} : { rootTaskId: message.rootTaskId }),
         createdAt: existing?.createdAt ?? message.occurredAt,
         updatedAt: Math.max(existing?.updatedAt ?? 0, message.occurredAt),
       });
@@ -2145,6 +2210,9 @@ function assertCompatibleTaskRevision(retained, incoming) {
     conflict("task update time");
   }
   assertCompatibleOptional(retained.title, incoming.title, "task title", conflict);
+  assertCompatibleOptional(retained.kind, incoming.kind, "task kind", conflict);
+  assertCompatibleOptional(retained.parentTaskId, incoming.parentTaskId, "task parent", conflict);
+  assertCompatibleOptional(retained.rootTaskId, incoming.rootTaskId, "task root", conflict);
   assertCompatibleOptional(retained.startedAt, incoming.startedAt, "task start time", conflict);
   assertCompatibleOptional(retained.finishedAt, incoming.finishedAt, "task finish time", conflict);
   assertCompatibleOptional(retained.progress, incoming.progress, "task progress", conflict);
@@ -2180,6 +2248,9 @@ function mergeEqualSequenceTask(retained, incoming) {
     updatedAt: Math.max(retained.updatedAt, incoming.updatedAt),
   };
   if (next.title === undefined && incoming.title !== undefined) next.title = incoming.title;
+  if (next.kind === undefined && incoming.kind !== undefined) next.kind = incoming.kind;
+  if (next.parentTaskId === undefined && incoming.parentTaskId !== undefined) next.parentTaskId = incoming.parentTaskId;
+  if (next.rootTaskId === undefined && incoming.rootTaskId !== undefined) next.rootTaskId = incoming.rootTaskId;
   if (next.startedAt === undefined && incoming.startedAt !== undefined) next.startedAt = incoming.startedAt;
   if (next.finishedAt === undefined && incoming.finishedAt !== undefined) next.finishedAt = incoming.finishedAt;
   if (next.progress === undefined && incoming.progress !== undefined) next.progress = incoming.progress;
@@ -2341,6 +2412,35 @@ function optionalBoundedString(value, maximum, label) {
     throw new TypeError(`Hermes Live ${label} must be a string of at most ${maximum} characters.`);
   }
   return value;
+}
+
+function normalizeConversationSelection(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Hermes Live conversation selection must be an object.");
+  }
+  requireOnlyKeys(value, ["mode", "sessionId", "title"], "conversation selection");
+  if (!(["new", "resume", "unbound"].includes(value.mode))) {
+    throw new TypeError("Hermes Live conversation mode must be new, resume, or unbound.");
+  }
+  const sessionId = value.sessionId === undefined ? undefined : requireClientId(value.sessionId, "conversation sessionId");
+  const title = optionalBoundedString(value.title, PUBLIC_CONVERSATION_TITLE_MAX_CHARS, "conversation title")?.trim();
+  if (value.mode === "resume" && !sessionId) {
+    throw new TypeError("Hermes Live resume mode requires a conversation sessionId.");
+  }
+  if (value.mode !== "resume" && sessionId !== undefined) {
+    throw new TypeError("Hermes Live conversation sessionId is valid only in resume mode.");
+  }
+  if (value.mode !== "new" && title !== undefined) {
+    throw new TypeError("Hermes Live conversation title is valid only in new mode.");
+  }
+  if (value.title !== undefined && !title) {
+    throw new TypeError("Hermes Live conversation title cannot be empty.");
+  }
+  return Object.freeze({
+    mode: value.mode,
+    ...(sessionId ? { sessionId } : {}),
+    ...(title ? { title } : {}),
+  });
 }
 
 function assertRequestMatches(pending, expected, label) {

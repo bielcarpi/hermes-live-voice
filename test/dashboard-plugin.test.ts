@@ -43,10 +43,20 @@ describe("Hermes Dashboard plugin", () => {
 
     expect(source).toContain("SDK.buildWsUrl(LIVE_ENDPOINT)");
     expect(source).toContain("SDK.fetchJSON(STATUS_ENDPOINT)");
+    expect(source).toContain("SDK.fetchJSON(CONVERSATIONS_ENDPOINT)");
     expect(source).not.toContain("__HERMES_SESSION_TOKEN__");
     expect(source).not.toContain("HERMES_LIVE_AUTH_TOKEN");
     expect(source).not.toContain("OPENAI_API_KEY");
     expect(source).not.toContain("GEMINI_API_KEY");
+  });
+
+  it("offers a no-code saved-chat picker and binds the selected session", () => {
+    const source = dashboardSource();
+
+    expect(source).toContain("Start a new chat");
+    expect(source).toContain("Continue a saved chat or start a fresh one.");
+    expect(source).toContain('{ mode: "resume", sessionId: conversationId }');
+    expect(source).toContain("client.connect({ conversation: conversation })");
   });
 
   it("presents durable multi-task work without legacy singleton controls", () => {

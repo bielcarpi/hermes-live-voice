@@ -3,6 +3,7 @@ import { clearLine, createInterface, cursorTo } from "node:readline";
 import { isDeepStrictEqual } from "node:util";
 import WebSocket from "ws";
 import type {
+  PublicConversation,
   PublicTaskSnapshot,
   ServerMessage,
   TaskNotification,
@@ -10,6 +11,7 @@ import type {
 } from "../domain/protocol/server-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "../domain/protocol/server-protocol.js";
 import { HERMES_LIVE_PROTOCOL_VERSION } from "../domain/protocol/version.js";
+import type { ConversationSelection } from "../domain/protocol/client-protocol.js";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const MAX_SERVER_MESSAGE_BYTES = 8_000_000;
@@ -26,6 +28,7 @@ export interface TerminalGatewaySessionOptions {
   userLabel?: string;
   connectTimeoutMs?: number;
   onLine?: (line: string) => void;
+  conversation?: ConversationSelection;
 }
 
 export interface InteractiveTerminalOptions extends TerminalGatewaySessionOptions {
@@ -38,6 +41,7 @@ export interface TerminalGatewaySnapshot {
   sessionId?: string;
   provider?: string;
   model?: string;
+  conversation?: PublicConversation;
   responseActive: boolean;
   tasks: PublicTaskSnapshot[];
   activeTaskIds: string[];
@@ -53,6 +57,7 @@ type PendingRequest =
   | { kind: "status"; taskId: string }
   | { kind: "result"; taskId: string }
   | { kind: "stop"; taskId: string }
+  | { kind: "follow_up"; taskId: string }
   | { kind: "ack"; taskId: string; notificationId: string };
 
 interface TerminalNotificationRevision {
@@ -80,6 +85,7 @@ export class TerminalGatewaySession {
   private readonly userLabel: string;
   private readonly connectTimeoutMs: number;
   private readonly onLine: (line: string) => void;
+  private readonly conversationSelection: ConversationSelection;
   private socket?: WebSocket;
   private ready = false;
   private intentionalClose = false;
@@ -87,6 +93,7 @@ export class TerminalGatewaySession {
   private sessionId?: string;
   private provider?: string;
   private model?: string;
+  private conversation?: PublicConversation;
   private responseActive = false;
   private assistantTranscript = "";
   private responseHadAudio = false;
@@ -108,6 +115,7 @@ export class TerminalGatewaySession {
     this.userLabel = sanitizeMetadata(options.userLabel ?? process.env.USER ?? "terminal");
     this.connectTimeoutMs = positiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     this.onLine = options.onLine ?? ((line) => process.stdout.write(`${line}\n`));
+    this.conversationSelection = options.conversation ?? { mode: "new", title: "Terminal" };
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -120,6 +128,7 @@ export class TerminalGatewaySession {
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       ...(this.provider ? { provider: this.provider } : {}),
       ...(this.model ? { model: this.model } : {}),
+      ...(this.conversation ? { conversation: structuredClone(this.conversation) } : {}),
       responseActive: this.responseActive,
       tasks,
       activeTaskIds: tasks.filter((task) => !TERMINAL_TASK_STATES.has(task.state)).map((task) => task.taskId),
@@ -160,6 +169,7 @@ export class TerminalGatewaySession {
           protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
           profileId: "terminal",
           userLabel: this.userLabel,
+          conversation: this.conversationSelection,
         }));
       });
       socket.on("message", (raw) => {
@@ -238,6 +248,12 @@ export class TerminalGatewaySession {
         if (args[0]) this.requestTask(args[0], "result");
         else this.line("[input] Usage: /result <taskId>.");
         break;
+      case "/followup": {
+        const [taskId, ...messageParts] = args;
+        if (taskId && messageParts.length > 0) this.requestFollowUp(taskId, messageParts.join(" "));
+        else this.line("[input] Usage: /followup <taskId> <message>.");
+        break;
+      }
       case "/ack":
       case "/read":
         if (args[0]) this.requestNotificationAcknowledgement(args[0]);
@@ -288,13 +304,18 @@ export class TerminalGatewaySession {
   }
 
   private handleSessionReady(message: Extract<ServerMessage, { type: "session.ready" }>): void {
+    if (!message.conversation) throw new Error("Protocol v4 session.ready is missing Hermes conversation state.");
     this.ready = true;
     this.sessionId = message.sessionId;
     this.provider = message.realtime.provider;
     this.model = message.realtime.model;
+    this.conversation = message.conversation;
     const target = [this.provider, this.model].filter(Boolean).join(" / ") || "gateway";
     this.line(`[connection] Connected to ${singleLine(target, 240)} (protocol v${HERMES_LIVE_PROTOCOL_VERSION}).`);
     this.line("[mode] Text-control console: keep talking while durable Hermes tasks work in the background.");
+    this.line(message.conversation.mode === "unbound"
+      ? "[chat] This voice session is not attached to a saved Hermes chat."
+      : `[chat] ${message.conversation.mode === "resume" ? "Resumed" : "Created"} ${singleLine(message.conversation.title ?? message.conversation.sessionId ?? "Hermes chat", 200)}.`);
     this.line("[mode] /quit and Ctrl+C detach; only /stop <taskId> cancels a task.");
   }
 
@@ -404,10 +425,15 @@ export class TerminalGatewaySession {
       ? this.pendingRequests.get(requestId)
       : undefined;
     if (requestId) {
-      if (!pending || pending.kind !== "stop") {
+      if (!pending || (pending.kind !== "stop" && pending.kind !== "follow_up")) {
         throw new Error("Gateway sent an uncorrelated task lifecycle response.");
       }
-      if (message.taskId !== pending.taskId) throw new Error("Gateway stop response did not match the requested task id.");
+      if (pending.kind === "stop" && message.taskId !== pending.taskId) {
+        throw new Error("Gateway stop response did not match the requested task id.");
+      }
+      if (pending.kind === "follow_up" && message.type !== "task.accepted") {
+        throw new Error("Gateway follow-up response was not a task receipt.");
+      }
       this.pendingRequests.delete(requestId!);
     }
 
@@ -458,6 +484,9 @@ export class TerminalGatewaySession {
       case "task.accepted":
         base.state = message.state;
         if (message.title) base.title = message.title;
+        if (message.kind) base.kind = message.kind;
+        if (message.parentTaskId) base.parentTaskId = message.parentTaskId;
+        if (message.rootTaskId) base.rootTaskId = message.rootTaskId;
         break;
       case "task.started":
         base.state = "running";
@@ -558,6 +587,24 @@ export class TerminalGatewaySession {
       reason: "terminal user stopped this exact Hermes task",
     })) {
       this.line(`[Hermes ${taskId}] Stop requested.`);
+    }
+  }
+
+  private requestFollowUp(taskIdInput: string, messageInput: string): void {
+    const taskId = validTaskId(taskIdInput);
+    const message = messageInput.trim();
+    if (!taskId || !message || message.length > MAX_TERMINAL_TEXT_CHARS) {
+      this.line("[input] Follow-up requires a valid task id and a bounded non-empty message.");
+      return;
+    }
+    const id = this.nextRequestId();
+    if (this.trackAndSend(id, { kind: "follow_up", taskId }, {
+      type: "task.follow_up",
+      id,
+      taskId,
+      message,
+    })) {
+      this.line(`[Hermes ${taskId}] Follow-up requested.`);
     }
   }
 
@@ -729,6 +776,7 @@ export class TerminalGatewaySession {
   /status                Show local connection and task counts
   /status <taskId>       Fetch one task's current state
   /result <taskId>       Fetch one task's retained result
+  /followup <id> <text>  Start durable follow-up work from a finished task
   /ack <taskId>          Mark that task's exact unread notification as read
   /read <taskId>         Alias for /ack
   /stop <taskId>         Stop exactly one background task
@@ -751,6 +799,7 @@ run Hermes and press Ctrl+B. For remote gateway audio, use the Dashboard/browser
   connection: ${this.ready ? "ready" : "not ready"}
   provider: ${singleLine(this.provider ?? "unknown", 120)}
   model: ${singleLine(this.model ?? "unknown", 200)}
+  Hermes chat: ${singleLine(this.conversation?.title ?? this.conversation?.sessionId ?? "unbound", 200)}
   provider response: ${this.responseActive ? "active" : "idle"}
   Hermes tasks: ${active.length} active; ${unreadResults.length} terminal; ${tasks.length} retained
   notifications: ${unreadNotifications} unread
@@ -974,6 +1023,9 @@ function assertCompatibleTaskRevision(
   if (retained.taskId !== incoming.taskId) conflict("task id");
   if (retained.state !== incoming.state) conflict("task state");
   assertCompatibleOptional(retained.title, incoming.title, "task title", conflict);
+  assertCompatibleOptional(retained.kind, incoming.kind, "task kind", conflict);
+  assertCompatibleOptional(retained.parentTaskId, incoming.parentTaskId, "task parent", conflict);
+  assertCompatibleOptional(retained.rootTaskId, incoming.rootTaskId, "task root", conflict);
   assertCompatibleOptional(retained.startedAt, incoming.startedAt, "task start time", conflict);
   assertCompatibleOptional(retained.finishedAt, incoming.finishedAt, "task finish time", conflict);
   assertCompatibleOptional(retained.progress, incoming.progress, "task progress", conflict);
@@ -1015,6 +1067,9 @@ function mergeEqualSequenceTask(
   next.sequence = Math.max(retained.sequence, incoming.sequence);
   next.updatedAt = Math.max(retained.updatedAt, incoming.updatedAt);
   if (next.title === undefined && incoming.title !== undefined) next.title = incoming.title;
+  if (next.kind === undefined && incoming.kind !== undefined) next.kind = incoming.kind;
+  if (next.parentTaskId === undefined && incoming.parentTaskId !== undefined) next.parentTaskId = incoming.parentTaskId;
+  if (next.rootTaskId === undefined && incoming.rootTaskId !== undefined) next.rootTaskId = incoming.rootTaskId;
   if (next.startedAt === undefined && incoming.startedAt !== undefined) next.startedAt = incoming.startedAt;
   if (next.finishedAt === undefined && incoming.finishedAt !== undefined) next.finishedAt = incoming.finishedAt;
   if (next.progress === undefined && incoming.progress !== undefined) next.progress = { ...incoming.progress };

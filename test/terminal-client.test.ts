@@ -39,7 +39,7 @@ describe("terminal gateway URL normalization", () => {
   });
 });
 
-describe("TerminalGatewaySession protocol v3", () => {
+describe("TerminalGatewaySession protocol v4", () => {
   it("maintains a multi-task inbox with exact list/get/stop controls and detach-only quit", async () => {
     const { server, url } = await listen();
     let peer: WebSocket | undefined;
@@ -177,6 +177,20 @@ describe("TerminalGatewaySession protocol v3", () => {
       reason: "Stopped by user",
     }));
     await vi.waitFor(() => expect(session.snapshot.activeTaskIds).toEqual(["task_alpha"]));
+
+    session.execute("/followup task_beta Explain why it was cancelled");
+    const followUp = await waitForNextMessage(received, "task.follow_up");
+    expect(followUp).toMatchObject({ taskId: "task_beta", message: "Explain why it was cancelled" });
+    peer?.send(JSON.stringify({
+      ...taskAccepted("task_follow_up", 1, "Follow up: Run tests"),
+      requestId: followUp.id,
+      kind: "follow_up",
+      parentTaskId: "task_beta",
+      rootTaskId: "task_beta",
+    }));
+    await vi.waitFor(() => expect(session.snapshot.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: "task_follow_up", parentTaskId: "task_beta" }),
+    ])));
 
     session.execute("/interrupt");
     await waitForMessage(received, "response.cancel");
@@ -548,8 +562,9 @@ function readyMessage(sessionId: string): Record<string, unknown> {
       parallel: true,
       maxConcurrent: 3,
       maxRetained: 200,
-      supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+      supports: { list: true, get: true, stop: true, followUp: true, resume: false, notificationAck: true },
     },
+    conversation: { mode: "new", sessionId: "terminal_chat", title: "Terminal" },
   };
 }
 

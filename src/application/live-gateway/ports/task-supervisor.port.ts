@@ -7,6 +7,17 @@ export interface SubmitBackgroundTaskInput {
   title?: string;
   executionMode?: TaskExecutionMode;
   resourceKeys?: readonly string[];
+  originConversationId?: string;
+}
+
+export interface FollowUpBackgroundTaskInput {
+  ownerIdentity: string;
+  ownerId: string;
+  sessionKey: string;
+  parentTaskId: string;
+  input: string;
+  title?: string;
+  originConversationId?: string;
 }
 
 export type TaskRecordListener = (record: TaskRecord) => void;
@@ -21,6 +32,7 @@ export interface TaskNotificationAnnouncementClaim {
 export interface TaskSupervisorPort {
   registerOwner(ownerIdentity: string, sessionKey: string): string;
   submit(input: SubmitBackgroundTaskInput): Promise<TaskRecord>;
+  followUp?(input: FollowUpBackgroundTaskInput): Promise<TaskRecord>;
   /** Recent owner history. Callers may request one extra record to compute truthful truncation. */
   list(ownerId: string, limit?: number): Promise<TaskRecord[]>;
   /** Every retained non-terminal owner task, independent of the recent-history limit. */

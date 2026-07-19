@@ -300,6 +300,37 @@
   line-height: 1.55;
 }
 
+.hlv-conversation-picker {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 35rem;
+  margin: 0 auto 1rem;
+  padding: 0 1.2rem;
+}
+
+.hlv-conversation-picker > span {
+  color: var(--color-muted-foreground);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hlv-conversation-picker select {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--hlv-radius) * 0.72);
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
+.hlv-conversation-picker small {
+  color: var(--color-muted-foreground);
+  font-size: 0.76rem;
+}
+
 .hlv-connect-row {
   display: flex;
   justify-content: center;

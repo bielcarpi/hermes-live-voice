@@ -14,33 +14,46 @@ import {
 
 const NOW = 1_784_131_200_000;
 
-describe("protocol v3", () => {
-  it("starts protocol v3 sessions without pretending there is a global replay cursor", () => {
-    expect(HERMES_LIVE_PROTOCOL_VERSION).toBe(3);
+describe("protocol v4", () => {
+  it("binds v4 sessions to a new, resumed, or unbound Hermes conversation", () => {
+    expect(HERMES_LIVE_PROTOCOL_VERSION).toBe(4);
     expect(
       parseClientMessage({
         type: "session.start",
         id: "start_1",
-        protocolVersion: 3,
+        protocolVersion: 4,
         profileId: "default",
+        conversation: { mode: "resume", sessionId: "session_1" },
       }),
     ).toEqual({
       type: "session.start",
       id: "start_1",
-      protocolVersion: 3,
+      protocolVersion: 4,
       profileId: "default",
+      conversation: { mode: "resume", sessionId: "session_1" },
     });
+    expect(() => parseClientMessage({
+      type: "session.start",
+      protocolVersion: 3,
+      conversation: { mode: "new" },
+    })).toThrow(/requires Hermes Live protocol v4/i);
+    expect(() => parseClientMessage({
+      type: "session.start",
+      protocolVersion: 4,
+      conversation: { mode: "resume" },
+    })).toThrow(/requires sessionId/i);
   });
 
-  it("keeps v2 parseable long enough to return an actionable incompatibility error", () => {
+  it("keeps v3 compatible and rejects v2 with an actionable error", () => {
+    expect(() => assertHermesLiveProtocolVersion(3)).not.toThrow();
     const message = parseClientMessage({ type: "session.start", protocolVersion: 2 });
     expect(message.type).toBe("session.start");
     if (message.type !== "session.start") throw new Error("Expected session.start");
     expect(message.protocolVersion).toBe(2);
     expect(() => assertHermesLiveProtocolVersion(message.protocolVersion)).toThrow(
-      /protocol v2 is incompatible with protocol v3.*Upgrade hermes-live-voice/i,
+      /protocol v2 is incompatible with supported protocols v3, v4.*Upgrade hermes-live-voice/i,
     );
-    expect(incompatibleProtocolVersionMessage(2)).toContain("every connected client");
+    expect(incompatibleProtocolVersionMessage(2)).toContain("before reconnecting");
   });
 
   it("validates task control commands with exact request and task correlation", () => {
@@ -139,7 +152,7 @@ describe("protocol v3", () => {
         durable: true,
         parallel: true,
         maxConcurrent: 3,
-        supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+        supports: { list: true, get: true, stop: true, followUp: true, resume: false, notificationAck: true },
       },
     });
   });
@@ -287,9 +300,11 @@ describe("protocol v3", () => {
 
   it("exposes only gateway tools to OpenAI Realtime", () => {
     expect(OPENAI_HERMES_LIVE_TOOLS.map((tool) => tool.name)).toEqual([
+      "continue_hermes_conversation",
       "start_background_task",
       "list_background_tasks",
       "get_background_task",
+      "follow_up_background_task",
       "stop_background_task",
     ]);
     expect(OPENAI_HERMES_LIVE_TOOLS.every((tool) => tool.type === "function")).toBe(true);
@@ -299,9 +314,11 @@ describe("protocol v3", () => {
 
   it("uses Gemini SDK function declaration schema shape", () => {
     expect(HERMES_LIVE_TOOL_DECLARATIONS.map((tool) => tool.name)).toEqual([
+      "continue_hermes_conversation",
       "start_background_task",
       "list_background_tasks",
       "get_background_task",
+      "follow_up_background_task",
       "stop_background_task",
     ]);
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).toHaveProperty("parametersJsonSchema");
@@ -334,7 +351,7 @@ function sessionReady() {
       parallel: true,
       maxConcurrent: 3,
       maxRetained: 100,
-      supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+      supports: { list: true, get: true, stop: true, followUp: true, resume: false, notificationAck: true },
     },
   };
 }

@@ -8,12 +8,12 @@ This documents compatibility with Hermes Agent and community projects, not endor
 
 | Surface | Support | Purpose |
 | --- | --- | --- |
-| Hermes Dashboard + Live Voice plugin | First-class | Browser audio/text, transcript, durable task inbox, reconnect, notification acknowledgement, interruption, and exact stop. |
+| Hermes Dashboard + Live Voice plugin | First-class | New/resumed chats, browser audio/text, transcript, durable task inbox, follow-ups, reconnect, notifications, interruption, and exact stop. |
 | Bundled browser client | Development tool | Local provider/audio/protocol troubleshooting. |
 | `hermes-live-voice/browser` | First-class integration API | Vanilla, React, Vue, Svelte, Electron, or mobile-web clients. |
 | `hermes-live terminal` | First-class text control | SSH/headless task supervision, retained results, interruption, and exact stop. |
 | Hermes Voice Mode/Desktop voice | Official Hermes features | First-party local voice experiences; not replaced by this project. |
-| Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement protocol v3 realtime audio, durable tasks, or notifications. |
+| Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement protocol v4 realtime audio, durable tasks, or notifications. |
 
 ## Hermes Dashboard
 
@@ -30,6 +30,7 @@ Choose **Live Voice**. The plugin contributes:
 - `dashboard/manifest.json` for the `/live-voice` tab;
 - a responsive, theme-aware frontend using the shared browser SDK and worklet;
 - authenticated `/status` and `/live` plugin routes;
+- a sanitized `/conversations` route and saved-chat picker;
 - a server-side WebSocket relay that applies the gateway bearer.
 
 The browser never receives `HERMES_LIVE_AUTH_TOKEN`. The plugin backend revalidates Hermes Dashboard authentication and origin policy, rejects redirects, and keeps the upstream URL and credential out of status responses.
@@ -62,6 +63,7 @@ const client = new HermesLiveClient({
     if (!response.ok) throw new Error("Live Voice is unavailable");
     return (await response.json()).url;
   },
+  conversation: { mode: "resume", sessionId: savedHermesSessionId },
 });
 
 const audio = new HermesLiveAudio(client, {
@@ -89,7 +91,8 @@ The host endpoint must return either a same-origin authenticated WebSocket relay
 
 | Contract | UI behavior |
 | --- | --- |
-| `session.ready` | Show provider, model, protocol v3, audio formats/turn detection, and task limits. |
+| `session.ready` | Show provider, model, protocol v4, audio formats/turn detection, and task limits. |
+| `session.ready.conversation` | Show the selected persisted Hermes chat and retain its writable session id for reconnect. |
 | `task.snapshot` | Reconcile the owner inbox after initial connect/reconnect and correlated list/get requests. |
 | `task.accepted/started/progress/stopping` | Show durable state and queue/progress without claiming success. |
 | `task.completed/failed/cancelled/unknown` | Render the exact terminal/indeterminate outcome; never convert `unknown` into failure or success. |
@@ -103,11 +106,12 @@ Use the SDK task controls:
 ```js
 client.listTasks({ limit: 50 });
 client.getTask(taskId);
+client.followUpTask(taskId, "Apply the fix, then rerun the checks.");
 client.stopTask(taskId, "user stopped this task");
 client.acknowledgeNotification(taskId, notificationId);
 ```
 
-List/reconnect snapshots contain summaries but omit full retained output. Use `getTask(taskId)` for details. Connected clients can also receive bounded output with `task.completed`. Reconnect hydration may arrive in multiple 100-task frames; every retained active task and unread notification is included even when older read history is truncated.
+List/reconnect snapshots contain summaries but omit full retained output. Use `getTask(taskId)` for details. `followUpTask(...)` creates a distinct worker only after the selected task is terminal and exposes its parent/root lineage. Connected clients can also receive bounded output with `task.completed`. Reconnect hydration may arrive in multiple 100-task frames; every retained active task and unread notification is included even when older read history is truncated.
 
 ## Separate Speech And Task Controls
 
@@ -134,7 +138,7 @@ Do not auto-acknowledge merely because a provider may have spoken. Let the user 
 
 ## Approval UX
 
-There is no interactive approval UX in protocol v3. Do not render approval buttons, synthesize approval identity from progress/events, or call Hermes approval APIs from the browser.
+There is no interactive approval UX in protocol v4. Do not render approval buttons, synthesize approval identity from progress/events, or call Hermes approval APIs from the browser.
 
 When a task requires approval, the gateway attempts deny-all and stops the exact task fail-closed. Show the resulting non-actionable stopping/terminal state and explain that Hermes Live cannot approve it safely.
 
@@ -152,7 +156,7 @@ When a task requires approval, the gateway attempts deny-all and stops the exact
 
 ### Hermes WebUI
 
-The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is a natural adapter candidate because it already has voice input and administrator-controlled extension injection. A production integration should add a separate protocol-v3 panel and a backend WebSocket relay. A frontend-only extension would expose the shared bearer.
+The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is a natural adapter candidate because it already has voice input and administrator-controlled extension injection. A production integration should add a separate protocol-v4 panel and a backend WebSocket relay. A frontend-only extension would expose the shared bearer.
 
 Keep Hermes WebUI's existing microphone flow available. Hermes Live is a persistent realtime conversation plus a durable task inbox; presenting it as an ordinary chat turn would hide reconnect and cancellation semantics.
 
@@ -160,7 +164,7 @@ Keep Hermes WebUI's existing microphone flow available. Hermes Live is a persist
 
 [Open WebUI can connect to Hermes Agent](https://github.com/open-webui/docs/blob/main/docs/getting-started/quick-start/connect-an-agent/hermes-agent.mdx) through Hermes' OpenAI-compatible API for ordinary chat and turn-based voice.
 
-It does not currently implement Hermes Live protocol v3. An integration needs an explicit realtime extension and authenticated server-side relay; do not advertise it as plug-and-play.
+It does not currently implement Hermes Live protocol v4. An integration needs an explicit realtime extension and authenticated server-side relay; do not advertise it as plug-and-play.
 
 ### Hermes Desktop And Native Apps
 
@@ -178,20 +182,24 @@ hermes-live terminal
 
 The terminal renders transcript, provider response state, task snapshots/lifecycle, notifications, and retained results. `/ack <taskId>` (or `/read`) acknowledges the exact current unread notification; `/interrupt` stops speech; `/stop <taskId>` stops one task; `/quit` detaches. It is an interactive control/diagnostic surface, not deterministic automation, and it can incur realtime-provider usage.
 
+Use `hermes-live terminal --resume <sessionId>` to continue a saved Hermes chat, the default `hermes-live terminal` to create a new one, or `--unbound` for legacy provider-only conversation. `/followup <taskId> <message>` starts durable follow-up work.
+
 ## Integration Verification
 
 Before calling a UI ready:
 
-1. Confirm protocol v3 and negotiated provider/audio/task capabilities.
+1. Confirm protocol v4 and negotiated provider/audio/task capabilities.
 2. Verify the browser never receives the shared bearer or Hermes/provider credentials.
-3. Send text, receive an immediate task receipt, and keep conversing while the task runs.
-4. With `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true`, start independent read-only work and verify only disjoint resource keys overlap. With the default setting, verify work stays exclusive.
-5. Stop one exact task while another continues.
-6. Disconnect/reconnect during work and reconcile from `task.snapshot` without duplicates.
-7. Verify completion/failed/cancelled/unknown notifications and exact acknowledgement.
-8. Restart only the gateway while Hermes stays alive and verify task recovery.
-9. Verify an approval-requiring task is denied/stopped with no approval controls.
-10. Test microphone permission, playback, barge-in, mobile layout, keyboard, reduced motion, and screen readers.
-11. Inspect browser, relay, gateway, and Hermes logs for errors and credential disclosure.
+3. Create a new Hermes chat, reconnect to it by id, and verify canonical turns remain in its persisted history.
+4. Send text, receive an immediate task receipt, inspect sanitized live activity, and keep conversing while the task runs.
+5. Start a follow-up from a terminal task and verify its parent/root lineage and separate worker id.
+6. With `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true`, start independent read-only work and verify only disjoint resource keys overlap. With the default setting, verify work stays exclusive.
+7. Stop one exact task while another continues.
+8. Disconnect/reconnect during work and reconcile from `task.snapshot` without duplicates.
+9. Verify completion/failed/cancelled/unknown notifications and exact acknowledgement.
+10. Restart only the gateway while Hermes stays alive and verify task recovery.
+11. Verify an approval-requiring task is denied/stopped with no approval controls.
+12. Test microphone permission, playback, barge-in, mobile layout, keyboard, reduced motion, and screen readers.
+13. Inspect browser, relay, gateway, and Hermes logs for errors and credential disclosure.
 
 Continue with [Live Provider Testing](live-provider-testing.md) for real provider evidence.
