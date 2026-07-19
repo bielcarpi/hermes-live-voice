@@ -7,7 +7,6 @@ import {
   TaskIdSchema,
   TaskSequenceSchema,
 } from "./client-protocol.js";
-import { HERMES_LIVE_PROTOCOL_VERSION } from "./version.js";
 
 const PUBLIC_MODEL_MAX_CHARS = 256;
 const PUBLIC_MIME_TYPE_MAX_CHARS = 128;
@@ -23,6 +22,8 @@ const PUBLIC_JSON_MAX_CHARS = 64_000;
 const PUBLIC_AUDIO_BASE64_MAX_CHARS = 8_000_000;
 const PUBLIC_TASK_MAX_RETAINED = 10_000;
 const PUBLIC_TASK_MAX_CONCURRENT = 64;
+const PUBLIC_CONVERSATION_TITLE_MAX_CHARS = 100;
+const PUBLIC_CONVERSATION_PREVIEW_MAX_CHARS = 500;
 
 const PublicIdSchema = z
   .string()
@@ -179,6 +180,26 @@ export const TaskNotificationSchema = z
   .strict();
 export type TaskNotification = z.infer<typeof TaskNotificationSchema>;
 
+export const PublicConversationSchema = z
+  .object({
+    mode: z.enum(["new", "resume", "unbound"]),
+    sessionId: PublicIdSchema.optional(),
+    title: z.string().min(1).max(PUBLIC_CONVERSATION_TITLE_MAX_CHARS).optional(),
+    source: z.string().min(1).max(64).optional(),
+    preview: z.string().max(PUBLIC_CONVERSATION_PREVIEW_MAX_CHARS).optional(),
+    lastActiveAt: PublicTimestampSchema.optional(),
+  })
+  .strict()
+  .superRefine((conversation, context) => {
+    if (conversation.mode !== "unbound" && conversation.sessionId === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "A bound conversation requires sessionId." });
+    }
+    if (conversation.mode === "unbound" && conversation.sessionId !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "An unbound conversation cannot include sessionId." });
+    }
+  });
+export type PublicConversation = z.infer<typeof PublicConversationSchema>;
+
 const TaskEventBase = {
   sequence: PositiveTaskSequenceSchema,
   taskId: TaskIdSchema,
@@ -188,7 +209,7 @@ const TaskEventBase = {
 const SessionReadyMessageSchema = z
   .object({
     type: z.literal("session.ready"),
-    protocolVersion: z.literal(HERMES_LIVE_PROTOCOL_VERSION),
+    protocolVersion: z.union([z.literal(3), z.literal(4)]),
     requestId: RequestIdSchema.optional(),
     sessionId: PublicIdSchema,
     model: z.string().min(1).max(PUBLIC_MODEL_MAX_CHARS),
@@ -200,6 +221,7 @@ const SessionReadyMessageSchema = z
       .strict(),
     realtime: RealtimeClientCapabilitiesSchema,
     tasks: TaskCapabilitiesSchema,
+    conversation: PublicConversationSchema.optional(),
   })
   .strict();
 

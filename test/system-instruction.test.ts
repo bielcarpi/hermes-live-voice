@@ -14,4 +14,12 @@ describe("realtime supervisor instruction", () => {
   it("rejects malformed notification tokens", () => {
     expect(() => buildSystemInstruction("attacker-controlled")).toThrow(/notification token is invalid/i);
   });
+
+  it("routes bound chat turns through the persisted Hermes conversation", () => {
+    const instruction = buildSystemInstruction(undefined, false, { bound: true });
+
+    expect(instruction).toContain("persisted Hermes conversation is selected");
+    expect(instruction).toContain("call continue_hermes_conversation");
+    expect(instruction).toContain("Use start_background_task for meaningful independent work");
+  });
 });

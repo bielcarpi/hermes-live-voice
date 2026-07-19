@@ -6,6 +6,7 @@ const CLIENT_REASON_MAX_CHARS = 1_000;
 const CLIENT_MIME_TYPE_MAX_CHARS = 128;
 const CLIENT_TEXT_HARD_MAX_CHARS = 1_000_000;
 const CLIENT_AUDIO_BASE64_HARD_MAX_CHARS = 8_000_000;
+const CLIENT_CONVERSATION_TITLE_MAX_CHARS = 100;
 const MAX_TRUNCATION_AUDIO_MS = 60 * 60 * 1_000;
 
 export const TASK_ID_MAX_CHARS = 256;
@@ -24,6 +25,7 @@ const OpaqueIdSchema = (maxChars: number) =>
 export const RequestIdSchema = OpaqueIdSchema(REQUEST_ID_MAX_CHARS);
 export const TaskIdSchema = OpaqueIdSchema(TASK_ID_MAX_CHARS);
 export const NotificationIdSchema = OpaqueIdSchema(NOTIFICATION_ID_MAX_CHARS);
+export const ConversationIdSchema = OpaqueIdSchema(256);
 // Sequence is a monotonic revision within one stable taskId. It is not an
 // owner-global replay cursor; reconnects receive a bounded task snapshot and
 // deduplicate updates by taskId + sequence.
@@ -45,6 +47,26 @@ export const RealtimeResponseTruncationSchema = z
   .strict();
 export type RealtimeResponseTruncation = z.infer<typeof RealtimeResponseTruncationSchema>;
 
+export const ConversationSelectionSchema = z
+  .object({
+    mode: z.enum(["new", "resume", "unbound"]),
+    sessionId: ConversationIdSchema.optional(),
+    title: z.string().trim().min(1).max(CLIENT_CONVERSATION_TITLE_MAX_CHARS).optional(),
+  })
+  .strict()
+  .superRefine((selection, context) => {
+    if (selection.mode === "resume" && selection.sessionId === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Resuming a conversation requires sessionId." });
+    }
+    if (selection.mode !== "resume" && selection.sessionId !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "sessionId is valid only in resume mode." });
+    }
+    if (selection.mode !== "new" && selection.title !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "title is valid only in new mode." });
+    }
+  });
+export type ConversationSelection = z.infer<typeof ConversationSelectionSchema>;
+
 const SessionStartMessageSchema = z
   .object({
     type: z.literal("session.start"),
@@ -54,6 +76,7 @@ const SessionStartMessageSchema = z
     protocolVersion: z.number().int().positive().max(1_000),
     profileId: ClientMetadataStringSchema.optional(),
     userLabel: ClientMetadataStringSchema.optional(),
+    conversation: ConversationSelectionSchema.optional(),
   })
   .strict();
 
@@ -140,7 +163,14 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   TaskStopMessageSchema,
   TaskNotificationAckMessageSchema,
   SessionCloseMessageSchema,
-]);
+]).superRefine((message, context) => {
+  if (message.type === "session.start" && message.protocolVersion < 4 && message.conversation !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Conversation binding requires Hermes Live protocol v4.",
+    });
+  }
+});
 
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 export type SessionStartMessage = Extract<ClientMessage, { type: "session.start" }>;

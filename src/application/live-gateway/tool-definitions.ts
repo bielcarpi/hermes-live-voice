@@ -6,6 +6,22 @@ const TASK_ID_SCHEMA = {
 
 const HERMES_LIVE_TOOL_DEFINITIONS = [
   {
+    name: "continue_hermes_conversation",
+    description:
+      "Send one conversational turn to the Hermes session selected by the user. Use it for answers, memory, and follow-ups that must remain in that persisted chat; use a background task for long independent work.",
+    parametersJsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        message: {
+          type: "string",
+          description: "The complete user request to append to the selected Hermes conversation.",
+        },
+      },
+      required: ["message"],
+    },
+  },
+  {
     name: "start_background_task",
     description:
       "Delegate meaningful work to Hermes Agent as a durable background task. Returns quickly; the user may keep talking or disconnect while the task continues.",

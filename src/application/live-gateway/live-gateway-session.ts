@@ -11,18 +11,19 @@ import {
 } from "../../domain/protocol/client-protocol.js";
 import {
   serverMessage,
+  type PublicConversation,
   type PublicTaskSnapshot,
   type ServerMessage,
 } from "../../domain/protocol/server-protocol.js";
 import {
-  HERMES_LIVE_PROTOCOL_VERSION,
   incompatibleProtocolVersionMessage,
   isHermesLiveProtocolVersion,
+  type HermesLiveProtocolVersion,
 } from "../../domain/protocol/version.js";
 import type { TaskExecutionMode, TaskRecord } from "../../domain/tasks/index.js";
 import { realtimeClientCapabilities } from "./client-capabilities.js";
 import type { ClientConnectionPort, ClientInboundFrame } from "./ports/client-connection.port.js";
-import type { HermesRunsPort } from "./ports/hermes-runs.port.js";
+import type { HermesRunsPort, HermesSessionSummary } from "./ports/hermes-runs.port.js";
 import type { TaskSupervisorPort } from "./ports/task-supervisor.port.js";
 import {
   type LiveModelEvent,
@@ -91,6 +92,9 @@ export class LiveGatewaySession {
   private ownerId?: string;
   private profileId = "default";
   private userLabel = "anonymous";
+  private protocolVersion: HermesLiveProtocolVersion = 3;
+  private conversation: PublicConversation = { mode: "unbound" };
+  private conversationOperation: Promise<void> = Promise.resolve();
   private unsubscribeTasks?: () => void;
   private readonly pendingTaskRecords = new Map<string, TaskRecord>();
   private readonly pendingNotifications = new Map<string, TaskRecord>();
@@ -150,6 +154,7 @@ export class LiveGatewaySession {
     let connected: LiveModelSession | undefined;
     let unsubscribe: (() => void) | undefined;
     try {
+      this.protocolVersion = message.protocolVersion;
       this.profileId = this.deps.config.server.trustClientIdentity
         ? message.profileId ?? this.deps.config.server.defaultProfileId
         : this.deps.config.server.defaultProfileId;
@@ -162,6 +167,9 @@ export class LiveGatewaySession {
       this.unsubscribeTasks = unsubscribe;
 
       const capabilities = await this.deps.hermes.assertRunsSupported(this.abort.signal);
+      if (this.protocolVersion >= 4) {
+        this.conversation = await this.resolveConversation(message.conversation ?? { mode: "unbound" });
+      }
       startupPhase = "realtime";
       const providerEvents: LiveModelEvent[] = [];
       let providerEventBytes = 0;
@@ -178,6 +186,7 @@ export class LiveGatewaySession {
         systemInstruction: buildSystemInstruction(
           this.notificationToken,
           this.deps.config.tasks.trustDeclaredReadOnly === true,
+          { bound: this.conversation.mode !== "unbound" },
         ),
         safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey),
         callbacks: {
@@ -271,7 +280,7 @@ export class LiveGatewaySession {
         || projectedInitialTasks.length > MAX_PUBLIC_TASKS;
       this.send({
         type: "session.ready",
-        protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
+        protocolVersion: this.protocolVersion,
         ...(message.id ? { requestId: message.id } : {}),
         sessionId: this.id,
         model: this.deps.config.realtime.model,
@@ -289,6 +298,7 @@ export class LiveGatewaySession {
           maxRetained: this.deps.config.tasks.historyLimit,
           supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
         },
+        ...(this.protocolVersion >= 4 ? { conversation: this.conversation } : {}),
       });
       const initialSnapshotReason = initialTasks.length > 0 ? "reconnect" : "initial";
       if (projectedInitialTasks.length === 0) {
@@ -534,9 +544,74 @@ export class LiveGatewaySession {
     }
   }
 
+  private async resolveConversation(
+    selection: NonNullable<Extract<ClientMessage, { type: "session.start" }>["conversation"]>,
+  ): Promise<PublicConversation> {
+    if (selection.mode === "unbound") return { mode: "unbound" };
+
+    const assertSessionsSupported = this.deps.hermes.assertSessionsSupported;
+    const createSession = this.deps.hermes.createSession;
+    const getSession = this.deps.hermes.getSession;
+    const getSessionHistory = this.deps.hermes.getSessionHistory;
+    if (!assertSessionsSupported || !createSession || !getSession || !getSessionHistory) {
+      throw new Error("Hermes session continuity is unavailable in this installation.");
+    }
+    await assertSessionsSupported.call(this.deps.hermes, this.abort.signal);
+
+    if (selection.mode === "new") {
+      const session = await createSession.call(this.deps.hermes, {
+        ...(selection.title ? { title: selection.title } : {}),
+        signal: this.abort.signal,
+      });
+      return publicConversation("new", session);
+    }
+
+    const history = await getSessionHistory.call(this.deps.hermes, selection.sessionId!, this.abort.signal);
+    const session = await getSession.call(this.deps.hermes, history.sessionId, this.abort.signal);
+    return publicConversation("resume", session);
+  }
+
+  private serializeConversationOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.conversationOperation.then(operation, operation);
+    this.conversationOperation = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   private executeToolCall(call: LiveToolCall): Promise<Record<string, unknown>> {
     if (!this.ownerId || !this.sessionKey) throw new Error("session.start has not completed.");
     switch (call.name) {
+      case "continue_hermes_conversation": {
+        const message = stringArg(call, "message");
+        if (!message) throw new Error("continue_hermes_conversation requires message.");
+        validateText(message, this.deps.config.server.maxTextChars, "Hermes conversation message");
+        if (this.protocolVersion < 4 || this.conversation.mode === "unbound" || !this.conversation.sessionId) {
+          return Promise.resolve({
+            ok: false,
+            error: "No persisted Hermes conversation is selected for this voice session.",
+          });
+        }
+        const chatSession = this.deps.hermes.chatSession;
+        if (!chatSession) {
+          return Promise.resolve({ ok: false, error: "This Hermes installation cannot continue saved conversations." });
+        }
+        return this.serializeConversationOperation(async () => {
+          const result = await chatSession.call(this.deps.hermes, this.conversation.sessionId!, message, {
+            signal: this.abort.signal,
+            sessionKey: this.sessionKey!,
+          });
+          this.conversation = {
+            ...this.conversation,
+            sessionId: result.sessionId,
+            lastActiveAt: Date.now(),
+          } as PublicConversation;
+          return {
+            ok: true,
+            session_id: result.sessionId,
+            message: result.content,
+            ...(result.usage ? { usage: result.usage } : {}),
+          };
+        });
+      }
       case "start_background_task": {
         const message = stringArg(call, "message");
         if (!message) throw new Error("start_background_task requires message.");
@@ -1330,6 +1405,20 @@ export class LiveGatewaySession {
       this.notificationResponseTimer = undefined;
     }
   }
+}
+
+function publicConversation(
+  mode: "new" | "resume",
+  session: HermesSessionSummary,
+): PublicConversation {
+  return {
+    mode,
+    sessionId: session.id,
+    ...(session.title ? { title: session.title } : {}),
+    ...(session.source ? { source: session.source } : {}),
+    ...(session.preview !== undefined ? { preview: session.preview } : {}),
+    ...(session.lastActive !== undefined ? { lastActiveAt: session.lastActive } : {}),
+  };
 }
 
 class PublicTaskOperationError extends Error {
