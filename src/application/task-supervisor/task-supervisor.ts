@@ -801,7 +801,10 @@ export class TaskSupervisor implements TaskSupervisorPort {
     this.schedulePoll(record.taskId, this.pollIntervalMs);
     this.trackBackground(this.consumeRunEvents(record)
       .catch((error) => {
-        if (!this.closed && !isAbortError(error)) this.reportError(error);
+        // Hermes can remove a terminal run's consumptive SSE stream before a
+        // recovering gateway reconnects. The already-scheduled status poll is
+        // authoritative and will project completed or confirmed-missing state.
+        if (!this.closed && !isAbortError(error) && httpStatus(error) !== 404) this.reportError(error);
       })
       .finally(() => this.watching.delete(record.taskId)));
   }

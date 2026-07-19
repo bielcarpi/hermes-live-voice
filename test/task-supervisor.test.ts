@@ -570,6 +570,45 @@ describe("TaskSupervisor", () => {
     await supervisor.close();
   });
 
+  it("quietly falls back to status polling when a recovered run's SSE stream is gone", async () => {
+    const scheduler = new ManualScheduler();
+    const store = new MemoryTaskStore();
+    const running = transitionTask(
+      transitionTask(createTaskRecord({ ownerIdentity: "alice", input: "Recover quietly", now: 1 }), "dispatching", { now: 2 }),
+      "running",
+      { now: 3, runId: "run_sse_gone" },
+    );
+    await store.put(running);
+    const hermes = new HermesHarness();
+    hermes.getBehavior = async (runId) => hermes.getCalls.length === 1
+      ? { object: "hermes.run", run_id: runId, status: "running" }
+      : {
+        object: "hermes.run",
+        run_id: runId,
+        status: "completed",
+        output: "Recovered from status.",
+        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+      };
+    hermes.streamBehavior = async function* () {
+      throw Object.assign(new Error("stream already removed"), { status: 404 });
+    };
+    const errors: unknown[] = [];
+    const supervisor = new TaskSupervisor({ store, hermes, scheduler, onError: (error) => errors.push(error) });
+
+    await supervisor.initialize();
+    await waitFor(() => hermes.streamCalls.includes("run_sse_gone"));
+    await settle();
+    scheduler.advanceBy(0);
+    await waitFor(async () => (await store.load(running.taskId))?.status === "completed");
+
+    expect(await store.load(running.taskId)).toMatchObject({
+      status: "completed",
+      output: "Recovered from status.",
+    });
+    expect(errors).toEqual([]);
+    await supervisor.close();
+  });
+
   it("waits for startup reconciliation to observe shutdown before closing task state", async () => {
     const store = new MemoryTaskStore();
     const running = transitionTask(
@@ -1364,6 +1403,10 @@ class HermesHarness implements HermesRunsPort {
     runId: string,
     options?: AbortSignal | HermesRequestOptions,
   ) => Promise<{ run_id: string; status: "stopping" }>;
+  streamBehavior?: (
+    runId: string,
+    options?: AbortSignal | HermesRequestOptions,
+  ) => AsyncGenerator<HermesRunEvent>;
   private runCounter = 0;
   private readonly snapshots = new Map<string, HermesRunSnapshot>();
   private readonly streams = new Map<string, EventQueue>();
@@ -1418,7 +1461,7 @@ class HermesHarness implements HermesRunsPort {
 
   streamRunEvents(runId: string, options?: AbortSignal | HermesRequestOptions): AsyncGenerator<HermesRunEvent> {
     this.streamCalls.push(runId);
-    return this.queue(runId).iterate(requestSignal(options));
+    return this.streamBehavior?.(runId, options) ?? this.queue(runId).iterate(requestSignal(options));
   }
 
   pushEvent(runId: string, event: HermesRunEvent): void {
