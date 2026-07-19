@@ -399,6 +399,106 @@ describe("HermesClient", () => {
     );
   });
 
+  it("validates the stable Hermes session surface before enabling continuity", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      features: {
+        session_resources: true,
+        session_chat: true,
+        session_chat_streaming: true,
+      },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hermesClient().assertSessionsSupported()).resolves.toMatchObject({
+      features: { session_resources: true, session_chat: true, session_chat_streaming: true },
+    });
+  });
+
+  it("lists bounded Hermes sessions without exposing private metadata", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      object: "list",
+      data: [{
+        id: "session_123",
+        source: "cli",
+        title: "Authentication refactor",
+        preview: "Check the middleware",
+        started_at: 10,
+        last_active: 20.25,
+        message_count: 4,
+        system_prompt: "must not cross the adapter",
+      }],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hermesClient().listSessions({ limit: 20 })).resolves.toEqual([{
+      id: "session_123",
+      source: "cli",
+      title: "Authentication refactor",
+      preview: "Check the middleware",
+      startedAt: 10_000,
+      lastActive: 20_250,
+      messageCount: 4,
+    }]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:8642/api/sessions?limit=20&offset=0");
+  });
+
+  it("creates and reads a session through the release-pinned resource contract", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        object: "hermes.session",
+        session: { id: "api_123", source: "api_server", title: "Voice session" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        object: "list",
+        session_id: "api_123_tip",
+        data: [
+          { role: "user", content: "Earlier question", private: "ignored" },
+          { role: "assistant", content: "Earlier answer" },
+        ],
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient();
+
+    await expect(client.createSession({ title: "Voice session" })).resolves.toEqual({
+      id: "api_123",
+      source: "api_server",
+      title: "Voice session",
+    });
+    await expect(client.getSessionHistory("api_123")).resolves.toEqual({
+      sessionId: "api_123_tip",
+      messages: [
+        { role: "user", content: "Earlier question" },
+        { role: "assistant", content: "Earlier answer" },
+      ],
+    });
+  });
+
+  it("continues a persisted Hermes session using the session chat endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      object: "hermes.session.chat.completion",
+      session_id: "session_tip",
+      message: { role: "assistant", content: "The tests pass." },
+      usage: { input_tokens: 5, output_tokens: 4, total_tokens: 9 },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const sessionKey = "agent:main:hermes-live:profile:default:user:alice";
+
+    await expect(hermesClient().chatSession("session_123", "Do the tests pass?", { sessionKey })).resolves.toEqual({
+      sessionId: "session_tip",
+      content: "The tests pass.",
+      usage: { input_tokens: 5, output_tokens: 4, total_tokens: 9 },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8642/api/sessions/session_123/chat",
+      expect.objectContaining({
+        method: "POST",
+        redirect: "error",
+        headers: expect.objectContaining({ "X-Hermes-Session-Key": sessionKey }),
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ message: "Do the tests pass?" });
+  });
+
   it("does not expose Hermes response bodies in request failures", async () => {
     fetchMock.mockResolvedValueOnce(new Response(
       "Authorization: Bearer hermes-secret; X-Hermes-Session-Key: private-scope",
