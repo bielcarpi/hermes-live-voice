@@ -3,6 +3,7 @@
 
   const PLUGIN_NAME = "hermes-live";
   const STATUS_ENDPOINT = "/api/plugins/hermes-live/status";
+  const CONVERSATIONS_ENDPOINT = "/api/plugins/hermes-live/conversations";
   const LIVE_ENDPOINT = "/api/plugins/hermes-live/live";
   const MAX_TRANSCRIPT_ENTRIES = 80;
   const MAX_VISIBLE_RECENT_TASKS = 16;
@@ -296,6 +297,8 @@
     const useCallback = hooks.useCallback;
 
     const [gateway, setGateway] = useState({ loading: true });
+    const [conversations, setConversations] = useState([]);
+    const [conversationId, setConversationId] = useState("new");
     const [snapshot, setSnapshot] = useState(initialSnapshot);
     const [microphone, setMicrophone] = useState(initialMicrophone);
     const [playback, setPlayback] = useState(initialPlayback);
@@ -363,9 +366,19 @@
         });
     }, [SDK]);
 
+    const refreshConversations = useCallback(function () {
+      return SDK.fetchJSON(CONVERSATIONS_ENDPOINT)
+        .then(function (value) {
+          const items = value && Array.isArray(value.conversations) ? value.conversations : [];
+          setConversations(items);
+        })
+        .catch(function () { setConversations([]); });
+    }, [SDK]);
+
     useEffect(function () {
       let active = true;
       refreshStatus();
+      refreshConversations();
       const interval = window.setInterval(function () {
         if (active) refreshStatus();
       }, 30_000);
@@ -373,7 +386,7 @@
         active = false;
         window.clearInterval(interval);
       };
-    }, [refreshStatus]);
+    }, [refreshStatus, refreshConversations]);
 
     useEffect(function () {
       let active = true;
@@ -573,7 +586,10 @@
       fatalNoticeRef.current = null;
       primePlaybackFromGesture();
       runAction("connect", function () {
-        return client.connect().then(function () {
+        const conversation = conversationId === "new"
+          ? { mode: "new", title: "Live Voice" }
+          : { mode: "resume", sessionId: conversationId };
+        return client.connect({ conversation: conversation }).then(function () {
           if (ensureAudioRef.current) ensureAudioRef.current();
           const connectedInputAudio = negotiatedInputAudio(client.getSnapshot(), inputAudio);
           setNotice({
@@ -584,6 +600,7 @@
             ),
           });
           refreshStatus();
+          refreshConversations();
         });
       });
     }
@@ -689,6 +706,7 @@
     const provider = realtime.provider || gateway.provider || "\u2014";
     const model = realtime.model || gateway.model || "\u2014";
     const protocolVersion = session && session.protocolVersion ? session.protocolVersion : gateway.protocolVersion || "\u2014";
+    const selectedConversation = session && session.conversation;
     const activeTasks = Array.isArray(snapshot.activeTasks) ? snapshot.activeTasks : [];
     const unreadNotifications = Array.isArray(snapshot.unreadNotifications) ? snapshot.unreadNotifications : [];
     const inboxItems = taskInboxItems(snapshot);
@@ -832,6 +850,30 @@
               playback.active ? "Interrupt speech whenever you want; background tasks keep running." :
               connected ? connectedSessionGuidance(browserMicSupported) : gatewayState.detail,
             ),
+          ),
+          h("label", { className: "hlv-conversation-picker" },
+            h("span", null, "Hermes chat"),
+            h("select", {
+              value: connected && selectedConversation && selectedConversation.sessionId
+                ? selectedConversation.sessionId
+                : conversationId,
+              disabled: connected || busyAction === "connect",
+              onChange: function (event) { setConversationId(event.target.value); },
+              "aria-label": "Choose a Hermes conversation",
+            },
+              h("option", { value: "new" }, "Start a new chat"),
+              conversations.map(function (conversation) {
+                const title = conversation.title || conversation.preview || shortId(conversation.id);
+                return h("option", { key: conversation.id, value: conversation.id }, clampText(title, 80));
+              }),
+              connected && selectedConversation && selectedConversation.sessionId &&
+                !conversations.some(function (item) { return item.id === selectedConversation.sessionId; })
+                ? h("option", { value: selectedConversation.sessionId }, selectedConversation.title || "Current chat")
+                : null,
+            ),
+            h("small", null, connected && selectedConversation
+              ? "Voice is attached to this saved Hermes chat."
+              : "Continue a saved chat or start a fresh one."),
           ),
           h("div", { className: "hlv-connect-row" },
             connected

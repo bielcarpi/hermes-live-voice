@@ -7,7 +7,21 @@ export type HermesLiveClientState =
   | "closed"
   | "failed";
 
-export const HERMES_LIVE_PROTOCOL_VERSION: 3;
+export const HERMES_LIVE_PROTOCOL_VERSION: 4;
+
+export type HermesLiveConversationSelection =
+  | { mode: "new"; title?: string }
+  | { mode: "resume"; sessionId: string }
+  | { mode: "unbound" };
+
+export interface HermesLiveConversation {
+  mode: "new" | "resume" | "unbound";
+  sessionId?: string;
+  title?: string;
+  source?: string;
+  preview?: string;
+  lastActiveAt?: number;
+}
 
 export type HermesLiveTaskState =
   | "accepted"
@@ -84,7 +98,7 @@ export interface HermesLiveTaskCapabilities {
 
 export interface HermesLiveSessionReady {
   type: "session.ready";
-  protocolVersion: 3;
+  protocolVersion: 4;
   requestId?: string;
   sessionId: string;
   model: string;
@@ -99,6 +113,7 @@ export interface HermesLiveSessionReady {
     };
   };
   tasks: HermesLiveTaskCapabilities;
+  conversation: HermesLiveConversation;
 }
 
 export interface HermesLiveTruncation {
@@ -148,6 +163,7 @@ export interface HermesLiveClientOptions {
   token?: string | (() => string | undefined | Promise<string | undefined>);
   profileId?: string;
   userLabel?: string;
+  conversation?: HermesLiveConversationSelection;
   connectTimeoutMs?: number;
   disconnectTimeoutMs?: number;
   maxBufferedAmountBytes?: number;
@@ -229,7 +245,7 @@ export class HermesLiveClient {
   on<K extends keyof HermesLiveClientEventMap>(type: K, listener: (event: HermesLiveClientEventMap[K]) => void): () => void;
   subscribe(listener: (snapshot: HermesLiveSnapshot) => void): () => void;
   getSnapshot(): HermesLiveSnapshot;
-  connect(options?: { signal?: AbortSignal }): Promise<HermesLiveSessionReady>;
+  connect(options?: { signal?: AbortSignal; conversation?: HermesLiveConversationSelection }): Promise<HermesLiveSessionReady>;
   disconnect(reason?: string): Promise<void>;
   sendText(text: string, options?: { id?: string }): string;
   sendAudio(data: string | ArrayBuffer | ArrayBufferView, mimeType?: string, options?: { id?: string }): string | undefined;
