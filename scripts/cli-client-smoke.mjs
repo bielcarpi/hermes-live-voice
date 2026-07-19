@@ -30,13 +30,16 @@ server.on("connection", (socket, request) => {
   socket.on("message", (raw) => {
     const message = JSON.parse(raw.toString("utf8"));
     if (message.type === "session.start") {
+      if (message.protocolVersion !== 4) {
+        throw new Error(`CLI smoke expected protocol v4, received ${String(message.protocolVersion)}.`);
+      }
       if (request.url === "/session-timeout") return;
       if (request.url === "/oversized-message") {
         socket.send(JSON.stringify({ type: "log", level: "info", message: "x".repeat(2_700_100) }));
         return;
       }
       if (request.url === "/invalid-ready") {
-        socket.send(JSON.stringify({ type: "session.ready", protocolVersion: 3, sessionId: "live_cli_smoke" }));
+        socket.send(JSON.stringify({ type: "session.ready", protocolVersion: 4, sessionId: "live_cli_smoke" }));
         return;
       }
       if (request.url === "/wrong-version") {
@@ -228,17 +231,17 @@ try {
   });
   await runClient(port, invalidOutputPrompt, "", {
     expectFailure: true,
-    stderrIncludes: "task.completed did not match the bounded protocol-v3 schema",
+    stderrIncludes: "task.completed did not match the bounded protocol-v4 schema",
   });
   await runClient(port, "invalid ready", "", {
     path: "/invalid-ready",
     expectFailure: true,
-    stderrIncludes: "session.ready did not match the bounded protocol-v3 schema",
+    stderrIncludes: "session.ready did not match the bounded protocol-v4 schema",
   });
   await runClient(port, "wrong version", "", {
     path: "/wrong-version",
     expectFailure: true,
-    stderrIncludes: "Gateway protocol mismatch: expected v3, received 2",
+    stderrIncludes: "Gateway protocol mismatch: expected v4, received 2",
   });
   await runClient(port, "session timeout", "", {
     path: "/session-timeout",
@@ -285,7 +288,7 @@ if (!retainedResultFetched) throw new Error("One-shot CLI did not fetch a retain
 function readyMessage() {
   return {
     type: "session.ready",
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId: "live_cli_smoke",
     model: "mock-live",
     hermes: {},
@@ -302,8 +305,9 @@ function readyMessage() {
       parallel: true,
       maxConcurrent: 3,
       maxRetained: 200,
-      supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+      supports: { list: true, get: true, stop: true, followUp: true, resume: false, notificationAck: true },
     },
+    conversation: { mode: "new", sessionId: "session_cli_smoke", title: "CLI smoke" },
   };
 }
 

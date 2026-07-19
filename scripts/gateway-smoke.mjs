@@ -17,6 +17,7 @@ const dockerContainerName = dockerImage
 const stateDirectory = mkdtempSync(join(tmpdir(), "hermes-live-gateway-smoke-"));
 const observed = {
   capabilities: false,
+  createSession: false,
   events: false,
   startRun: false,
   sessionKey: "",
@@ -135,13 +136,25 @@ try {
   const inbox = createInbox(socket);
   await waitForOpen(socket, 5_000);
 
-  socket.send(JSON.stringify({ type: "session.start", protocolVersion: 3, profileId: "smoke", userLabel: "gateway-smoke" }));
+  socket.send(JSON.stringify({
+    type: "session.start",
+    protocolVersion: 4,
+    profileId: "smoke",
+    userLabel: "gateway-smoke",
+    conversation: { mode: "new", title: "Gateway smoke" },
+  }));
   const ready = await inbox.next("session.ready");
   if (ready.model !== "mock-live") {
     throw new Error(`Gateway session advertised unexpected model: ${JSON.stringify(ready.model)}.`);
   }
-  if (ready.protocolVersion !== 3 || ready.tasks?.durable !== true || ready.tasks?.reconnect !== "snapshot") {
-    throw new Error(`Gateway session did not advertise the protocol-v3 task contract: ${JSON.stringify(ready)}.`);
+  if (
+    ready.protocolVersion !== 4
+    || ready.conversation?.sessionId !== "session_gateway_smoke"
+    || ready.tasks?.durable !== true
+    || ready.tasks?.supports?.followUp !== true
+    || ready.tasks?.reconnect !== "snapshot"
+  ) {
+    throw new Error(`Gateway session did not advertise the protocol-v4 conversation/task contract: ${JSON.stringify(ready)}.`);
   }
   const initial = await inbox.next("task.snapshot");
   if (initial.reason !== "initial" || initial.tasks.length !== 0 || initial.truncated !== false) {
@@ -163,6 +176,9 @@ try {
 
   if (!observed.capabilities) {
     throw new Error("Gateway did not call Hermes /v1/capabilities.");
+  }
+  if (!observed.createSession) {
+    throw new Error("Gateway did not create the selected Hermes conversation.");
   }
   if (!observed.startRun) {
     throw new Error("Gateway did not start a Hermes run.");
@@ -207,7 +223,23 @@ async function handleHermesRequest(req, res) {
         run_events_sse: true,
         run_stop: true,
         run_approval_response: true,
+        session_resources: true,
+        session_chat: true,
+        session_chat_streaming: true,
       },
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/sessions") {
+    const body = await readJson(req);
+    observed.createSession = true;
+    if (body.model !== "hermes-agent" || body.title !== "Gateway smoke") {
+      throw new Error(`Unexpected Hermes session creation body: ${JSON.stringify(body)}.`);
+    }
+    writeJson(res, 201, {
+      object: "hermes.session",
+      session: { id: "session_gateway_smoke", title: "Gateway smoke", model: "hermes-agent" },
     });
     return;
   }
