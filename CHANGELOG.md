@@ -10,6 +10,7 @@
 - Add durable follow-ups through the realtime provider, browser SDK, wire protocol, Dashboard, and terminal. Each follow-up is a new exclusive Hermes worker seeded with the selected terminal task's bounded retained result and linked by explicit parent/root task ids.
 - Add authenticated conversation list/create endpoints and a same-origin Dashboard proxy so saved chats are usable without exposing Hermes or gateway credentials in browser code.
 - Update the terminal with `--resume`, `--unbound`, and `/followup`, keep its default as a new persisted chat, and report the selected Hermes session after connection.
+- Let restart reconciliation fall back quietly to run-status polling when Hermes has already removed a terminal run's SSE stream; the recovered result or confirmed-missing state remains authoritative.
 - Tighten the public docs around the two-plane architecture and remove the speculative roadmap page. Conversation continuity is canonical; task follow-ups preserve durable work-product lineage rather than claiming hidden process resumption or automatic multi-agent orchestration.
 
 ## 0.6.0 - 2026-07-18
