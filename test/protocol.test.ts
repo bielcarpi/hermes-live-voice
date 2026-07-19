@@ -152,7 +152,7 @@ describe("protocol v4", () => {
         durable: true,
         parallel: true,
         maxConcurrent: 3,
-        supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+        supports: { list: true, get: true, stop: true, followUp: true, resume: false, notificationAck: true },
       },
     });
   });
@@ -304,6 +304,7 @@ describe("protocol v4", () => {
       "start_background_task",
       "list_background_tasks",
       "get_background_task",
+      "follow_up_background_task",
       "stop_background_task",
     ]);
     expect(OPENAI_HERMES_LIVE_TOOLS.every((tool) => tool.type === "function")).toBe(true);
@@ -317,6 +318,7 @@ describe("protocol v4", () => {
       "start_background_task",
       "list_background_tasks",
       "get_background_task",
+      "follow_up_background_task",
       "stop_background_task",
     ]);
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).toHaveProperty("parametersJsonSchema");
@@ -349,7 +351,7 @@ function sessionReady() {
       parallel: true,
       maxConcurrent: 3,
       maxRetained: 100,
-      supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+      supports: { list: true, get: true, stop: true, followUp: true, resume: false, notificationAck: true },
     },
   };
 }

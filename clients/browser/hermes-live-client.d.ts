@@ -56,6 +56,9 @@ export interface HermesLiveTaskError {
 
 export interface HermesLiveTask {
   taskId: string;
+  kind?: "background" | "follow_up";
+  parentTaskId?: string;
+  rootTaskId?: string;
   sequence: number;
   state: HermesLiveTaskState;
   title?: string;
@@ -91,6 +94,7 @@ export interface HermesLiveTaskCapabilities {
     list: boolean;
     get: boolean;
     stop: boolean;
+    followUp: boolean;
     resume: false;
     notificationAck: boolean;
   };
@@ -139,7 +143,15 @@ export type HermesLiveKnownServerMessage =
   | { type: "response.cancelled"; responseId?: string }
   | { type: "response.failed"; responseId?: string; error: string }
   | { type: "task.snapshot"; reason: "initial" | "reconnect" | "list" | "get"; requestId?: string; tasks: HermesLiveTask[]; truncated: boolean }
-  | (HermesLiveTaskEventBase & { type: "task.accepted"; requestId?: string; state: "accepted" | "queued"; title?: string })
+  | (HermesLiveTaskEventBase & {
+      type: "task.accepted";
+      requestId?: string;
+      state: "accepted" | "queued";
+      title?: string;
+      kind?: "background" | "follow_up";
+      parentTaskId?: string;
+      rootTaskId?: string;
+    })
   | (HermesLiveTaskEventBase & { type: "task.started"; title?: string })
   | (HermesLiveTaskEventBase & { type: "task.progress"; progress: HermesLiveTaskProgress })
   | (HermesLiveTaskEventBase & { type: "task.stopping"; requestId?: string; reason?: string })
@@ -191,6 +203,7 @@ export interface HermesLiveSnapshot {
 export type HermesLivePendingRequest =
   | { type: "task.list" }
   | { type: "task.get"; taskId: string }
+  | { type: "task.follow_up"; taskId: string }
   | { type: "task.stop"; taskId: string }
   | { type: "task.notification.ack"; taskId: string; notificationId: string };
 
@@ -253,6 +266,7 @@ export class HermesLiveClient {
   cancelResponse(reason?: string, truncate?: HermesLiveTruncation, options?: { id?: string }): string;
   listTasks(options?: { id?: string; limit?: number }): string;
   getTask(taskId: string, options?: { id?: string }): string;
+  followUpTask(taskId: string, message: string, options?: { id?: string; title?: string }): string;
   stopTask(taskId: string, reason?: string, options?: { id?: string }): string;
   acknowledgeNotification(taskId: string, notificationId: string, options?: { id?: string }): string;
   sendMessage(message: Record<string, unknown> & { type: string; id?: string }): string;

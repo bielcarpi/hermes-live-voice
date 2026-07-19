@@ -296,7 +296,14 @@ export class LiveGatewaySession {
             && this.deps.config.tasks.trustDeclaredReadOnly === true,
           maxConcurrent: this.deps.config.tasks.maxConcurrent,
           maxRetained: this.deps.config.tasks.historyLimit,
-          supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+          supports: {
+            list: true,
+            get: true,
+            stop: true,
+            followUp: this.protocolVersion >= 4 && this.deps.taskSupervisor.followUp !== undefined,
+            resume: false,
+            notificationAck: true,
+          },
         },
         ...(this.protocolVersion >= 4 ? { conversation: this.conversation } : {}),
       });
@@ -502,6 +509,26 @@ export class LiveGatewaySession {
         });
         return;
       }
+      case "task.follow_up": {
+        if (this.protocolVersion < 4 || !this.deps.taskSupervisor.followUp) {
+          throw new Error("Task follow-ups require Hermes Live protocol v4.");
+        }
+        validateText(message.message, this.deps.config.server.maxTextChars, "Task follow-up message");
+        const task = await this.runTaskOperation(
+          () => this.deps.taskSupervisor.followUp!({
+            ownerIdentity: this.sessionKey!,
+            ownerId: this.ownerId!,
+            sessionKey: this.sessionKey!,
+            parentTaskId: message.taskId,
+            input: message.message,
+            ...(message.title ? { title: message.title } : {}),
+            ...(this.conversation.sessionId ? { originConversationId: this.conversation.sessionId } : {}),
+          }),
+          "Unable to start that task follow-up.",
+        );
+        this.send(projectTaskLifecycle(task, message.id));
+        return;
+      }
       case "task.stop": {
         const task = await this.runTaskOperation(
           () => this.deps.taskSupervisor.stop(this.ownerId!, message.taskId, message.reason),
@@ -635,6 +662,7 @@ export class LiveGatewaySession {
           ...(title ? { title } : {}),
           executionMode,
           ...(resourceKeys ? { resourceKeys } : {}),
+          ...(this.conversation.sessionId ? { originConversationId: this.conversation.sessionId } : {}),
         }), "Background task could not be accepted safely.").then((task) => ({
           ok: true,
           task_id: task.taskId,
@@ -665,6 +693,33 @@ export class LiveGatewaySession {
         ).then((task) => task
           ? { ok: true, task: projectTaskSnapshot(task, { includeOutput }) }
           : { ok: false, task_id: taskId, error: "Task not found." });
+      }
+      case "follow_up_background_task": {
+        const taskId = stringArg(call, "task_id");
+        const message = stringArg(call, "message");
+        if (!taskId || !message) throw new Error("follow_up_background_task requires task_id and message.");
+        validateText(message, this.deps.config.server.maxTextChars, "Task follow-up message");
+        const title = optionalStringArg(call, "title");
+        if (title && title.length > 256) throw new Error("Task follow-up title exceeds 256 characters.");
+        if (this.protocolVersion < 4 || !this.deps.taskSupervisor.followUp) {
+          return Promise.resolve({ ok: false, error: "Task follow-ups require Hermes Live protocol v4." });
+        }
+        return this.runTaskOperation(() => this.deps.taskSupervisor.followUp!({
+          ownerIdentity: this.sessionKey!,
+          ownerId: this.ownerId!,
+          sessionKey: this.sessionKey!,
+          parentTaskId: taskId,
+          input: message,
+          ...(title ? { title } : {}),
+          ...(this.conversation.sessionId ? { originConversationId: this.conversation.sessionId } : {}),
+        }), "Unable to start that task follow-up.").then((task) => ({
+          ok: true,
+          task_id: task.taskId,
+          parent_task_id: task.parentTaskId,
+          root_task_id: task.rootTaskId,
+          status: task.status,
+          message: "Follow-up task accepted. The user can keep talking or disconnect.",
+        }));
       }
       case "stop_background_task": {
         const taskId = stringArg(call, "task_id");

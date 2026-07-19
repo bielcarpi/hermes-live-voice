@@ -88,7 +88,7 @@ describe("protocol-v3 live gateway WebSocket", () => {
         durable: true,
         parallel: false,
         maxConcurrent: 3,
-        supports: { list: true, get: true, stop: true, resume: false, notificationAck: true },
+        supports: { list: true, get: true, stop: true, followUp: false, resume: false, notificationAck: true },
       },
     });
     expect(ready.sessionKey).toBeUndefined();

@@ -69,6 +69,9 @@ export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export const TaskExecutionModeSchema = z.enum(["exclusive", "parallel_read_only"]);
 export type TaskExecutionMode = z.infer<typeof TaskExecutionModeSchema>;
 
+export const TaskKindSchema = z.enum(["background", "follow_up"]);
+export type TaskKind = z.infer<typeof TaskKindSchema>;
+
 export const TaskEventTypeSchema = z.enum([
   ...TaskStatusSchema.options,
   "progress",
@@ -119,6 +122,10 @@ export const TaskRecordSchema = z.object({
   schemaVersion: z.literal(TASK_RECORD_SCHEMA_VERSION),
   taskId: TaskIdSchema,
   ownerId: TaskOwnerIdSchema,
+  kind: TaskKindSchema.optional(),
+  parentTaskId: TaskIdSchema.optional(),
+  rootTaskId: TaskIdSchema.optional(),
+  originConversationId: TaskHermesSessionIdSchema.optional(),
   input: TaskInputSchema,
   title: TaskTitleSchema,
   hermesSessionId: TaskHermesSessionIdSchema,
@@ -145,6 +152,19 @@ export const TaskRecordSchema = z.object({
   }
   if (record.hermesSessionId !== hermesSessionIdForTask(record.taskId)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Task Hermes session ID does not match its task ID." });
+  }
+  const kind = record.kind ?? "background";
+  if (kind === "follow_up" && (record.parentTaskId === undefined || record.rootTaskId === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "A follow-up task requires parent and root task IDs." });
+  }
+  if (kind === "background" && record.parentTaskId !== undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "A background task cannot have a parent task ID." });
+  }
+  if (record.parentTaskId === record.taskId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "A task cannot be its own parent." });
+  }
+  if (record.rootTaskId !== undefined && kind === "background" && record.rootTaskId !== record.taskId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "A background task root must match its task ID." });
   }
   if (new Set(record.resourceKeys).size !== record.resourceKeys.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Task resource keys must be unique." });
@@ -244,6 +264,10 @@ export interface CreateTaskRecordInput {
   resourceKeys?: readonly string[];
   now?: number;
   taskId?: string;
+  kind?: TaskKind;
+  parentTaskId?: string;
+  rootTaskId?: string;
+  originConversationId?: string;
 }
 
 export function createTaskId(): string {
@@ -265,6 +289,7 @@ export function hermesSessionIdForTask(taskId: string): string {
 
 export function createTaskRecord(input: CreateTaskRecordInput): TaskRecord {
   const taskId = TaskIdSchema.parse(input.taskId ?? createTaskId());
+  const kind = TaskKindSchema.parse(input.kind ?? "background");
   const now = parseTaskTimestamp(input.now ?? Date.now(), "Task creation timestamp");
   const taskInput = TaskInputSchema.parse(input.input);
   const title = sanitizeTaskTitle(input.title ?? deriveTaskTitle(taskInput));
@@ -279,6 +304,14 @@ export function createTaskRecord(input: CreateTaskRecordInput): TaskRecord {
     schemaVersion: TASK_RECORD_SCHEMA_VERSION,
     taskId,
     ownerId: hashTaskOwnerId(input.ownerIdentity),
+    ...(kind === "follow_up" ? {
+      kind,
+      parentTaskId: TaskIdSchema.parse(input.parentTaskId),
+      rootTaskId: TaskIdSchema.parse(input.rootTaskId),
+    } : {}),
+    ...(input.originConversationId
+      ? { originConversationId: TaskHermesSessionIdSchema.parse(input.originConversationId) }
+      : {}),
     input: taskInput,
     title,
     hermesSessionId: hermesSessionIdForTask(taskId),

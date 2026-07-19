@@ -23,6 +23,7 @@ import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
 import { runSetupCommand } from "./cli/setup.js";
 import { runDoctorCommand } from "./cli/doctor.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
+import type { ConversationSelection } from "./domain/protocol/client-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
 
 const logger = createLogger((process.env.HERMES_LIVE_LOG_LEVEL as any) ?? "info");
@@ -143,10 +144,12 @@ async function main(): Promise<void> {
 
   if (command === "terminal" || command === "chat") {
     const config = loadConfig();
+    const conversation = parseTerminalConversation(process.argv.slice(3));
     await runInteractiveTerminal({
       url: process.env.HERMES_LIVE_URL ?? defaultGatewayWebSocketUrl(config),
       ...(config.server.authToken ? { authToken: config.server.authToken } : {}),
       userLabel: process.env.USER ?? "terminal",
+      conversation,
     });
     // A piped stdin remains referenced after readline closes; release it so
     // non-interactive terminal sessions exit just as cleanly as TTY sessions.
@@ -243,7 +246,9 @@ Usage:
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one prompt; wait for its exact task result
-  hermes-live terminal      Open the interactive conversation and task inbox
+  hermes-live terminal      Open a new persisted chat and the task inbox
+  hermes-live terminal --resume <sessionId> Continue an existing Hermes chat
+  hermes-live terminal --unbound Open voice without attaching a saved chat
   hermes-live chat          Alias for terminal
   hermes-live check         Check Hermes capabilities and realtime provider config
   hermes-live provider-smoke Open and close a real Gemini/OpenAI provider session
@@ -284,8 +289,9 @@ Optional:
 
 Terminal client:
   The terminal console controls a remote Hermes Live session without native
-  audio dependencies. Use /tasks, /status <taskId>, /result <taskId>, and
-  /stop <taskId>. Quitting only detaches; server-owned tasks keep running.
+  audio dependencies. Use /tasks, /status <taskId>, /result <taskId>,
+  /followup <taskId> <text>, and /stop <taskId>. Quitting only detaches;
+  server-owned tasks keep running.
   For local microphone use, run Hermes and press Ctrl+B for official Hermes
   Voice Mode. Use the Dashboard/browser UI for gateway audio.
 
@@ -295,6 +301,21 @@ Plugin options:
   --symlink                 Symlink plugin directory instead of copying
   --force                   Replace an existing hermes-live plugin install
 `);
+}
+
+function parseTerminalConversation(args: string[]): ConversationSelection {
+  if (args.length === 0 || (args.length === 1 && args[0] === "--new")) {
+    return { mode: "new", title: "Terminal" };
+  }
+  if (args.length === 1 && args[0] === "--unbound") return { mode: "unbound" };
+  if (args.length === 2 && args[0] === "--resume") {
+    const sessionId = args[1]!;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(sessionId)) {
+      throw new Error("--resume requires a safe Hermes session ID.");
+    }
+    return { mode: "resume", sessionId };
+  }
+  throw new Error("Usage: hermes-live terminal [--new | --resume <sessionId> | --unbound]");
 }
 
 async function runServiceCommand(args: string[]): Promise<void> {

@@ -509,6 +509,25 @@ export class HermesLiveClient {
     );
   }
 
+  followUpTask(taskId, message, options = {}) {
+    const normalizedTaskId = requireClientId(taskId, "taskId");
+    const normalizedMessage = String(message ?? "").trim();
+    if (!normalizedMessage) throw new TypeError("Hermes Live task follow-up cannot be empty.");
+    const title = optionalBoundedString(options.title, PUBLIC_TASK_TITLE_MAX_CHARS, "task follow-up title")?.trim();
+    if (options.title !== undefined && !title) throw new TypeError("Hermes Live task follow-up title cannot be empty.");
+    const id = options.id ?? this.createRequestId();
+    return this.sendCorrelated(
+      {
+        type: "task.follow_up",
+        id,
+        taskId: normalizedTaskId,
+        message: normalizedMessage,
+        ...(title ? { title } : {}),
+      },
+      { type: "task.follow_up", taskId: normalizedTaskId },
+    );
+  }
+
   stopTask(taskId, reason = "user stopped background task", options = {}) {
     const normalizedTaskId = requireClientId(taskId, "taskId");
     const task = this.taskMap.get(normalizedTaskId);
@@ -558,6 +577,7 @@ export class HermesLiveClient {
     if ([
       "task.list",
       "task.get",
+      "task.follow_up",
       "task.stop",
       "task.notification.ack",
       "session.close",
@@ -879,6 +899,12 @@ export class HermesLiveClient {
       this.pendingRequests.get(message.requestId)?.type === "task.stop"
     ) {
       expected = { type: "task.stop", taskId: message.taskId };
+    } else if (
+      message.type === "task.accepted" &&
+      message.requestId &&
+      this.pendingRequests.get(message.requestId)?.type === "task.follow_up"
+    ) {
+      expected = { type: "task.follow_up" };
     } else if (message.type === "task.notification" && message.requestId) {
       expected = {
         type: "task.notification.ack",
@@ -1628,11 +1654,12 @@ export function validateServerMessage(value) {
       break;
     }
     case "task.accepted":
-      requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "state", "title"]);
+      requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "requestId", "state", "title", "kind", "parentTaskId", "rootTaskId"]);
       validateTaskEventBase(message);
       optionalOpaqueId(message, "requestId", 128);
       requireEnum(message, "state", ["accepted", "queued"]);
       optionalBoundedStringField(message, "title", PUBLIC_TASK_TITLE_MAX_CHARS);
+      optionalTaskLineage(message);
       break;
     case "task.started":
       requireOnlyKeys(message, ["type", "sequence", "taskId", "occurredAt", "title"]);
@@ -1916,9 +1943,9 @@ function validateTaskCapabilities(value) {
   requireInteger(typed, "maxConcurrent", { positive: true, maximum: 64 });
   requireInteger(typed, "maxRetained", { positive: true, maximum: 10_000 });
   requireObject(typed, "supports");
-  requireOnlyKeys(value.supports, ["list", "get", "stop", "resume", "notificationAck"], "session.ready task supports");
+  requireOnlyKeys(value.supports, ["list", "get", "stop", "followUp", "resume", "notificationAck"], "session.ready task supports");
   const supports = { ...value.supports, type: "session.ready task supports" };
-  for (const key of ["list", "get", "stop", "notificationAck"]) requireBoolean(supports, key);
+  for (const key of ["list", "get", "stop", "followUp", "notificationAck"]) requireBoolean(supports, key);
   if (supports.resume !== false) {
     throw new TypeError("Hermes Live session.ready task supports must declare resume as false.");
   }
@@ -1951,6 +1978,9 @@ function validateTaskSnapshot(value) {
   requirePlainObject(value, "task snapshot");
   requireOnlyKeys(value, [
     "taskId",
+    "kind",
+    "parentTaskId",
+    "rootTaskId",
     "sequence",
     "state",
     "title",
@@ -1964,6 +1994,7 @@ function validateTaskSnapshot(value) {
   ], "task snapshot");
   const typed = { ...value, type: "task snapshot" };
   requireOpaqueId(typed, "taskId");
+  optionalTaskLineage(typed);
   requireInteger(typed, "sequence", { positive: true });
   requireEnum(typed, "state", [
     "accepted",
@@ -1991,6 +2022,15 @@ function validateTaskSnapshot(value) {
     throw new TypeError(`Hermes Live ${value.state} task snapshot requires an error.`);
   }
   return freezeTaskSnapshot(normalized);
+}
+
+function optionalTaskLineage(value) {
+  if (value.kind !== undefined) requireEnum(value, "kind", ["background", "follow_up"]);
+  optionalOpaqueId(value, "parentTaskId");
+  optionalOpaqueId(value, "rootTaskId");
+  if (value.kind === "follow_up" && (!value.parentTaskId || !value.rootTaskId)) {
+    throw new TypeError("Hermes Live follow-up task is missing its lineage.");
+  }
 }
 
 function validateTaskProgress(value) {
@@ -2099,6 +2139,9 @@ function taskFromLifecycle(existing, message) {
         sequence: Math.max(existing?.sequence ?? 0, message.sequence),
         state: message.state,
         ...(message.title === undefined ? {} : { title: message.title }),
+        ...(message.kind === undefined ? {} : { kind: message.kind }),
+        ...(message.parentTaskId === undefined ? {} : { parentTaskId: message.parentTaskId }),
+        ...(message.rootTaskId === undefined ? {} : { rootTaskId: message.rootTaskId }),
         createdAt: existing?.createdAt ?? message.occurredAt,
         updatedAt: Math.max(existing?.updatedAt ?? 0, message.occurredAt),
       });
@@ -2167,6 +2210,9 @@ function assertCompatibleTaskRevision(retained, incoming) {
     conflict("task update time");
   }
   assertCompatibleOptional(retained.title, incoming.title, "task title", conflict);
+  assertCompatibleOptional(retained.kind, incoming.kind, "task kind", conflict);
+  assertCompatibleOptional(retained.parentTaskId, incoming.parentTaskId, "task parent", conflict);
+  assertCompatibleOptional(retained.rootTaskId, incoming.rootTaskId, "task root", conflict);
   assertCompatibleOptional(retained.startedAt, incoming.startedAt, "task start time", conflict);
   assertCompatibleOptional(retained.finishedAt, incoming.finishedAt, "task finish time", conflict);
   assertCompatibleOptional(retained.progress, incoming.progress, "task progress", conflict);
@@ -2202,6 +2248,9 @@ function mergeEqualSequenceTask(retained, incoming) {
     updatedAt: Math.max(retained.updatedAt, incoming.updatedAt),
   };
   if (next.title === undefined && incoming.title !== undefined) next.title = incoming.title;
+  if (next.kind === undefined && incoming.kind !== undefined) next.kind = incoming.kind;
+  if (next.parentTaskId === undefined && incoming.parentTaskId !== undefined) next.parentTaskId = incoming.parentTaskId;
+  if (next.rootTaskId === undefined && incoming.rootTaskId !== undefined) next.rootTaskId = incoming.rootTaskId;
   if (next.startedAt === undefined && incoming.startedAt !== undefined) next.startedAt = incoming.startedAt;
   if (next.finishedAt === undefined && incoming.finishedAt !== undefined) next.finishedAt = incoming.finishedAt;
   if (next.progress === undefined && incoming.progress !== undefined) next.progress = incoming.progress;

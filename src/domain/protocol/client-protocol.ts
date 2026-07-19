@@ -124,6 +124,16 @@ const TaskGetMessageSchema = z
   })
   .strict();
 
+const TaskFollowUpMessageSchema = z
+  .object({
+    type: z.literal("task.follow_up"),
+    id: RequestIdSchema,
+    taskId: TaskIdSchema,
+    message: z.string().trim().min(1).max(CLIENT_TEXT_HARD_MAX_CHARS),
+    title: z.string().trim().min(1).max(256).optional(),
+  })
+  .strict();
+
 const TaskStopMessageSchema = z
   .object({
     type: z.literal("task.stop"),
@@ -160,6 +170,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   ResponseCancelMessageSchema,
   TaskListMessageSchema,
   TaskGetMessageSchema,
+  TaskFollowUpMessageSchema,
   TaskStopMessageSchema,
   TaskNotificationAckMessageSchema,
   SessionCloseMessageSchema,
@@ -176,6 +187,7 @@ export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 export type SessionStartMessage = Extract<ClientMessage, { type: "session.start" }>;
 export type TaskListMessage = Extract<ClientMessage, { type: "task.list" }>;
 export type TaskGetMessage = Extract<ClientMessage, { type: "task.get" }>;
+export type TaskFollowUpMessage = Extract<ClientMessage, { type: "task.follow_up" }>;
 export type TaskStopMessage = Extract<ClientMessage, { type: "task.stop" }>;
 export type TaskNotificationAckMessage = Extract<ClientMessage, { type: "task.notification.ack" }>;
 export type SessionCloseMessage = Extract<ClientMessage, { type: "session.close" }>;

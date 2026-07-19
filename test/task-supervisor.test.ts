@@ -36,6 +36,75 @@ import {
 } from "../src/domain/tasks/index.js";
 
 describe("TaskSupervisor", () => {
+  it("creates durable follow-up work from a finished task with explicit lineage", async () => {
+    const store = new MemoryTaskStore();
+    const hermes = new HermesHarness();
+    const supervisor = new TaskSupervisor({ store, hermes, maxConcurrent: 2 });
+    await supervisor.initialize();
+    const ownerId = supervisor.registerOwner("alice", "session-a");
+    const root = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Audit the release",
+    });
+    await waitFor(() => hermes.startCalls.length === 1);
+    const rootRunId = (await store.load(root.taskId))?.runId!;
+    hermes.pushEvent(rootRunId, {
+      event: "run.completed",
+      run_id: rootRunId,
+      output: "The audit found one missing changelog entry.",
+      usage: { input_tokens: 8, output_tokens: 7, total_tokens: 15 },
+    });
+    await waitFor(async () => (await store.load(root.taskId))?.status === "completed");
+
+    const followUp = await supervisor.followUp({
+      ownerIdentity: "alice",
+      ownerId,
+      sessionKey: "session-a",
+      parentTaskId: root.taskId,
+      input: "Add the missing entry and verify it.",
+      originConversationId: "saved_chat",
+    });
+    expect(followUp).toMatchObject({
+      kind: "follow_up",
+      parentTaskId: root.taskId,
+      rootTaskId: root.taskId,
+      originConversationId: "saved_chat",
+      status: "queued",
+    });
+    await waitFor(() => hermes.startCalls.length === 2);
+    expect(hermes.startCalls[1]?.input).toContain("The audit found one missing changelog entry.");
+    expect(hermes.startCalls[1]?.input).toContain("Add the missing entry and verify it.");
+    await supervisor.close();
+  });
+
+  it("persists useful sanitized tool activity without leaking credentials", async () => {
+    const store = new MemoryTaskStore();
+    const hermes = new HermesHarness();
+    const supervisor = new TaskSupervisor({ store, hermes });
+    await supervisor.initialize();
+    const task = await supervisor.submit({
+      ownerIdentity: "alice",
+      sessionKey: "session-a",
+      input: "Inspect the repository",
+    });
+    await waitFor(async () => Boolean((await store.load(task.taskId))?.runId));
+    const runId = (await store.load(task.taskId))?.runId!;
+    hermes.pushEvent(runId, {
+      event: "tool.started",
+      run_id: runId,
+      tool: "terminal",
+      preview: "git status token=secret-value sk-examplecredential123",
+    });
+    await waitFor(async () => (await store.load(task.taskId))?.events.at(-1)?.type === "progress");
+    const summary = (await store.load(task.taskId))?.events.at(-1)?.summary;
+    expect(summary).toContain("Hermes is using terminal: git status");
+    expect(summary).toContain("[redacted]");
+    expect(summary).not.toContain("secret-value");
+    expect(summary).not.toContain("examplecredential123");
+    await supervisor.close();
+  });
+
   it("persists an immediate queued receipt before dispatch and never persists the session key", async () => {
     const deferred = deferredValue<StartRunResult>();
     const store = new MemoryTaskStore();

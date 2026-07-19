@@ -83,6 +83,21 @@ const HERMES_LIVE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "follow_up_background_task",
+    description:
+      "Start durable follow-up work from a finished task and its retained result. Use the exact task_id returned by the gateway. The follow-up is a new independently stoppable task in the same lineage.",
+    parametersJsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        task_id: TASK_ID_SCHEMA,
+        message: { type: "string", description: "The user's complete follow-up request." },
+        title: { type: "string", description: "Optional short title for the follow-up task." },
+      },
+      required: ["task_id", "message"],
+    },
+  },
+  {
     name: "stop_background_task",
     description: "Request cooperative cancellation of one exact Hermes background task.",
     parametersJsonSchema: {

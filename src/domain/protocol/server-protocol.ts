@@ -83,6 +83,7 @@ export const TaskCapabilitiesSchema = z
         list: z.boolean(),
         get: z.boolean(),
         stop: z.boolean(),
+        followUp: z.boolean(),
         resume: z.literal(false),
         notificationAck: z.boolean(),
       })
@@ -146,6 +147,9 @@ export type PublicTaskError = z.infer<typeof PublicTaskErrorSchema>;
 export const PublicTaskSnapshotSchema = z
   .object({
     taskId: TaskIdSchema,
+    kind: z.enum(["background", "follow_up"]).optional(),
+    parentTaskId: TaskIdSchema.optional(),
+    rootTaskId: TaskIdSchema.optional(),
     sequence: PositiveTaskSequenceSchema,
     state: PublicTaskStateSchema,
     title: z.string().min(1).max(PUBLIC_TASK_TITLE_MAX_CHARS).optional(),
@@ -305,6 +309,9 @@ const TaskAcceptedMessageSchema = z
     requestId: RequestIdSchema.optional(),
     state: z.enum(["accepted", "queued"]),
     title: z.string().min(1).max(PUBLIC_TASK_TITLE_MAX_CHARS).optional(),
+    kind: z.enum(["background", "follow_up"]).optional(),
+    parentTaskId: TaskIdSchema.optional(),
+    rootTaskId: TaskIdSchema.optional(),
   })
   .strict();
 
@@ -419,7 +426,7 @@ export interface HermesRunEvent {
   timestamp?: number;
   delta?: string;
   output?: string;
-  error?: string;
+  error?: string | boolean;
   usage?: Record<string, unknown>;
   [key: string]: unknown;
 }
