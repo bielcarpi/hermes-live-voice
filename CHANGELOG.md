@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-07-19
+
+- Bind each protocol v4 voice session to a real persisted Hermes conversation. Dashboard and terminal users can start a new chat or resume an existing session, including its current writable compression tip, while protocol v3 remains available as an unbound compatibility mode.
+- Keep canonical conversation turns in Hermes Sessions Chat so Hermes continues to own history, memory, tools, and skills. Long-running work stays on a separate durable Runs plane, allowing voice to remain responsive and tasks to survive client or provider disconnects.
+- Add sanitized live task activity from Hermes tool lifecycle events. Authenticated owner clients can ask what a task is doing without exposing raw reasoning, full tool arguments/output, upstream run ids, or provider envelopes.
+- Add durable follow-ups through the realtime provider, browser SDK, wire protocol, Dashboard, and terminal. Each follow-up is a new exclusive Hermes worker seeded with the selected terminal task's bounded retained result and linked by explicit parent/root task ids.
+- Add authenticated conversation list/create endpoints and a same-origin Dashboard proxy so saved chats are usable without exposing Hermes or gateway credentials in browser code.
+- Update the terminal with `--resume`, `--unbound`, and `/followup`, keep its default as a new persisted chat, and report the selected Hermes session after connection.
+- Tighten the public docs around the two-plane architecture and remove the speculative roadmap page. Conversation continuity is canonical; task follow-ups preserve durable work-product lineage rather than claiming hidden process resumption or automatic multi-agent orchestration.
+
 ## 0.6.0 - 2026-07-18
 
 - Add `hermes-live setup` as the normal installation path. It securely reuses Hermes's existing API Server key when available, prompts without echoing missing provider credentials, writes an allowlisted private config, installs and enables the matching plugin, verifies Hermes capabilities and a real Gemini/OpenAI session, and waits for the gateway to become ready.

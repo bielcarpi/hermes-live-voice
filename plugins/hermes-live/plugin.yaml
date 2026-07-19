@@ -1,6 +1,6 @@
 name: hermes-live
-version: 0.6.0
-description: "Keep talking while Hermes keeps working through realtime voice, durable background tasks, and completion notifications."
+version: 0.7.0
+description: "Continue any Hermes chat by voice while durable background tasks keep working and report back."
 author: Biel Carpi and Hermes Live contributors
 kind: standalone
 provides_tools:
