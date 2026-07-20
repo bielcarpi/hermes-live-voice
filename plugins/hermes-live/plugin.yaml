@@ -1,5 +1,5 @@
 name: hermes-live
-version: 0.7.0
+version: 0.7.1
 description: "Continue any Hermes chat by voice while durable background tasks keep working and report back."
 author: Biel Carpi and Hermes Live contributors
 kind: standalone

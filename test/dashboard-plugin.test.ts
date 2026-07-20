@@ -55,6 +55,8 @@ describe("Hermes Dashboard plugin", () => {
 
     expect(source).toContain("Start a new chat");
     expect(source).toContain("Continue a saved chat or start a fresh one.");
+    expect(source).toContain('? { mode: "new" }');
+    expect(source).not.toContain('{ mode: "new", title: "Live Voice" }');
     expect(source).toContain('{ mode: "resume", sessionId: conversationId }');
     expect(source).toContain("client.connect({ conversation: conversation })");
   });

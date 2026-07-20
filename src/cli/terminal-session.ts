@@ -115,7 +115,7 @@ export class TerminalGatewaySession {
     this.userLabel = sanitizeMetadata(options.userLabel ?? process.env.USER ?? "terminal");
     this.connectTimeoutMs = positiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     this.onLine = options.onLine ?? ((line) => process.stdout.write(`${line}\n`));
-    this.conversationSelection = options.conversation ?? { mode: "new", title: "Terminal" };
+    this.conversationSelection = options.conversation ?? { mode: "new" };
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });
