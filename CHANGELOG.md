@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-07-20
+
+- Stop Dashboard and terminal clients from reusing fixed titles for every new Hermes chat. Fresh voice sessions can now be created repeatedly without Hermes rejecting a duplicate title.
+
 ## 0.7.0 - 2026-07-19
 
 - Bind each protocol v4 voice session to a real persisted Hermes conversation. Dashboard and terminal users can start a new chat or resume an existing session, including its current writable compression tip, while protocol v3 remains available as an unbound compatibility mode.

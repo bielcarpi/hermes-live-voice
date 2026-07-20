@@ -305,7 +305,7 @@ Plugin options:
 
 function parseTerminalConversation(args: string[]): ConversationSelection {
   if (args.length === 0 || (args.length === 1 && args[0] === "--new")) {
-    return { mode: "new", title: "Terminal" };
+    return { mode: "new" };
   }
   if (args.length === 1 && args[0] === "--unbound") return { mode: "unbound" };
   if (args.length === 2 && args[0] === "--resume") {

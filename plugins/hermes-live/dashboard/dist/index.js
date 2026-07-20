@@ -587,7 +587,7 @@
       primePlaybackFromGesture();
       runAction("connect", function () {
         const conversation = conversationId === "new"
-          ? { mode: "new", title: "Live Voice" }
+          ? { mode: "new" }
           : { mode: "resume", sessionId: conversationId };
         return client.connect({ conversation: conversation }).then(function () {
           if (ensureAudioRef.current) ensureAudioRef.current();

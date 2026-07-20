@@ -78,6 +78,7 @@ describe("TerminalGatewaySession protocol v4", () => {
       profileId: "terminal",
       userLabel: "test-user",
     });
+    expect(received[0]?.conversation).toEqual({ mode: "new" });
     expect(session.snapshot).toMatchObject({
       connected: true,
       sessionId: "live_terminal_test",
