@@ -192,7 +192,7 @@ export async function runSetup(
     service = { skipped: true, reason: "Service was not installed because the readiness preflight failed." };
   }
 
-  const nextSteps = setupNextSteps({ options, readiness, providerSession, hermesCli, service, gateway });
+  const nextSteps = setupNextSteps({ options, provider, readiness, providerSession, hermesCli, service, gateway });
   const ok = readiness.ok
     && providerSession.ok
     && (hermesCli.enabled || hermesCli.skipped)
@@ -246,7 +246,7 @@ export function printSetupHelp(): void {
 Configure voice, install the Hermes plugin, verify both runtimes, and start the gateway.
 
 Options:
-  --provider <gemini|openai|mock>  Realtime voice provider
+  --provider <local|gemini|openai|mock>  Realtime voice provider
   --hermes-url <url>               Hermes API Server URL
   --config <path>                  Managed config path
   --plugins-dir <path>             Hermes plugins directory
@@ -283,11 +283,12 @@ async function selectProvider(
 ): Promise<RealtimeProvider> {
   if (options.provider) return options.provider;
   const configured = inherited.HERMES_LIVE_PROVIDER;
-  if (configured === "gemini" || configured === "openai" || configured === "mock") return configured;
+  if (configured === "local" || configured === "gemini" || configured === "openai" || configured === "mock") return configured;
   if (inherited.OPENAI_API_KEY && !inherited.GEMINI_API_KEY && !inherited.GOOGLE_API_KEY) return "openai";
-  if (options.nonInteractive) return "gemini";
-  const answer = (await (dependencies.prompt ?? promptText)("Voice provider [gemini/openai/mock] (gemini): ")).trim();
-  return answer ? parseProvider(answer) : "gemini";
+  if (inherited.GEMINI_API_KEY || inherited.GOOGLE_API_KEY) return "gemini";
+  if (options.nonInteractive) return "local";
+  const answer = (await (dependencies.prompt ?? promptText)("Voice provider [local/gemini/openai/mock] (local): ")).trim();
+  return answer ? parseProvider(answer) : "local";
 }
 
 async function requireSecret(
@@ -424,6 +425,9 @@ function parseLegacyEnvironment(source: string): Record<string, string | undefin
     "HERMES_BASE_URL",
     "HERMES_LIVE_DEMO_ENABLED",
     "HERMES_LIVE_HOST",
+    "HERMES_LIVE_LOCAL_ALLOW_REMOTE",
+    "HERMES_LIVE_LOCAL_URL",
+    "HERMES_LIVE_LOCAL_VOICE",
     "HERMES_LIVE_PORT",
     "HERMES_LIVE_PROVIDER",
     "OPENAI_API_KEY",
@@ -476,6 +480,7 @@ function firstDefinedEnvironment(
 
 function setupNextSteps(input: {
   options: SetupOptions;
+  provider: RealtimeProvider;
   readiness: ReadinessReport;
   providerSession: SetupReport["providerSession"];
   hermesCli: SetupReport["hermesCli"];
@@ -490,10 +495,14 @@ function setupNextSteps(input: {
     steps.push(`Start the Hermes API Server and fix its readiness error: ${String(input.readiness.hermes.error ?? "unavailable")}`);
   }
   if (!input.readiness.realtime.ok) {
-    steps.push(`Run \`hermes-live setup\` again with a working provider key: ${String(input.readiness.realtime.error ?? "provider unavailable")}`);
+    steps.push(`Run \`hermes-live setup\` again with a working voice provider: ${String(input.readiness.realtime.error ?? "provider unavailable")}`);
   }
   if (!input.providerSession.ok) {
-    steps.push(`Fix the realtime provider connection, then rerun \`hermes-live setup\`: ${input.providerSession.error ?? "connection failed"}`);
+    if (input.provider === "local") {
+      steps.push("Start local voice with `hermes-live local`, then rerun `hermes-live setup` in another terminal.");
+    } else {
+      steps.push(`Fix the realtime provider connection, then rerun \`hermes-live setup\`: ${input.providerSession.error ?? "connection failed"}`);
+    }
   }
   if (!input.options.service) {
     steps.push("Start the gateway with `hermes-live serve`.");
@@ -507,8 +516,8 @@ function setupNextSteps(input: {
 }
 
 function parseProvider(value: string): RealtimeProvider {
-  if (value === "gemini" || value === "openai" || value === "mock") return value;
-  throw new Error(`Unsupported provider: ${value}. Choose gemini, openai, or mock.`);
+  if (value === "local" || value === "gemini" || value === "openai" || value === "mock") return value;
+  throw new Error(`Unsupported provider: ${value}. Choose local, gemini, openai, or mock.`);
 }
 
 async function checkProviderSession(config: ReturnType<typeof loadConfig>): Promise<SetupReport["providerSession"]> {

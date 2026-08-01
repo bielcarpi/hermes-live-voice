@@ -23,7 +23,7 @@ export interface LiveProviderSmokeOptions {
 
 export async function runLiveProviderSmoke(config: AppConfig, options: LiveProviderSmokeOptions = {}): Promise<LiveProviderSmokeReport> {
   if (config.realtime.provider === "mock") {
-    throw new Error("Set HERMES_LIVE_PROVIDER=gemini or HERMES_LIVE_PROVIDER=openai to smoke test a real provider session.");
+    throw new Error("Set HERMES_LIVE_PROVIDER=local, gemini, or openai to smoke test a real provider session.");
   }
 
   assertRealtimeProviderConfig(config);

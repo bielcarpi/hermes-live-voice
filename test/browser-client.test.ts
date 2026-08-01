@@ -8,7 +8,7 @@ import {
 } from "../clients/browser/hermes-live-client.js";
 
 describe("HermesLiveClient", () => {
-  it("negotiates protocol v4 and sends the exact task command envelopes", async () => {
+  it("negotiates protocol v5 and sends the exact task command envelopes", async () => {
     const client = createClient();
     const connection = client.connect();
     const socket = await nextSocket();
@@ -17,13 +17,13 @@ describe("HermesLiveClient", () => {
     expect(socket.sent[0]).toEqual({
       type: "session.start",
       id: "req_1",
-      protocolVersion: 4,
+      protocolVersion: 5,
       profileId: "demo",
       conversation: { mode: "new" },
     });
     socket.message(readyMessage("live_1"));
 
-    await expect(connection).resolves.toMatchObject({ sessionId: "live_1", protocolVersion: 4 });
+    await expect(connection).resolves.toMatchObject({ sessionId: "live_1", protocolVersion: 5 });
     expect(client.connected).toBe(true);
     expect(client.getSnapshot()).toMatchObject({
       connection: "ready",
@@ -59,7 +59,7 @@ describe("HermesLiveClient", () => {
     socket.open();
     expect(socket.sent[0]).toMatchObject({
       type: "session.start",
-      protocolVersion: 4,
+      protocolVersion: 5,
       conversation: { mode: "resume", sessionId: "saved_chat" },
     });
     socket.message({
@@ -901,7 +901,7 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready", protocolVersion: 4 });
+    socket.message({ type: "session.ready", protocolVersion: 5 });
 
     await expect(connection).rejects.toThrow(/requires sessionId/);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
@@ -1140,7 +1140,7 @@ describe("HermesLiveClient", () => {
     socket.open();
     socket.message({ ...readyMessage("legacy"), protocolVersion: 2 });
 
-    await expect(connection).rejects.toThrow(/protocol version 2.*protocol v4.*upgrade/i);
+    await expect(connection).rejects.toThrow(/protocol version 2.*protocol v5.*upgrade/i);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
   });
 });
@@ -1670,7 +1670,7 @@ function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient
 function readyMessage(sessionId: string) {
   return {
     type: "session.ready",
-    protocolVersion: 4,
+    protocolVersion: 5,
     sessionId,
     model: "mock-live",
     hermes: {},

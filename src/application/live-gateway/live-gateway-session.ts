@@ -148,6 +148,15 @@ export class LiveGatewaySession {
       this.fail("session_already_started", new Error("Realtime session is already started."), true, message.id);
       return;
     }
+    if (this.deps.config.realtime.provider === "local" && message.protocolVersion < 5) {
+      this.fail(
+        "unsupported_protocol_version",
+        new Error("The Hugging Face local voice provider requires Hermes Live protocol v5. Upgrade the client and reconnect."),
+        false,
+        message.id,
+      );
+      return;
+    }
 
     this.starting = true;
     let startupPhase: "hermes" | "realtime" = "hermes";

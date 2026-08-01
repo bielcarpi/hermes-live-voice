@@ -30,6 +30,21 @@ describe("realtime client capabilities", () => {
       },
     });
   });
+
+  it("advertises the Hugging Face OpenAI Realtime 24 kHz PCM wire contract", () => {
+    expect(realtimeClientCapabilities(config({
+      provider: "local",
+      model: "huggingface/speech-to-speech",
+    }))).toEqual({
+      provider: "local",
+      model: "huggingface/speech-to-speech",
+      audio: {
+      input: { enabled: true, mimeType: "audio/pcm;rate=24000", recommendedFrameMs: 40 },
+      output: { enabled: true, mimeType: "audio/pcm;rate=24000" },
+        turnDetection: "provider",
+      },
+    });
+  });
 });
 
 function config(realtime: AppConfig["realtime"]): Pick<AppConfig, "realtime" | "openai"> {

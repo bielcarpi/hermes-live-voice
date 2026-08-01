@@ -7,7 +7,7 @@ export type HermesLiveClientState =
   | "closed"
   | "failed";
 
-export const HERMES_LIVE_PROTOCOL_VERSION: 4;
+export const HERMES_LIVE_PROTOCOL_VERSION: 5;
 
 export type HermesLiveConversationSelection =
   | { mode: "new"; title?: string }
@@ -102,13 +102,13 @@ export interface HermesLiveTaskCapabilities {
 
 export interface HermesLiveSessionReady {
   type: "session.ready";
-  protocolVersion: 4;
+  protocolVersion: 5;
   requestId?: string;
   sessionId: string;
   model: string;
   hermes: { model?: string; capabilities?: Record<string, unknown> };
   realtime: {
-    provider: "gemini" | "openai" | "mock";
+    provider: "local" | "gemini" | "openai" | "mock";
     model: string;
     audio: {
       input: { enabled: boolean; mimeType?: string; recommendedFrameMs?: number };
@@ -137,7 +137,7 @@ export type HermesLiveKnownServerMessage =
   | { type: "session.error"; code: string; message: string; requestId?: string; recoverable?: boolean }
   | { type: "audio.output"; data: string; mimeType: string; itemId?: string; contentIndex?: number }
   | { type: "transcript.delta"; speaker: "user" | "assistant" | "system"; text: string; final?: boolean }
-  | { type: "input.speech_started"; provider: "openai"; itemId?: string; audioStartMs?: number }
+  | { type: "input.speech_started"; provider: "openai" | "local"; itemId?: string; audioStartMs?: number }
   | { type: "response.started"; responseId?: string }
   | { type: "response.completed"; responseId?: string }
   | { type: "response.cancelled"; responseId?: string }

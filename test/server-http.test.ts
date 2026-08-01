@@ -196,8 +196,8 @@ describe("HTTP server", () => {
     });
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       object: "hermes_live.capabilities",
-      protocolVersion: 4,
-      supportedProtocolVersions: [3, 4],
+      protocolVersion: 5,
+      supportedProtocolVersions: [3, 4, 5],
       realtime: {
         provider: "openai",
         model: "gpt-realtime-2.1",
@@ -969,6 +969,7 @@ function testConfig(
     server?: Partial<AppConfig["server"]>;
     hermes?: Partial<AppConfig["hermes"]>;
     realtime?: Partial<AppConfig["realtime"]>;
+    local?: Partial<AppConfig["local"]>;
     gemini?: Partial<AppConfig["gemini"]>;
     openai?: Partial<AppConfig["openai"]>;
   } = {},
@@ -1006,6 +1007,12 @@ function testConfig(
       pollIntervalMs: 25,
     },
     realtime: { provider: "openai", model: "gpt-realtime-2.1", ...overrides.realtime },
+    local: {
+      url: "ws://127.0.0.1:8765/v1/realtime",
+      voice: "Aiden",
+      allowRemote: false,
+      ...overrides.local,
+    },
     gemini: { model: "gemini-3.1-flash-live-preview", enterprise: false, location: "us-central1", ...overrides.gemini },
     openai: {
       apiKey: "test",
