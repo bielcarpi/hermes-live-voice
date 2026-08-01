@@ -3,7 +3,7 @@
   "label": "Live Voice",
   "description": "Continue any Hermes chat by voice while durable background tasks keep working and report back.",
   "icon": "Zap",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "tab": {
     "path": "/live-voice",
     "position": "after:chat"
