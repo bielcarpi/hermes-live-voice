@@ -32,7 +32,7 @@ Keep these server-side:
 
 `HERMES_BASE_URL` must be a credential-free HTTP(S) root origin. Paths, query strings, fragments, and embedded user information are rejected. Hermes JSON, SSE, stop, and denial requests reject redirects, preventing prompts, the API bearer, and server-owned session scope from being replayed to another origin.
 
-`OPENAI_REALTIME_BASE_URL` must be a credential-free WS(S) URL without a fragment. Custom path/query values are permitted but redacted from public diagnostics; WebSocket redirects are rejected. Gemini connections are pinned to the official Developer API or a validated regional Vertex endpoint, ignoring ambient SDK base-URL overrides.
+`OPENAI_REALTIME_BASE_URL` and `HERMES_LIVE_LOCAL_URL` must be credential-free WS(S) URLs without fragments; WebSocket redirects are rejected. Local voice is loopback-only by default. A trusted private endpoint needs an explicit opt-in, while a public endpoint must also use WSS. The upstream Hugging Face server has no authentication, so place a remote instance behind your own authenticated edge. Gemini connections are pinned to the official Developer API or a validated regional Vertex endpoint, ignoring ambient SDK base-URL overrides.
 
 Provider-controlled error bodies, close reasons, event MIME types, and tool names are not copied into public diagnostics. Non-success Hermes bodies are drained through a size limit and reduced to bounded status/path context.
 
@@ -63,7 +63,7 @@ Back up the state file as sensitive data. Stop the gateway before copying or mov
 
 ## Provider Data Boundary
 
-The selected realtime provider receives:
+The selected realtime runtime receives:
 
 - user audio/text;
 - the gateway system instruction, the saved-chat continuation tool, and five background-task tool definitions;
@@ -74,7 +74,7 @@ The selected realtime provider receives:
 
 An exact retained result reaches the provider only when it calls `get_background_task`, normally because the user asks for details. Connected protocol clients receive their own sanitized task lifecycle independently.
 
-The provider never receives Hermes/provider credentials, the server-owned Hermes session key, raw Hermes APIs/events, upstream run ids, the task state file, or approval authority. These controls protect credentials and action boundaries; they do not make conversational content private from the selected provider. Do not delegate data that provider is not allowed to process.
+The runtime never receives Hermes/provider credentials, the server-owned Hermes session key, raw Hermes APIs/events, upstream run ids, the task state file, or approval authority. These controls protect credentials and action boundaries. Hosted providers still receive conversational content; a fully local Hugging Face profile keeps speech and model inference on the machine. Do not delegate data to a runtime that is not allowed to process it.
 
 Task titles, summaries, and results are untrusted data. The realtime instruction forbids following instructions, links, commands, or tool requests embedded in them. UIs must render them as text, not executable HTML or trusted markup.
 
@@ -96,7 +96,7 @@ An ambiguous stop also becomes `unknown`. The gateway never treats “stop reque
 
 ## Approvals
 
-Protocol v4 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
+Protocol v5 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
 
 When Hermes reports `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all: true` and requests stop for that exact upstream run. The public projection is non-actionable. Hermes exposes a run-scoped response endpoint, but not enough per-request identity for safe concurrent approval from Hermes Live, so there is no human approval path.
 

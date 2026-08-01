@@ -13,7 +13,7 @@ This documents compatibility with Hermes Agent and community projects, not endor
 | `hermes-live-voice/browser` | First-class integration API | Vanilla, React, Vue, Svelte, Electron, or mobile-web clients. |
 | `hermes-live terminal` | First-class text control | SSH/headless task supervision, retained results, interruption, and exact stop. |
 | Hermes Voice Mode/Desktop voice | Official Hermes features | First-party local voice experiences; not replaced by this project. |
-| Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement protocol v4 realtime audio, durable tasks, or notifications. |
+| Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement protocol v5 realtime audio, durable tasks, or notifications. |
 
 ## Hermes Dashboard
 
@@ -42,7 +42,7 @@ HERMES_LIVE_URL=https://voice.example.com
 HERMES_LIVE_AUTH_TOKEN=your-high-entropy-gateway-token
 ```
 
-See [Hermes Plugin](plugin.md) for installation and relay details.
+See [Setup](setup.md) for installation and relay details.
 
 ## Custom Or Community Browser UI
 
@@ -91,7 +91,7 @@ The host endpoint must return either a same-origin authenticated WebSocket relay
 
 | Contract | UI behavior |
 | --- | --- |
-| `session.ready` | Show provider, model, protocol v4, audio formats/turn detection, and task limits. |
+| `session.ready` | Show provider, model, protocol v5, audio formats/turn detection, and task limits. |
 | `session.ready.conversation` | Show the selected persisted Hermes chat and retain its writable session id for reconnect. |
 | `task.snapshot` | Reconcile the owner inbox after initial connect/reconnect and correlated list/get requests. |
 | `task.accepted/started/progress/stopping` | Show durable state and queue/progress without claiming success. |
@@ -131,6 +131,7 @@ Treat the task inbox as the source of truth. The SDK keeps lifecycle and notific
 Provider speech is supplementary:
 
 - OpenAI can announce a generic result through a response-scoped out-of-band audio response;
+- local Hugging Face voice uses the same isolated response scope;
 - Gemini receives a gateway-authenticated realtime text marker and is best-effort;
 - neither path replaces the durable UI notification or exact task result.
 
@@ -138,7 +139,7 @@ Do not auto-acknowledge merely because a provider may have spoken. Let the user 
 
 ## Approval UX
 
-There is no interactive approval UX in protocol v4. Do not render approval buttons, synthesize approval identity from progress/events, or call Hermes approval APIs from the browser.
+There is no interactive approval UX in protocol v5. Do not render approval buttons, synthesize approval identity from progress/events, or call Hermes approval APIs from the browser.
 
 When a task requires approval, the gateway attempts deny-all and stops the exact task fail-closed. Show the resulting non-actionable stopping/terminal state and explain that Hermes Live cannot approve it safely.
 
@@ -156,7 +157,7 @@ When a task requires approval, the gateway attempts deny-all and stops the exact
 
 ### Hermes WebUI
 
-The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is a natural adapter candidate because it already has voice input and administrator-controlled extension injection. A production integration should add a separate protocol-v4 panel and a backend WebSocket relay. A frontend-only extension would expose the shared bearer.
+The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is a natural adapter candidate because it already has voice input and administrator-controlled extension injection. A production integration should add a separate protocol-v5 panel and a backend WebSocket relay. A frontend-only extension would expose the shared bearer.
 
 Keep Hermes WebUI's existing microphone flow available. Hermes Live is a persistent realtime conversation plus a durable task inbox; presenting it as an ordinary chat turn would hide reconnect and cancellation semantics.
 
@@ -164,7 +165,7 @@ Keep Hermes WebUI's existing microphone flow available. Hermes Live is a persist
 
 [Open WebUI can connect to Hermes Agent](https://github.com/open-webui/docs/blob/main/docs/getting-started/quick-start/connect-an-agent/hermes-agent.mdx) through Hermes' OpenAI-compatible API for ordinary chat and turn-based voice.
 
-It does not currently implement Hermes Live protocol v4. An integration needs an explicit realtime extension and authenticated server-side relay; do not advertise it as plug-and-play.
+It does not currently implement Hermes Live protocol v5. An integration needs an explicit realtime extension and authenticated server-side relay; do not advertise it as plug-and-play.
 
 ### Hermes Desktop And Native Apps
 
@@ -188,7 +189,7 @@ Use `hermes-live terminal --resume <sessionId>` to continue a saved Hermes chat,
 
 Before calling a UI ready:
 
-1. Confirm protocol v4 and negotiated provider/audio/task capabilities.
+1. Confirm protocol v5 and negotiated provider/audio/task capabilities.
 2. Verify the browser never receives the shared bearer or Hermes/provider credentials.
 3. Create a new Hermes chat, reconnect to it by id, and verify canonical turns remain in its persisted history.
 4. Send text, receive an immediate task receipt, inspect sanitized live activity, and keep conversing while the task runs.

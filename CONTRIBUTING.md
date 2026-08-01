@@ -51,7 +51,7 @@ hermes plugins enable hermes-live
 node dist/cli.js plugin status
 ```
 
-See [docs/plugin.md](docs/plugin.md) for the local gateway and Dashboard workflow.
+See [docs/setup.md](docs/setup.md) for the local gateway and Dashboard workflow.
 
 ## Architecture boundaries
 
@@ -99,7 +99,7 @@ Never include credentials, session tokens, private prompts, user audio, or sensi
 ## Public API and documentation
 
 - Document protocol changes in [docs/client-protocol.md](docs/client-protocol.md).
-- Document configuration changes in `.env.example` and [docs/local-setup.md](docs/local-setup.md).
+- Document configuration changes in `.env.example` and [docs/setup.md](docs/setup.md).
 - Add user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 - Do not claim model support until the compatibility gates in [live provider testing](docs/live-provider-testing.md) pass.
 - Keep product claims specific and consistent with the documented recovery and security boundaries.
