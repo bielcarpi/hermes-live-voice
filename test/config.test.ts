@@ -36,6 +36,11 @@ describe("config", () => {
     });
     expect(config.tasks.stateFile).toMatch(/tasks-v1\.json$/u);
     expect(config.realtime.provider).toBe("gemini");
+    expect(config.local).toEqual({
+      url: "ws://127.0.0.1:8765/v1/realtime",
+      voice: "Aiden",
+      allowRemote: false,
+    });
     expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
     expect(config.realtime.model).toBe(config.gemini.model);
   });
@@ -96,6 +101,63 @@ describe("config", () => {
     ]) {
       expect(() => loadConfig({ OPENAI_REALTIME_BASE_URL: configured })).toThrow();
     }
+  });
+
+  it("supports a credential-free local speech-to-speech endpoint", () => {
+    const local = loadConfig({
+      HERMES_LIVE_PROVIDER: "local",
+      HERMES_LIVE_LOCAL_URL: "ws://localhost:9876/v1/realtime",
+      HERMES_LIVE_LOCAL_VOICE: "Ryan",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
+    });
+
+    expect(local.realtime).toEqual({ provider: "local", model: "huggingface/speech-to-speech" });
+    expect(local.local).toEqual({
+      url: "ws://localhost:9876/v1/realtime",
+      voice: "Ryan",
+      allowRemote: false,
+    });
+    expect(realtimeProviderConfigured(local)).toBe(true);
+    expect(() => assertRuntimeConfig(local)).not.toThrow();
+    for (const value of [
+      "http://127.0.0.1:8765/v1/realtime",
+      "ws://user:secret@127.0.0.1:8765/v1/realtime",
+      " ws://127.0.0.1:8765/v1/realtime",
+      "ws://127.0.0.1:8765/v1/realtime#secret",
+    ]) {
+      expect(() => loadConfig({ HERMES_LIVE_LOCAL_URL: value })).toThrow();
+    }
+  });
+
+  it("requires explicit TLS-protected opt-in for remote local-voice endpoints", () => {
+    const blocked = loadConfig({
+      HERMES_LIVE_PROVIDER: "local",
+      HERMES_LIVE_LOCAL_URL: "wss://voice.example.com/v1/realtime",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
+    });
+    const insecure = loadConfig({
+      HERMES_LIVE_PROVIDER: "local",
+      HERMES_LIVE_LOCAL_URL: "ws://voice.example.com/v1/realtime",
+      HERMES_LIVE_LOCAL_ALLOW_REMOTE: "true",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
+    });
+    const trusted = loadConfig({
+      HERMES_LIVE_PROVIDER: "local",
+      HERMES_LIVE_LOCAL_URL: "wss://voice.example.com/v1/realtime",
+      HERMES_LIVE_LOCAL_ALLOW_REMOTE: "true",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
+    });
+    const dockerSidecar = loadConfig({
+      HERMES_LIVE_PROVIDER: "local",
+      HERMES_LIVE_LOCAL_URL: "ws://local-voice:8765/v1/realtime",
+      HERMES_LIVE_LOCAL_ALLOW_REMOTE: "true",
+      HERMES_AGENT_API_SERVER_KEY: "hermes-secret",
+    });
+
+    expect(() => assertRuntimeConfig(blocked)).toThrow(/ALLOW_REMOTE/u);
+    expect(() => assertRuntimeConfig(insecure)).toThrow(/wss:\/\//u);
+    expect(() => assertRuntimeConfig(trusted)).not.toThrow();
+    expect(() => assertRuntimeConfig(dockerSidecar)).not.toThrow();
   });
 
   it("accepts only canonical Google Cloud endpoint and API-version inputs", () => {

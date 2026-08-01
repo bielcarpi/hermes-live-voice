@@ -8,9 +8,9 @@ It is an independent community integration, not a replacement for Hermes or an o
 
 ```txt
 Hermes Dashboard / browser / terminal / native client
-  -> authenticated Hermes Live protocol v4 WebSocket
+  -> authenticated Hermes Live protocol v5 WebSocket
   -> LiveGatewaySession (conversation and client subscription)
-       -> Gemini Live or OpenAI Realtime (speech and delegation decisions)
+       -> Hugging Face local, Gemini Live, or OpenAI Realtime (speech and delegation decisions)
        -> Hermes Sessions Chat (selected conversation memory and canonical turns)
        -> TaskSupervisor (server-owned queue, persistence, reconciliation)
             -> Hermes Agent API Server /v1/runs
@@ -91,7 +91,7 @@ The realtime provider owns speech recognition/generation, conversational flow, a
 
 It never receives Hermes credentials, raw Hermes tools, upstream run ids, the local state file, or approval authority. A task receipt returns quickly, so the provider can continue talking while Hermes works.
 
-Supported adapters are Gemini Live, OpenAI Realtime, and a text-only mock. OpenAI can generate a response-scoped out-of-band completion announcement. Gemini completion speech is best-effort because Gemini Live has no equivalent out-of-band response channel.
+Supported adapters are Hugging Face speech-to-speech, Gemini Live, OpenAI Realtime, and a text-only mock. Local voice and OpenAI can generate response-scoped out-of-band completion announcements. Gemini completion speech is best-effort because Gemini Live has no equivalent channel.
 
 ### Hermes Agent
 
@@ -103,7 +103,7 @@ Hermes owns the actual delegated work. The gateway currently requires these Herm
 - `run_stop`
 - `run_approval_response`
 
-Canonical chat uses Hermes Sessions Chat so the selected conversation keeps its persisted history and compression lineage. Background workers use `POST /v1/runs`, `GET /v1/runs/{run_id}`, `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/stop`, and the approval endpoint only for fail-closed denial. These upstream details never appear in protocol v4.
+Canonical chat uses Hermes Sessions Chat so the selected conversation keeps its persisted history and compression lineage. Background workers use `POST /v1/runs`, `GET /v1/runs/{run_id}`, `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/stop`, and the approval endpoint only for fail-closed denial. These upstream details never appear in protocol v5.
 
 These are two separate execution planes. The conversation plane serializes canonical turns into one selected Hermes session. The task plane starts independent Hermes `AIAgent` runs so long work can continue after voice disconnects. Hermes Live does not automatically decompose every request into subagents; the realtime model delegates only when work should outlive or run beside the current conversation.
 
@@ -135,7 +135,7 @@ Every state is persisted before subscribers see it. The store uses atomic replac
 
 ## Public Projection
 
-Hermes event streams are internal. Protocol v4 exposes only bounded task snapshots and lifecycle facts:
+Hermes event streams are internal. Protocol v5 exposes only bounded task snapshots and lifecycle facts:
 
 - no upstream run id;
 - no raw reasoning, tool arguments/output, approval identity, or provider envelopes;
@@ -150,7 +150,7 @@ Task titles, summaries, and results remain untrusted data. The provider instruct
 The gateway favors a visible unknown state over a fabricated result:
 
 - unsupported protocol or missing Hermes features: reject session startup;
-- missing provider credentials: reject startup except in mock mode;
+- missing provider credentials: reject startup for hosted providers; local and mock need no voice API key;
 - network bind without gateway auth: reject unless the unsafe opt-out is explicit;
 - slow or oversized client/provider data: fail within bounded queues and payload limits;
 - client/provider disconnect: detach; tasks keep running;
@@ -169,7 +169,7 @@ The gateway favors a visible unknown state over a fabricated result:
 | Inbound adapters | `src/adapters/inbound/http` | HTTP, WebSocket auth/origin policy, and demo serving. |
 | Hermes adapter | `src/adapters/outbound/hermes` | Bounded JSON/SSE calls to Hermes Runs API. |
 | Task store | `src/adapters/outbound/task-store` | Private atomic local-file persistence. |
-| Provider adapters | `src/adapters/outbound/realtime` | Gemini Live, OpenAI Realtime, and mock implementations. |
+| Provider adapters | `src/adapters/outbound/realtime` | Hugging Face local, Gemini Live, OpenAI Realtime, and mock implementations. |
 | Clients | `clients/browser`, `src/cli` | Browser SDK/audio and terminal surfaces. |
 
 `LiveGatewaySession` and `TaskSupervisor` depend on ports, not raw WebSockets, provider SDKs, or filesystem APIs. This keeps conversation lifetime, task lifetime, and external transports independently testable.

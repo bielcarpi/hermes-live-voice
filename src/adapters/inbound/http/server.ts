@@ -464,6 +464,7 @@ async function handleHttp(
         auth_required: Boolean(options.config.server.authToken),
         server_managed_identity: !options.config.server.trustClientIdentity,
         max_sessions: options.config.server.maxSessions,
+        huggingface_local: options.config.realtime.provider === "local",
         gemini_live: options.config.realtime.provider === "gemini",
         openai_realtime: options.config.realtime.provider === "openai",
         mock_live: options.config.realtime.provider === "mock",

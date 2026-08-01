@@ -22,6 +22,7 @@ import { applyManagedConfigToProcess } from "./cli/managed-config.js";
 import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
 import { runSetupCommand } from "./cli/setup.js";
 import { runDoctorCommand } from "./cli/doctor.js";
+import { runLocalVoiceCommand } from "./cli/local-voice.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import type { ConversationSelection } from "./domain/protocol/client-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
@@ -60,6 +61,11 @@ async function main(): Promise<void> {
 
   if (command === "service") {
     await runServiceCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "local") {
+    await runLocalVoiceCommand(process.argv.slice(3), loadConfig());
     return;
   }
 
@@ -193,6 +199,7 @@ async function main(): Promise<void> {
             apiKey: redact(config.hermes.apiKey),
           },
           gemini: { ...config.gemini, apiKey: redact(config.gemini.apiKey) },
+          local: { ...config.local, url: publicBaseUrl(config.local.url) },
           openai: {
             ...config.openai,
             baseUrl: publicBaseUrl(config.openai.baseUrl),
@@ -223,6 +230,7 @@ function usesManagedRuntimeConfig(command: string): boolean {
     "provider-smoke",
     "check-live-provider",
     "tasks",
+    "local",
     "print-config",
   ].includes(command);
 }
@@ -243,6 +251,7 @@ Usage:
   hermes-live --version     Print the installed package version
   hermes-live setup         Configure, install, verify, and start Live Voice
   hermes-live doctor        Check the installation and print exact fixes
+  hermes-live local         Run fully-local Hugging Face voice on Apple Silicon
   hermes-live serve         Start the realtime gateway and web demo
   hermes-live dev           Alias for serve
   hermes-live client "..."  Send one prompt; wait for its exact task result
@@ -251,7 +260,7 @@ Usage:
   hermes-live terminal --unbound Open voice without attaching a saved chat
   hermes-live chat          Alias for terminal
   hermes-live check         Check Hermes capabilities and realtime provider config
-  hermes-live provider-smoke Open and close a real Gemini/OpenAI provider session
+  hermes-live provider-smoke Open and close a real local/Gemini/OpenAI session
   hermes-live tasks unresolved Inspect unresolved outcomes with the gateway stopped
   hermes-live tasks contain <taskId> --confirm-contained Unblock one unknown outcome after containment
   hermes-live tasks unlock --confirm-no-gateway Clear a crash-left state lock after verifying shutdown
@@ -266,7 +275,8 @@ Usage:
 Required environment:
   HERMES_BASE_URL           Hermes API Server URL, default http://127.0.0.1:8642
   HERMES_AGENT_API_SERVER_KEY Hermes Agent API_SERVER_KEY bearer token
-  GEMINI_API_KEY            Gemini Developer API key, unless using Enterprise auth
+  HERMES_LIVE_PROVIDER      local, gemini, openai, or mock
+  GEMINI_API_KEY            Gemini Developer API key, unless using local voice or Enterprise auth
   OPENAI_API_KEY            OpenAI API key when HERMES_LIVE_PROVIDER=openai
 
 Optional:
@@ -279,7 +289,7 @@ Optional:
   HERMES_LIVE_TRUST_CLIENT_IDENTITY Allow profileId/userLabel from clients; default false
   HERMES_LIVE_TRUST_DECLARED_READ_ONLY Trust model-declared read-only task scopes; default false
   HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS  Hermes run SSE idle timeout, default 120000
-  HERMES_LIVE_PROVIDER      gemini, openai, or mock; default gemini
+  HERMES_LIVE_LOCAL_URL     Hugging Face realtime endpoint, default ws://127.0.0.1:8765/v1/realtime
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
   HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
   HERMES_LIVE_CLIENT_READY_TIMEOUT_MS  One-shot client handshake timeout, default 10000

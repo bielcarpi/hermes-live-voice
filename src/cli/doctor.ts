@@ -44,6 +44,7 @@ export interface DoctorDependencies {
   env?: NodeJS.ProcessEnv;
   home?: string;
   platform?: NodeJS.Platform;
+  arch?: string;
   nodeVersion?: string;
   runner?: CommandRunner;
   findCommand?: (name: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>;
@@ -127,6 +128,21 @@ export async function runDoctor(
   }
 
   const findCommand = dependencies.findCommand ?? findExecutable;
+  if (config?.realtime.provider === "local") {
+    const endpoint = new URL(config.local.url);
+    if (["127.0.0.1", "localhost", "::1", "[::1]"].includes(endpoint.hostname.toLowerCase())) {
+      const uv = await findCommand("uv", env);
+      const managedProfileSupported = (dependencies.platform ?? process.platform) === "darwin"
+        && (dependencies.arch ?? process.arch) === "arm64";
+      checks.push(uv
+        ? pass("local-launcher", "Local voice launcher", `${shortHome(uv, dependencies.home)} (speech-to-speech 0.2.11)`)
+        : managedProfileSupported
+          ? warn("local-launcher", "Local voice launcher", "uv is not installed.", "Install uv, then run `hermes-live local`.")
+          : pass("local-launcher", "Local voice launcher", "External speech-to-speech runtime expected on this platform."));
+    } else {
+      checks.push(pass("local-launcher", "Local voice launcher", "Using an operator-managed remote speech-to-speech endpoint."));
+    }
+  }
   const hermesCommand = options.hermesCommand
     ? await findCommand(options.hermesCommand, env)
     : await findCommand("hermes", env);
@@ -157,13 +173,16 @@ export async function runDoctor(
     if (!config || !readiness?.realtime.ok) {
       checks.push(fail("provider-session", "Provider session", "Skipped because provider configuration is invalid.", "Fix provider configuration first."));
     } else if (config.realtime.provider === "mock") {
-      checks.push(warn("provider-session", "Provider session", "Mock mode has no external voice session.", "Choose Gemini or OpenAI in `hermes-live setup` for speech."));
+      checks.push(warn("provider-session", "Provider session", "Mock mode has no external voice session.", "Choose local, Gemini, or OpenAI in `hermes-live setup` for speech."));
     } else {
       try {
         await runLiveProviderSmoke(config, { timeoutMs: config.server.providerReadyTimeoutMs });
         checks.push(pass("provider-session", "Provider session", `Connected to ${config.realtime.provider} realtime`));
       } catch (error) {
-        checks.push(fail("provider-session", "Provider session", errorToMessage(error), "Check the provider key, model access, and network, then rerun with --provider-smoke."));
+        const fix = config.realtime.provider === "local"
+          ? "Run `hermes-live local` in another terminal, then rerun with --provider-smoke."
+          : "Check the provider key, model access, and network, then rerun with --provider-smoke.";
+        checks.push(fail("provider-session", "Provider session", errorToMessage(error), fix));
       }
     }
   }

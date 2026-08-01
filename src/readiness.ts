@@ -149,6 +149,15 @@ function realtimeCheckSummary(config: AppConfig): Record<string, unknown> {
       ...(config.gemini.apiVersion ? { apiVersion: config.gemini.apiVersion } : {}),
     };
   }
+  if (config.realtime.provider === "local") {
+    return {
+      ...base,
+      endpoint: publicBaseUrl(config.local.url),
+      voice: config.local.voice,
+      remoteEndpointAllowed: config.local.allowRemote,
+      implementation: "huggingface/speech-to-speech",
+    };
+  }
   if (config.realtime.provider === "openai") {
     return {
       ...base,

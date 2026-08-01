@@ -45,7 +45,7 @@ const BoundedJsonObjectSchema = z.record(z.unknown()).superRefine((value, contex
 
 export const RealtimeClientCapabilitiesSchema = z
   .object({
-    provider: z.enum(["gemini", "openai", "mock"]),
+    provider: z.enum(["local", "gemini", "openai", "mock"]),
     model: z.string().min(1).max(PUBLIC_MODEL_MAX_CHARS),
     audio: z
       .object({
@@ -213,7 +213,7 @@ const TaskEventBase = {
 const SessionReadyMessageSchema = z
   .object({
     type: z.literal("session.ready"),
-    protocolVersion: z.union([z.literal(3), z.literal(4)]),
+    protocolVersion: z.union([z.literal(3), z.literal(4), z.literal(5)]),
     requestId: RequestIdSchema.optional(),
     sessionId: PublicIdSchema,
     model: z.string().min(1).max(PUBLIC_MODEL_MAX_CHARS),
@@ -261,7 +261,7 @@ const TranscriptDeltaMessageSchema = z
 const InputSpeechStartedMessageSchema = z
   .object({
     type: z.literal("input.speech_started"),
-    provider: z.literal("openai"),
+    provider: z.enum(["openai", "local"]),
     itemId: PublicIdSchema.optional(),
     audioStartMs: z.number().finite().nonnegative().max(60 * 60 * 1_000).optional(),
   })
@@ -419,7 +419,7 @@ export type TaskSnapshotMessage = Extract<ServerMessage, { type: "task.snapshot"
 export type TaskLifecycleMessage = Extract<ServerMessage, { type: `task.${string}` }>;
 
 // HermesRunEvent remains an internal upstream-adapter type. Raw run events are
-// deliberately not members of the public protocol-v4 ServerMessage union.
+// deliberately not members of the public protocol-v5 ServerMessage union.
 export interface HermesRunEvent {
   event?: string;
   run_id?: string;

@@ -1,6 +1,6 @@
 # Durable Background Tasks
 
-Hermes Live protocol v4 separates the realtime conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
+Hermes Live protocol v5 separates the realtime conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
 
 ```txt
 voice or text turn
@@ -38,7 +38,7 @@ The public states are:
 | `cancelled` | Hermes confirmed cancellation, or a queued task was cancelled before dispatch. |
 | `unknown` | The gateway cannot prove the outcome. It must not be described as success or failure. |
 
-Every task has a monotonically increasing, per-task `sequence`, but clients retain two independent revisions: lifecycle state by `taskId` and notification state by `taskId`, `notificationId`, and acknowledgement. Lifecycle and notification messages can share one sequence and arrive in either order; both must be applied. Exact repeats within one channel are idempotent, while conflicting content at the same channel sequence must fail closed. The upstream Hermes run id is private and is never part of protocol v4.
+Every task has a monotonically increasing, per-task `sequence`, but clients retain two independent revisions: lifecycle state by `taskId` and notification state by `taskId`, `notificationId`, and acknowledgement. Lifecycle and notification messages can share one sequence and arrive in either order; both must be applied. Exact repeats within one channel are idempotent, while conflicting content at the same channel sequence must fail closed. The upstream Hermes run id is private and is never part of protocol v5.
 
 Hermes `tool.started` and `tool.completed` events can advance `task.progress` with a sanitized tool name and bounded preview. Raw arguments, output, reasoning, credentials, and upstream event envelopes remain private. This is enough to answer “what is that task doing?” without turning the public protocol into a trace viewer.
 
@@ -113,13 +113,14 @@ Terminal outcomes create a durable notification. Connected clients receive `task
 Spoken delivery happens only while the user and provider response are idle:
 
 - OpenAI Realtime uses a response-scoped, audio-only request with `conversation: "none"`, no tools, and no conversation input. This is a true out-of-band announcement.
+- Hugging Face local voice uses the same isolated response scope through its realtime-compatible server.
 - Gemini Live has no equivalent response-scoped channel. The gateway sends an authenticated marker through realtime text input, so speech is best-effort and not a durable or deterministically ordered provider turn.
 
 The durable source of truth is the task inbox, not whether a provider spoke. Announcements are intentionally generic; the provider fetches an exact retained result only when the user asks.
 
 ## Approval Boundary
 
-Protocol v4 has no interactive approval messages, buttons, or terminal commands. If Hermes enters `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all`, then stops that exact upstream run. Clients see a non-actionable stopping/progress state.
+Protocol v5 has no interactive approval messages, buttons, or terminal commands. If Hermes enters `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all`, then stops that exact upstream run. Clients see a non-actionable stopping/progress state.
 
 This is fail-closed. Do not advertise that approvals can be completed in another Hermes Live surface. A future approval workflow requires a proven upstream identity contract that targets exactly one request.
 
@@ -131,4 +132,4 @@ Admission reserves the largest valid terminal write for every task that can run 
 
 `HERMES_LIVE_TASK_HISTORY_LIMIT` (default 200) is the advertised retained-history target; the store also reserves bounded capacity for configured queued and active work. Each wire list/snapshot frame is capped at 100 tasks. Reconnect hydration can use multiple frames so active work and unread notifications never compete with recent terminal history for that cap. Completed output is bounded; list snapshots include a summary, while `task.get` can return the retained output.
 
-For wire details, see [Client Protocol](client-protocol.md). For storage and deployment controls, see [Security](security.md) and [Local Setup](local-setup.md).
+For wire details, see [Client Protocol](client-protocol.md). For storage and deployment controls, see [Security](security.md) and [Setup](setup.md).

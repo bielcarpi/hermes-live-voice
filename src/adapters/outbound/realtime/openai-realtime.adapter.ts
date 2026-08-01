@@ -883,9 +883,15 @@ function closeWebSocketAndWait(
 export function normalizeOpenAIRealtimeEvent(
   event: unknown,
   outputAudioFormat: AppConfig["openai"]["outputAudioFormat"] = "pcm16",
+  options: {
+    provider?: "openai" | "local";
+    pcmSampleRate?: number;
+    includeCompletedTranscripts?: boolean;
+  } = {},
 ): LiveModelEvent[] {
   const events: LiveModelEvent[] = [];
   const root = event as any;
+  const provider = options.provider ?? "openai";
   const calls = extractOpenAIFunctionCalls(root);
 
   const response = normalizeOpenAIResponseLifecycle(root);
@@ -893,7 +899,13 @@ export function normalizeOpenAIRealtimeEvent(
   if (response && !deferTerminalResponse) events.push(response);
 
   if ((root?.type === "response.output_audio.delta" || root?.type === "response.audio.delta") && typeof root.delta === "string") {
-    events.push({ type: "audio", audio: { data: root.delta, mimeType: openAiAudioMimeType(outputAudioFormat) } });
+    events.push({
+      type: "audio",
+      audio: {
+        data: root.delta,
+        mimeType: openAiAudioMimeType(outputAudioFormat, options.pcmSampleRate),
+      },
+    });
     const audio = events[events.length - 1];
     if (audio?.type === "audio") {
       if (typeof root.item_id === "string") {
@@ -912,10 +924,26 @@ export function normalizeOpenAIRealtimeEvent(
   ) {
     events.push({ type: "text", text: root.delta });
   }
+  if (
+    options.includeCompletedTranscripts
+    && root?.type === "response.output_audio_transcript.done"
+    && typeof root.transcript === "string"
+    && root.transcript.length > 0
+  ) {
+    events.push({ type: "text", text: root.transcript, speaker: "assistant", final: true });
+  }
+  if (
+    options.includeCompletedTranscripts
+    && root?.type === "conversation.item.input_audio_transcription.completed"
+    && typeof root.transcript === "string"
+    && root.transcript.length > 0
+  ) {
+    events.push({ type: "text", text: root.transcript, speaker: "user", final: true });
+  }
   if (root?.type === "input_audio_buffer.speech_started") {
     events.push({
       type: "input_speech_started",
-      provider: "openai",
+      provider,
       ...(typeof root.item_id === "string" ? { itemId: root.item_id } : {}),
       ...(typeof root.audio_start_ms === "number" ? { audioStartMs: root.audio_start_ms } : {}),
     });
@@ -923,7 +951,7 @@ export function normalizeOpenAIRealtimeEvent(
   if (root?.type === "input_audio_buffer.speech_stopped") {
     events.push({
       type: "input_speech_stopped",
-      provider: "openai",
+      provider,
       ...(typeof root.item_id === "string" ? { itemId: root.item_id } : {}),
       ...(typeof root.audio_end_ms === "number" ? { audioEndMs: root.audio_end_ms } : {}),
     });
@@ -1116,9 +1144,12 @@ function buildRealtimeUrl(baseUrl: string, model: string): string {
   return url.toString();
 }
 
-function openAiAudioMimeType(format: AppConfig["openai"]["outputAudioFormat"]): string {
+function openAiAudioMimeType(
+  format: AppConfig["openai"]["outputAudioFormat"],
+  pcmSampleRate = OPENAI_REALTIME_PCM_SAMPLE_RATE,
+): string {
   if (format === "pcm16") {
-    return "audio/pcm;rate=24000";
+    return `audio/pcm;rate=${pcmSampleRate}`;
   }
   return format === "g711_ulaw" ? "audio/pcmu;rate=8000" : "audio/pcma;rate=8000";
 }

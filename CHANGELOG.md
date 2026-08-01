@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-08-01
+
+- Add fully local voice on Apple Silicon through the official Hugging Face `speech-to-speech` stack, with a pinned one-command launcher and no provider API key.
+- Add a dedicated local realtime adapter and protocol v5 support for 24 kHz PCM audio, provider VAD, interruption, tool calls, and background-task updates.
+- Make local voice a first-class option in setup, doctor, readiness, the Dashboard, browser client, and Docker while keeping Gemini and OpenAI support.
+- Simplify the environment template, README, and supporting docs, and update the dependency and security baseline.
+
 ## 0.7.1 - 2026-07-20
 
 - Stop Dashboard and terminal clients from reusing fixed titles for every new Hermes chat. Fresh voice sessions can now be created repeatedly without Hermes rejecting a duplicate title.

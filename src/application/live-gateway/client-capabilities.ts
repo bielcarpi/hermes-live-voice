@@ -26,6 +26,17 @@ export function realtimeClientCapabilities(
       },
     };
   }
+  if (config.realtime.provider === "local") {
+    return {
+      provider: "local",
+      model: config.realtime.model,
+      audio: {
+        input: { enabled: true, mimeType: "audio/pcm;rate=24000", recommendedFrameMs: 40 },
+        output: { enabled: true, mimeType: "audio/pcm;rate=24000" },
+        turnDetection: "provider",
+      },
+    };
+  }
   return {
     provider: "openai",
     model: config.realtime.model,
