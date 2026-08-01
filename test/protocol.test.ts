@@ -14,21 +14,21 @@ import {
 
 const NOW = 1_784_131_200_000;
 
-describe("protocol v4", () => {
-  it("binds v4 sessions to a new, resumed, or unbound Hermes conversation", () => {
-    expect(HERMES_LIVE_PROTOCOL_VERSION).toBe(4);
+describe("protocol v5", () => {
+  it("binds current sessions to a new, resumed, or unbound Hermes conversation", () => {
+    expect(HERMES_LIVE_PROTOCOL_VERSION).toBe(5);
     expect(
       parseClientMessage({
         type: "session.start",
         id: "start_1",
-        protocolVersion: 4,
+        protocolVersion: 5,
         profileId: "default",
         conversation: { mode: "resume", sessionId: "session_1" },
       }),
     ).toEqual({
       type: "session.start",
       id: "start_1",
-      protocolVersion: 4,
+      protocolVersion: 5,
       profileId: "default",
       conversation: { mode: "resume", sessionId: "session_1" },
     });
@@ -39,7 +39,7 @@ describe("protocol v4", () => {
     })).toThrow(/requires Hermes Live protocol v4/i);
     expect(() => parseClientMessage({
       type: "session.start",
-      protocolVersion: 4,
+      protocolVersion: 5,
       conversation: { mode: "resume" },
     })).toThrow(/requires sessionId/i);
   });
@@ -51,7 +51,7 @@ describe("protocol v4", () => {
     if (message.type !== "session.start") throw new Error("Expected session.start");
     expect(message.protocolVersion).toBe(2);
     expect(() => assertHermesLiveProtocolVersion(message.protocolVersion)).toThrow(
-      /protocol v2 is incompatible with supported protocols v3, v4.*Upgrade hermes-live-voice/i,
+      /protocol v2 is incompatible with supported protocols v3, v4, v5.*Upgrade hermes-live-voice/i,
     );
     expect(incompatibleProtocolVersionMessage(2)).toContain("before reconnecting");
   });

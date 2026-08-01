@@ -1,12 +1,12 @@
 # Client Protocol
 
-Hermes Live protocol v4 is strict JSON over WebSocket:
+Hermes Live protocol v5 is strict JSON over WebSocket:
 
 ```txt
 ws://127.0.0.1:8788/v1/live
 ```
 
-Use `wss://` behind TLS for non-local clients. Protocol v4 adds persisted Hermes conversation binding and durable task follow-ups. The gateway still accepts protocol v3 as an unbound compatibility mode, but new clients should send v4.
+Use `wss://` behind TLS for non-local clients. Protocol v4 added persisted conversation binding and durable task follow-ups. Protocol v5 adds the local Hugging Face provider and final user/assistant transcript events. The gateway still accepts v3 and v4 for existing hosted-provider clients; new clients should send v5.
 
 The TypeScript schemas in `src/domain/protocol/` and the browser validator in `clients/browser/hermes-live-client.js` are the normative contract.
 
@@ -35,7 +35,7 @@ The first client message must be:
 {
   "type": "session.start",
   "id": "start_1",
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "conversation": { "mode": "resume", "sessionId": "saved_session_id" }
 }
 ```
@@ -47,7 +47,7 @@ On success, the server sends `session.ready` followed by one or more bounded ini
 ```json
 {
   "type": "session.ready",
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "requestId": "start_1",
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
@@ -94,7 +94,7 @@ On success, the server sends `session.ready` followed by one or more bounded ini
 }
 ```
 
-Provider/model/audio values are negotiated, not constants. Mock mode reports audio disabled. `tasks.parallel` becomes true only when the operator enables trusted model-declared read-only scopes. Clients must not send or decode a codec that `session.ready` did not advertise.
+Provider/model/audio values are negotiated, not constants. `provider` is `local`, `gemini`, `openai`, or `mock`; local voice advertises PCM16 at 24 kHz and mock mode reports audio disabled. `tasks.parallel` becomes true only when the operator enables trusted model-declared read-only scopes. Clients must not send or decode a codec that `session.ready` did not advertise.
 
 The following snapshot shape establishes the owner's current inbox:
 
@@ -139,7 +139,7 @@ Server conversation events are:
 
 - `transcript.delta` with `speaker`, `text`, and optional `final`;
 - `audio.output` with base64 data, MIME type, and optional playback correlation;
-- `input.speech_started` for OpenAI VAD;
+- `input.speech_started` for OpenAI or local VAD;
 - `response.started`, `response.completed`, `response.cancelled`, and `response.failed`;
 - bounded `log` and `session.error` messages.
 
@@ -313,7 +313,7 @@ Cancel the current provider response without touching tasks:
 }
 ```
 
-OpenAI uses the optional truncation metadata to keep provider conversation history aligned with what the user actually heard. Gemini handles speech interruption through live audio activity and does not expose an equivalent direct cancel event.
+OpenAI uses the optional truncation metadata to keep provider conversation history aligned with what the user actually heard. Local voice cancels through the upstream generation scope without truncation. Gemini handles speech interruption through live audio activity and does not expose an equivalent direct cancel event.
 
 Detach cleanly:
 
@@ -380,7 +380,7 @@ Errors use:
 {
   "type": "session.error",
   "code": "unsupported_protocol_version",
-  "message": "Hermes Live protocol v2 is incompatible with protocol v4. Upgrade hermes-live-voice and every connected client to the same release before reconnecting.",
+  "message": "Hermes Live protocol v2 is incompatible with protocol v5. Upgrade hermes-live-voice and every connected client to the same release before reconnecting.",
   "requestId": "start_1",
   "recoverable": false
 }

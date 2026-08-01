@@ -1,10 +1,8 @@
-# Setup And Service Management
+# Setup
 
-The published package can activate a local Hermes Live Voice installation without cloning the repository or keeping a gateway terminal open.
+## Normal install
 
-## Activate
-
-Before setup, start Hermes Agent's API Server and keep its `API_SERVER_KEY` in `~/.hermes/.env`. Then run:
+Start Hermes Agent's API Server, keep its `API_SERVER_KEY` in `~/.hermes/.env`, then run:
 
 ```sh
 npm install --global hermes-live-voice
@@ -12,42 +10,81 @@ hermes-live setup
 hermes dashboard
 ```
 
-Setup:
+Setup writes a private config, installs and enables the bundled Dashboard plugin, checks Hermes and the selected voice provider, then installs a launchd or systemd user service.
 
-- asks for Gemini, OpenAI, or text-only mock mode;
-- reuses the Hermes key and any existing provider key when available;
-- prompts without echoing missing secrets;
-- writes a private managed config;
-- installs the exact bundled Hermes plugin and enables it;
-- verifies the Hermes durable-run API and a real provider session;
-- installs and starts a macOS launchd or Linux systemd user service;
-- waits until the gateway reports ready.
+If activation fails, run:
 
-The local browser client is available at <http://127.0.0.1:8788>. The Dashboard is the recommended everyday UI; `hermes-live terminal` is the headless text client.
+```sh
+hermes-live doctor
+hermes-live doctor --provider-smoke
+```
 
-## Managed Configuration
+Both commands suppress credentials and print the next concrete fix.
 
-The default file is:
+## Local voice
+
+On Apple Silicon, the package can launch the tested Hugging Face stack directly:
+
+```sh
+# First terminal
+hermes-live local
+
+# Second terminal
+hermes-live setup --provider local
+```
+
+`hermes-live local` uses `uv` to run `speech-to-speech==0.2.11` with local Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and the realtime WebSocket transport. It spells out the Apple Silicon settings because upstream's direct-microphone preset selects a different transport, and supplies macOS's CA bundle to standalone Python installs when needed. The first run downloads dependencies and model weights. `hermes-live local command` prints the exact command without running it.
+
+On Linux, Windows, CUDA systems, or a separate voice host, run [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) in `realtime` mode and set:
+
+```sh
+HERMES_LIVE_PROVIDER=local
+HERMES_LIVE_LOCAL_URL=ws://127.0.0.1:8765/v1/realtime
+```
+
+Local endpoints must be loopback by default. A trusted network endpoint requires `HERMES_LIVE_LOCAL_ALLOW_REMOTE=true`; public endpoints must also use `wss://`. The upstream server has no authentication of its own, so do not expose it directly.
+
+## Other providers
+
+```sh
+# Gemini Live
+GEMINI_API_KEY=... hermes-live setup --provider gemini
+
+# OpenAI Realtime
+OPENAI_API_KEY=... hermes-live setup --provider openai
+
+# Text-only development
+hermes-live setup --provider mock
+```
+
+Secrets can come from the process environment, an existing managed config, or `~/.hermes/.env`. Setup prompts without echoing missing values. Secret command-line flags are deliberately unsupported.
+
+## Configuration
+
+Managed settings live at:
 
 ```txt
 ~/.hermes/hermes-live/config.env
 ```
 
-Its directory and file use `0700` and `0600` permissions on POSIX systems. The parser accepts only documented Hermes Live settings and JSON-quoted string values. It refuses symlinks, unexpected keys, duplicate keys, unsafe permissions, oversized files, and non-string values. The runtime does not source the file or load a project `.env`.
+The directory is `0700` and the file is `0600` on POSIX systems. The parser accepts only known keys and JSON strings; it refuses symlinks, duplicate or unknown keys, unsafe permissions, and oversized files. Environment variables take precedence. Project `.env` files are not loaded.
 
-Process environment variables take precedence. Use `HERMES_LIVE_CONFIG_FILE` to select another managed file. Containers should keep using explicit environment injection or an orchestrator secret store.
+Common settings:
 
-## Diagnostics
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `HERMES_BASE_URL` | `http://127.0.0.1:8642` | Hermes API Server |
+| `HERMES_LIVE_PROVIDER` | selected by setup | `local`, `gemini`, `openai`, or `mock` |
+| `HERMES_LIVE_LOCAL_URL` | `ws://127.0.0.1:8765/v1/realtime` | Hugging Face realtime endpoint |
+| `HERMES_LIVE_HOST` / `HERMES_LIVE_PORT` | `127.0.0.1` / `8788` | Gateway listener |
+| `HERMES_LIVE_AUTH_TOKEN` | unset | Required for network-accessible gateway binds |
+| `HERMES_LIVE_MAX_CONCURRENT_TASKS` | `3` | Bounded worker slots |
+| `HERMES_LIVE_MAX_QUEUED_TASKS` | `32` | Bounded pending work |
+| `HERMES_LIVE_TRUST_DECLARED_READ_ONLY` | `false` | Allow declared read-only work to share slots |
 
-```sh
-hermes-live doctor
-hermes-live doctor --provider-smoke
-hermes-live doctor --json
-```
+Use [.env.example](../.env.example) for containers and `hermes-live print-config` to inspect every resolved value with secrets redacted. `HERMES_LIVE_CONFIG_FILE` selects a different managed file.
 
-The default check covers Node, managed-config integrity, plugin/runtime version parity, the Hermes CLI, required Hermes API capabilities, provider configuration, the user service, and gateway readiness. `--provider-smoke` also opens and closes a real provider session.
-
-## Service Lifecycle
+## Service lifecycle
 
 ```sh
 hermes-live service status
@@ -58,29 +95,36 @@ hermes-live service start
 hermes-live service uninstall
 ```
 
-macOS uses `~/Library/LaunchAgents/dev.hermes-live-voice.gateway.plist`. Linux uses `~/.config/systemd/user/dev.hermes-live-voice.gateway.service`. Definitions contain the absolute Node/CLI paths and managed-config path, not API keys.
+Run setup again after upgrading or changing providers. It replaces the bundled plugin, rechecks both runtimes, and refreshes the service definition without putting API keys in launchd or systemd files.
 
-Run `hermes-live setup` again after changing provider credentials or upgrading the package. It safely rewrites the managed config, replaces the bundled plugin, rechecks both upstream services, and refreshes the gateway service.
+## Source development
 
-## Automation And Custom Layouts
+```sh
+git clone https://github.com/bielcarpi/hermes-live-voice.git
+cd hermes-live-voice
+npm ci
+HERMES_LIVE_PROVIDER=mock HERMES_AGENT_API_SERVER_KEY=... npm run dev
+```
 
-Noninteractive setup never prompts and prints a safe machine-readable report:
+Run `npm run verify` before opening a pull request. The mock provider proves deterministic gateway behavior but not a microphone, model access, or a real provider session.
+
+## Docker
+
+The image contains the Node gateway, not Python models. Point it at Gemini/OpenAI or a separately managed Hugging Face endpoint:
 
 ```sh
 HERMES_AGENT_API_SERVER_KEY=... \
-GEMINI_API_KEY=... \
-hermes-live setup --provider gemini --non-interactive --json
+HERMES_LIVE_AUTH_TOKEN=replace-with-a-long-random-value \
+docker compose -f examples/docker-compose.yml up --build
 ```
 
-The credentials remain environment values; there are deliberately no secret CLI flags. Useful layout options are:
+The example binds the host port to loopback, drops Linux capabilities, uses a read-only root filesystem, and persists task state on a dedicated volume. To reach local voice on the host, bind speech-to-speech only to a trusted interface and set `HERMES_LIVE_PROVIDER=local`; the compose file uses `host.docker.internal:8765` with the explicit private-network opt-in.
 
-```txt
---hermes-url <url>
---config <path>
---plugins-dir <path>
---hermes-command <path>
---no-enable
---no-service
+## Automation
+
+```sh
+HERMES_AGENT_API_SERVER_KEY=... \
+hermes-live setup --provider local --non-interactive --json --no-service
 ```
 
-Use `--no-service` for containers, unsupported operating systems, or a separately supervised gateway. Start it with `hermes-live serve`.
+Useful layout flags are `--hermes-url`, `--config`, `--plugins-dir`, `--hermes-command`, `--no-enable`, and `--no-service`.

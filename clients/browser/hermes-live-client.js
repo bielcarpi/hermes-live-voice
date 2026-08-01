@@ -72,7 +72,7 @@ const TASK_STOP_RESPONSE_TYPES = new Set([
   "task.unknown",
 ]);
 const OPEN = 1;
-export const HERMES_LIVE_PROTOCOL_VERSION = 4;
+export const HERMES_LIVE_PROTOCOL_VERSION = 5;
 
 const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "session.ready",
@@ -1566,7 +1566,7 @@ export function validateServerMessage(value) {
       requireInteger(message, "protocolVersion", { positive: true, maximum: 1_000 });
       if (message.protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
         throw new TypeError(
-          `Hermes Live protocol version ${message.protocolVersion} is not supported by this protocol v4 client. Upgrade the gateway and client together.`,
+          `Hermes Live protocol version ${message.protocolVersion} is not supported by this protocol v5 client. Upgrade the gateway and client together.`,
         );
       }
       optionalOpaqueId(message, "requestId", 128);
@@ -1613,7 +1613,7 @@ export function validateServerMessage(value) {
       break;
     case "input.speech_started":
       requireOnlyKeys(message, ["type", "provider", "itemId", "audioStartMs"]);
-      requireEnum(message, "provider", ["openai"]);
+      requireEnum(message, "provider", ["openai", "local"]);
       optionalOpaqueId(message, "itemId");
       optionalFiniteNumber(message, "audioStartMs", { minimum: 0, maximum: 3_600_000 });
       break;
@@ -1721,7 +1721,7 @@ export function validateServerMessage(value) {
     default:
       if (message.type.startsWith("run.")) {
         throw new TypeError(
-          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v4 client accepts task.* lifecycle messages only.`,
+          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v5 client accepts task.* lifecycle messages only.`,
         );
       }
   }
@@ -2091,7 +2091,7 @@ function validateTaskNotification(value) {
 function validateRealtimeCapabilities(value) {
   requireOnlyKeys(value, ["provider", "model", "audio"], "session.ready realtime");
   const realtime = { ...value, type: "session.ready realtime" };
-  requireEnum(realtime, "provider", ["gemini", "openai", "mock"]);
+  requireEnum(realtime, "provider", ["local", "gemini", "openai", "mock"]);
   requireBoundedString(realtime, "model", PUBLIC_MODEL_MAX_CHARS);
   requireObject(realtime, "audio");
   const audio = value.audio;

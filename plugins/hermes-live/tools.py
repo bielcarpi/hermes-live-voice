@@ -350,6 +350,7 @@ def _sanitize_task_capabilities(value: dict[str, Any]) -> dict[str, Any]:
 _BOOLEAN_FEATURES = {
     "auth_required",
     "server_managed_identity",
+    "huggingface_local",
     "gemini_live",
     "openai_realtime",
     "mock_live",

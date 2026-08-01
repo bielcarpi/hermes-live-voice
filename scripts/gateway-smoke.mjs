@@ -143,7 +143,7 @@ try {
 
   socket.send(JSON.stringify({
     type: "session.start",
-    protocolVersion: 4,
+    protocolVersion: 5,
     profileId: "smoke",
     userLabel: "gateway-smoke",
     conversation: { mode: "new", title: "Gateway smoke" },
@@ -153,13 +153,13 @@ try {
     throw new Error(`Gateway session advertised unexpected model: ${JSON.stringify(ready.model)}.`);
   }
   if (
-    ready.protocolVersion !== 4
+    ready.protocolVersion !== 5
     || ready.conversation?.sessionId !== "session_gateway_smoke"
     || ready.tasks?.durable !== true
     || ready.tasks?.supports?.followUp !== true
     || ready.tasks?.reconnect !== "snapshot"
   ) {
-    throw new Error(`Gateway session did not advertise the protocol-v4 conversation/task contract: ${JSON.stringify(ready)}.`);
+    throw new Error(`Gateway session did not advertise the protocol-v5 conversation/task contract: ${JSON.stringify(ready)}.`);
   }
   const initial = await inbox.next("task.snapshot");
   if (initial.reason !== "initial" || initial.tasks.length !== 0 || initial.truncated !== false) {

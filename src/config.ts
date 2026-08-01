@@ -14,6 +14,9 @@ const HermesBaseUrlSchema = z.string().url().refine(isSafeHermesBaseUrl, {
 const OpenAIRealtimeBaseUrlSchema = z.string().url().refine(isSafeOpenAIRealtimeBaseUrl, {
   message: "OPENAI_REALTIME_BASE_URL must be a credential-free WS(S) URL without a fragment.",
 });
+const LocalRealtimeUrlSchema = z.string().url().refine(isSafeRealtimeWebSocketUrl, {
+  message: "HERMES_LIVE_LOCAL_URL must be a credential-free WS(S) URL without a fragment.",
+});
 const GoogleCloudProjectSchema = z.preprocess(
   (value) => value === "" ? undefined : value,
   z.string().min(6).max(30).refine(isSafeGoogleCloudProject, {
@@ -84,7 +87,10 @@ const EnvSchema = z.object({
     .max(2_147_483_647)
     .default(DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS),
 
-  HERMES_LIVE_PROVIDER: z.enum(["gemini", "openai", "mock"]).default("gemini"),
+  HERMES_LIVE_PROVIDER: z.enum(["local", "gemini", "openai", "mock"]).default("gemini"),
+  HERMES_LIVE_LOCAL_URL: LocalRealtimeUrlSchema.default("ws://127.0.0.1:8765/v1/realtime"),
+  HERMES_LIVE_LOCAL_VOICE: z.string().trim().min(1).max(128).default("Aiden"),
+  HERMES_LIVE_LOCAL_ALLOW_REMOTE: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-3.1-flash-live-preview"),
@@ -103,7 +109,7 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
 });
 
-export type RealtimeProvider = "gemini" | "openai" | "mock";
+export type RealtimeProvider = "local" | "gemini" | "openai" | "mock";
 
 export interface AppConfig {
   server: {
@@ -142,6 +148,11 @@ export interface AppConfig {
   realtime: {
     provider: RealtimeProvider;
     model: string;
+  };
+  local: {
+    url: string;
+    voice: string;
+    allowRemote: boolean;
   };
   gemini: {
     apiKey?: string;
@@ -211,6 +222,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       provider: parsed.HERMES_LIVE_PROVIDER,
       model: realtimeModel,
     },
+    local: {
+      url: parsed.HERMES_LIVE_LOCAL_URL,
+      voice: parsed.HERMES_LIVE_LOCAL_VOICE,
+      allowRemote: parseBool(parsed.HERMES_LIVE_LOCAL_ALLOW_REMOTE),
+    },
     gemini: {
       ...(geminiApiKey ? { apiKey: geminiApiKey } : {}),
       model: parsed.GEMINI_MODEL,
@@ -256,7 +272,23 @@ export function assertGatewayExposureConfig(config: Pick<AppConfig, "server">): 
   }
 }
 
-export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" | "gemini" | "openai">): void {
+export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" | "local" | "gemini" | "openai">): void {
+  if (config.realtime.provider === "local") {
+    const endpoint = new URL(config.local.url);
+    if (!isLoopbackHostname(endpoint.hostname) && !config.local.allowRemote) {
+      throw new Error(
+        "HERMES_LIVE_LOCAL_URL must use localhost by default. Set HERMES_LIVE_LOCAL_ALLOW_REMOTE=true only for a trusted Hugging Face speech-to-speech endpoint.",
+      );
+    }
+    if (
+      !isLoopbackHostname(endpoint.hostname)
+      && endpoint.protocol !== "wss:"
+      && !isPrivateNetworkHostname(endpoint.hostname)
+    ) {
+      throw new Error("A public remote HERMES_LIVE_LOCAL_URL must use wss://.");
+    }
+    return;
+  }
   if (config.realtime.provider === "gemini" && config.gemini.enterprise && !config.gemini.project) {
     throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
   }
@@ -273,7 +305,10 @@ export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" 
   }
 }
 
-export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | "gemini" | "openai">): boolean {
+export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | "local" | "gemini" | "openai">): boolean {
+  if (config.realtime.provider === "local") {
+    return true;
+  }
   if (config.realtime.provider === "mock") {
     return true;
   }
@@ -350,6 +385,10 @@ function isSafeHermesBaseUrl(value: string): boolean {
 }
 
 function isSafeOpenAIRealtimeBaseUrl(value: string): boolean {
+  return isSafeRealtimeWebSocketUrl(value);
+}
+
+function isSafeRealtimeWebSocketUrl(value: string): boolean {
   const parsed = parseSafeConfiguredUrl(value);
   return Boolean(
     parsed &&
@@ -408,6 +447,9 @@ export function publicBaseUrl(value: string): string {
 }
 
 function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, openaiModel: string): string {
+  if (provider === "local") {
+    return "huggingface/speech-to-speech";
+  }
   if (provider === "openai") {
     return openaiModel;
   }
@@ -420,4 +462,23 @@ function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, 
 function isNetworkAccessibleHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(normalized);
+}
+
+export function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return ["127.0.0.1", "localhost", "::1", "[::1]"].includes(normalized);
+}
+
+function isPrivateNetworkHostname(hostname: string): boolean {
+  const value = hostname.trim().toLowerCase().replace(/^\[(.*)\]$/u, "$1");
+  if (value === "host.docker.internal" || value.endsWith(".internal") || value.endsWith(".local")) return true;
+  if (!value.includes(".") && !value.includes(":")) return true;
+  const ipv4 = value.split(".").map(Number);
+  if (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+    return ipv4[0] === 10
+      || (ipv4[0] === 172 && (ipv4[1] ?? 0) >= 16 && (ipv4[1] ?? 0) <= 31)
+      || (ipv4[0] === 192 && ipv4[1] === 168)
+      || (ipv4[0] === 169 && ipv4[1] === 254);
+  }
+  return value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe80:");
 }

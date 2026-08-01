@@ -97,6 +97,27 @@ describe("readiness", () => {
     expect(JSON.stringify(report)).not.toContain("api-version");
   });
 
+  it("reports the local Hugging Face runtime without requiring a voice API key", async () => {
+    const report = await buildReadinessReport(loadConfig({
+      HERMES_LIVE_PROVIDER: "local",
+      HERMES_LIVE_LOCAL_URL: "ws://127.0.0.1:8765/v1/realtime",
+    }), {
+      hermes: { assertRunsSupported: vi.fn(async () => ({ features: {} })) } as unknown as HermesRunsPort,
+      requireHermesApiKey: false,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.realtime).toMatchObject({
+      ok: true,
+      configured: true,
+      provider: "local",
+      model: "huggingface/speech-to-speech",
+      endpoint: "ws://127.0.0.1:8765/[redacted-path]",
+      implementation: "huggingface/speech-to-speech",
+      voice: "Aiden",
+    });
+  });
+
   it("records upstream targeting but keeps v0.5 approvals fail-closed", async () => {
     const hermes = {
       baseUrl: "http://targeted-hermes.local",

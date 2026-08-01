@@ -9,6 +9,7 @@ export {
 } from "./config.js";
 export type { AppConfig, RealtimeProvider } from "./config.js";
 export { GeminiLiveAdapter, normalizeGeminiLiveMessage } from "./adapters/outbound/realtime/gemini-live.adapter.js";
+export { HuggingFaceRealtimeAdapter, buildHuggingFaceSessionUpdate } from "./adapters/outbound/realtime/huggingface-realtime.adapter.js";
 export { MockLiveAdapter } from "./adapters/outbound/realtime/mock-live.adapter.js";
 export { HermesClient } from "./adapters/outbound/hermes/hermes-runs.client.js";
 export type {
