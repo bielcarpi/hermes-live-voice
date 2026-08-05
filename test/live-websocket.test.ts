@@ -23,7 +23,6 @@ import type {
 import type {
   LiveModelAdapter,
   LiveModelAudio,
-  LiveModelCallbacks,
   LiveModelConnectParams,
   LiveModelEvent,
   LiveModelSession,
@@ -97,6 +96,51 @@ describe("live gateway WebSocket", () => {
     expect(provider.latest.params.safetyIdentifier).toBe(
       createHash("sha256").update(defaultSessionKey).digest("hex"),
     );
+    expect(provider.latest.params.availableTools).toEqual([
+      "start_background_task",
+      "list_background_tasks",
+      "get_background_task",
+      "stop_background_task",
+    ]);
+  });
+
+  it("lets protocol v6 users pause microphone input by voice without stopping work", async () => {
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config: testConfig(), hermes: new HermesHarness(), provider });
+    const current = await readyClient(server.url, { protocolVersion: 6 });
+
+    expect(provider.latest.params.systemInstruction).toContain("call pause_voice_input");
+    expect(provider.latest.params.availableTools).toContain("pause_voice_input");
+    provider.emit({
+      type: "tool_call",
+      call: { id: "pause_input_v6", name: "pause_voice_input", args: {} },
+    });
+
+    await expect(current.messages.wait("input.pause_requested")).resolves.toEqual({
+      type: "input.pause_requested",
+      reason: "voice_command",
+    });
+    await expect(provider.latest.toolResponses.wait((entry) => entry.call.id === "pause_input_v6"))
+      .resolves.toMatchObject({
+        response: {
+          ok: true,
+          listening: false,
+          spoken_response: "Listening is paused. Use the microphone button when you want me back.",
+        },
+      });
+
+    const legacy = await readyClient(server.url, { protocolVersion: 5 });
+    expect(provider.latest.params.systemInstruction).not.toContain("call pause_voice_input");
+    expect(provider.latest.params.availableTools).not.toContain("pause_voice_input");
+    provider.emit({
+      type: "tool_call",
+      call: { id: "pause_input_v5", name: "pause_voice_input", args: {} },
+    });
+    await expect(provider.latest.toolResponses.wait((entry) => entry.call.id === "pause_input_v5"))
+      .resolves.toMatchObject({
+        response: { ok: false, error: expect.stringContaining("protocol v6") },
+      });
+    await legacy.messages.expectNone("input.pause_requested", 40);
   });
 
   it("resumes the writable Hermes conversation tip and keeps canonical chat in that session", async () => {
@@ -141,6 +185,7 @@ describe("live gateway WebSocket", () => {
     });
     await client.messages.wait("task.snapshot");
     expect(provider.latest.params.systemInstruction).toContain("continue_hermes_conversation");
+    expect(provider.latest.params.availableTools).toContain("continue_hermes_conversation");
 
     provider.emit({
       type: "tool_call",
@@ -208,7 +253,9 @@ describe("live gateway WebSocket", () => {
       task_id: expect.stringMatching(/^task_[a-f0-9]{32}$/),
       status: "queued",
       message: expect.stringContaining("keep talking"),
+      spoken_response: "I've started that in the background. You can keep talking.",
     });
+    expect(Object.keys(receipt.response)[0]).toBe("spoken_response");
     await waitUntil(() => hermes.startCalls.length === 1);
     expect(hermes.startCalls[0]).toMatchObject({
       input: "Audit the release",
@@ -276,7 +323,14 @@ describe("live gateway WebSocket", () => {
     });
     await expect(provider.latest.toolResponses.wait(
       (entry) => entry.call.id === "tool_stop_blocked_dispatch",
-    )).resolves.toMatchObject({ response: { ok: true, task_id: taskId, status: "stopping" } });
+    )).resolves.toMatchObject({
+      response: {
+        spoken_response: "I've asked Hermes to stop that task.",
+        ok: true,
+        task_id: taskId,
+        status: "stopping",
+      },
+    });
 
     first.socket.terminate();
     await first.messages.waitForClose();
@@ -1143,11 +1197,18 @@ describe("live gateway WebSocket", () => {
 describe("realtime provider lifecycle boundaries", () => {
   it("sanitizes Hermes and realtime startup failures with request correlation", async () => {
     const hermesFailure = new HermesHarness();
-    hermesFailure.assertError = new Error("HERMES_STARTUP_SECRET");
+    hermesFailure.assertError = Object.assign(new Error("HERMES_STARTUP_SECRET"), {
+      name: "HermesRequestError",
+      status: 503,
+      errorCode: "gateway_draining",
+      responseBody: "HERMES_RESPONSE_SECRET",
+    });
+    const hermesLogger = fakeLogger();
     const firstServer = await startTestServer({
       config: testConfig(),
       hermes: hermesFailure,
       provider: new RecordingLiveAdapter(),
+      logger: hermesLogger,
     });
     const first = await connectClient(firstServer.url);
     send(first.socket, { type: "session.start", id: "hermes_start_fail", protocolVersion: 3 });
@@ -1155,6 +1216,13 @@ describe("realtime provider lifecycle boundaries", () => {
     expect(hermesError).toMatchObject({ code: "session_start_failed", requestId: "hermes_start_fail", recoverable: true });
     expect(hermesError.message).toContain("Hermes Agent is not ready");
     expect(JSON.stringify(hermesError)).not.toContain("HERMES_STARTUP_SECRET");
+    expect(hermesLogger.warn).toHaveBeenCalledWith("live session startup failed", expect.objectContaining({
+      phase: "hermes",
+      error: "startup_failed",
+      hermesStatus: 503,
+      hermesErrorCode: "gateway_draining",
+    }));
+    expect(JSON.stringify(vi.mocked(hermesLogger.warn).mock.calls)).not.toContain("HERMES_RESPONSE_SECRET");
 
     const secondServer = await startTestServer({
       config: testConfig(),
@@ -1167,6 +1235,38 @@ describe("realtime provider lifecycle boundaries", () => {
     expect(providerError).toMatchObject({ code: "session_start_failed", requestId: "provider_start_fail", recoverable: true });
     expect(providerError.message).toContain("failed to start");
     expect(JSON.stringify(providerError)).not.toContain("REALTIME_STARTUP_SECRET");
+  });
+
+  it("handles adapters that both reject connect and report the same pre-ready error", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const logger = fakeLogger();
+      const server = await startTestServer({
+        config: testConfig(),
+        hermes: new HermesHarness(),
+        provider: new DualFailConnectAdapter("DUAL_CHANNEL_STARTUP_SECRET"),
+        logger,
+      });
+      const client = await connectClient(server.url);
+      send(client.socket, { type: "session.start", id: "dual_start_fail", protocolVersion: 3 });
+
+      const failed = await client.messages.wait("session.error");
+      expect(failed).toMatchObject({
+        code: "session_start_failed",
+        requestId: "dual_start_fail",
+        recoverable: true,
+      });
+      expect(JSON.stringify(failed)).not.toContain("DUAL_CHANNEL_STARTUP_SECRET");
+      await delay(20);
+      expect(unhandled).toEqual([]);
+      expect(vi.mocked(logger.warn).mock.calls.filter(([message]) =>
+        message === "live session startup failed")).toHaveLength(1);
+      await client.messages.expectNone("session.ready", 30);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("waits for provider open, buffers safe pre-ready events, and times out a provider that never opens", async () => {
@@ -1248,6 +1348,49 @@ describe("realtime provider lifecycle boundaries", () => {
     await expect(client.messages.wait("session.error", (message) => message.code === "realtime_provider_closed")).resolves
       .toMatchObject({ recoverable: true });
     await expect(client.messages.waitForClose()).resolves.toMatchObject({ code: 1011 });
+  });
+
+  it("keeps accepted Hermes work durable when the realtime provider dies", async () => {
+    const config = testConfig();
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config, hermes, provider });
+    const first = await readyClient(server.url);
+
+    provider.emit({
+      type: "tool_call",
+      call: backgroundTaskCall("provider_crash_task", "Finish after the voice provider dies"),
+    });
+    const receipt = await provider.latest.toolResponses.wait(
+      (entry) => entry.call.id === "provider_crash_task",
+    );
+    const taskId = String(receipt.response.task_id);
+    await waitUntil(() => hermes.startCalls.length === 1);
+    const runId = hermes.runIdForInput("Finish after the voice provider dies");
+
+    provider.closeFromProvider({ code: 1006, reason: "simulated provider crash" });
+    await expect(first.messages.waitForClose()).resolves.toMatchObject({ code: 1011 });
+    expect(hermes.stopCalls).toEqual([]);
+
+    hermes.complete(runId, "Completed while voice was offline");
+    await waitForStoredTask(config.tasks.stateFile, taskId, "completed");
+
+    const second = await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
+    expect(second.initialSnapshot.tasks).toEqual([
+      expect.objectContaining({
+        taskId,
+        state: "completed",
+        result: expect.objectContaining({ summary: "Completed while voice was offline" }),
+      }),
+    ]);
+    await expect(second.messages.wait(
+      "task.notification",
+      (message) => message.taskId === taskId && message.notification.acknowledged === false,
+    )).resolves.toMatchObject({ taskId });
+    await expect(provider.latest.notifications.wait()).resolves.toMatchObject({
+      announcement: "Your background task is finished. The result is ready in the task inbox.",
+    });
+    expect(hermes.stopCalls).toEqual([]);
   });
 
   it("bounds a provider that never confirms close", async () => {
@@ -1419,6 +1562,97 @@ describe("transport, tool-call, and notification safety", () => {
     await expect(client.messages.waitForClose()).resolves.toMatchObject({ code: 1011 });
     expect(hermes.startCalls).toHaveLength(1);
     expect(hermes.stopCalls).toEqual([]);
+  });
+
+  it("returns a bounded spoken inbox count only when a provider requests summary-only status", async () => {
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config: testConfig(), hermes, provider });
+    await readyClient(server.url);
+
+    provider.emit({
+      type: "tool_call",
+      call: {
+        id: "summary_only_status",
+        name: "list_background_tasks",
+        args: { include_completed: true, summary_only: true },
+      },
+    });
+    await expect(provider.latest.toolResponses.wait((entry) => entry.call.id === "summary_only_status")).resolves
+      .toMatchObject({ response: { ok: true, tasks: [], spoken_response: "Your background task inbox is empty." } });
+
+    provider.emit({ type: "tool_call", call: backgroundTaskCall("summary_active_task", "Keep this task active") });
+    await provider.latest.toolResponses.wait((entry) => entry.call.id === "summary_active_task");
+    provider.emit({
+      type: "tool_call",
+      call: {
+        id: "summary_with_active",
+        name: "list_background_tasks",
+        args: { include_completed: true, summary_only: true },
+      },
+    });
+    await expect(provider.latest.toolResponses.wait((entry) => entry.call.id === "summary_with_active")).resolves
+      .toMatchObject({ response: { spoken_response: "One background task is active." } });
+
+    provider.emit({
+      type: "tool_call",
+      call: {
+        id: "detailed_status",
+        name: "list_background_tasks",
+        args: { include_completed: true },
+      },
+    });
+    const detailed = await provider.latest.toolResponses.wait((entry) => entry.call.id === "detailed_status");
+    expect(detailed.response).not.toHaveProperty("spoken_response");
+  });
+
+  it("does not present an unknown outcome as an active task", async () => {
+    const config = testConfig({ tasks: { pollIntervalMs: 10_000 } });
+    const hermes = new HermesHarness();
+    hermes.stopBehavior = async () => {
+      throw new Error("stop acknowledgement was lost");
+    };
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config, hermes, provider });
+    await readyClient(server.url);
+
+    provider.emit({ type: "tool_call", call: backgroundTaskCall("unknown_task", "Uncertain work") });
+    const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.id === "unknown_task");
+    const taskId = String(receipt.response.task_id);
+    await waitUntil(() => hermes.startCalls.length === 1);
+
+    provider.emit({
+      type: "tool_call",
+      call: {
+        id: "unknown_stop",
+        name: "stop_background_task",
+        args: { task_id: taskId },
+      },
+    });
+    await expect(provider.latest.toolResponses.wait((entry) => entry.call.id === "unknown_stop")).resolves
+      .toMatchObject({ response: { ok: true, task_id: taskId, status: "unknown" } });
+
+    provider.emit({
+      type: "tool_call",
+      call: {
+        id: "unknown_active_list",
+        name: "list_background_tasks",
+        args: { include_completed: false },
+      },
+    });
+    await expect(provider.latest.toolResponses.wait((entry) => entry.call.id === "unknown_active_list")).resolves
+      .toMatchObject({ response: { ok: true, tasks: [] } });
+
+    provider.emit({
+      type: "tool_call",
+      call: {
+        id: "unknown_history_list",
+        name: "list_background_tasks",
+        args: { include_completed: true },
+      },
+    });
+    await expect(provider.latest.toolResponses.wait((entry) => entry.call.id === "unknown_history_list")).resolves
+      .toMatchObject({ response: { ok: true, tasks: [expect.objectContaining({ taskId, state: "unknown" })] } });
   });
 
   it("tombstones evicted tool-call ids and fails closed instead of repeating a mutation", async () => {
@@ -1790,6 +2024,7 @@ async function readyClient(
   options: {
     profileId?: string;
     userLabel?: string;
+    protocolVersion?: 3 | 4 | 5 | 6;
     expectedSnapshotReason?: "initial" | "reconnect";
   } = {},
 ): Promise<{
@@ -1801,7 +2036,7 @@ async function readyClient(
   const client = await connectClient(serverUrl);
   send(client.socket, {
     type: "session.start",
-    protocolVersion: 3,
+    protocolVersion: options.protocolVersion ?? 3,
     ...(options.profileId ? { profileId: options.profileId } : {}),
     ...(options.userLabel ? { userLabel: options.userLabel } : {}),
   });
@@ -1982,7 +2217,7 @@ class SocketMessages {
         timeout: setTimeout(() => {
           const index = this.waiters.indexOf(waiter);
           if (index >= 0) this.waiters.splice(index, 1);
-          reject(new Error(`Timed out waiting for ${type}. Observed: ${this.observed.map((item) => item.type).join(", ")}`));
+          reject(new Error(`Timed out waiting for ${type}. Observed: ${JSON.stringify(this.observed)}`));
         }, timeoutMs),
       };
       this.waiters.push(waiter);
@@ -2112,6 +2347,15 @@ class FailingConnectAdapter implements LiveModelAdapter {
   constructor(private readonly message: string) {}
 
   async connect(_params: LiveModelConnectParams): Promise<LiveModelSession> {
+    throw new Error(this.message);
+  }
+}
+
+class DualFailConnectAdapter implements LiveModelAdapter {
+  constructor(private readonly message: string) {}
+
+  async connect(params: LiveModelConnectParams): Promise<LiveModelSession> {
+    params.callbacks.onError?.(new Error(this.message));
     throw new Error(this.message);
   }
 }

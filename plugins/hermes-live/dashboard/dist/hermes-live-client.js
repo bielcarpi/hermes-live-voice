@@ -62,7 +62,6 @@ const ACTIVE_TASK_STATES = new Set([
   "queued",
   "running",
   "stopping",
-  "unknown",
 ]);
 const TASK_STOP_RESPONSE_TYPES = new Set([
   "task.stopping",
@@ -72,7 +71,7 @@ const TASK_STOP_RESPONSE_TYPES = new Set([
   "task.unknown",
 ]);
 const OPEN = 1;
-export const HERMES_LIVE_PROTOCOL_VERSION = 5;
+export const HERMES_LIVE_PROTOCOL_VERSION = 6;
 
 const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "session.ready",
@@ -80,6 +79,7 @@ const KNOWN_SERVER_MESSAGE_TYPES = new Set([
   "audio.output",
   "transcript.delta",
   "input.speech_started",
+  "input.pause_requested",
   "response.started",
   "response.completed",
   "response.cancelled",
@@ -1566,7 +1566,7 @@ export function validateServerMessage(value) {
       requireInteger(message, "protocolVersion", { positive: true, maximum: 1_000 });
       if (message.protocolVersion !== HERMES_LIVE_PROTOCOL_VERSION) {
         throw new TypeError(
-          `Hermes Live protocol version ${message.protocolVersion} is not supported by this protocol v5 client. Upgrade the gateway and client together.`,
+          `Hermes Live protocol version ${message.protocolVersion} is not supported by this protocol v6 client. Upgrade the gateway and client together.`,
         );
       }
       optionalOpaqueId(message, "requestId", 128);
@@ -1616,6 +1616,10 @@ export function validateServerMessage(value) {
       requireEnum(message, "provider", ["openai", "local"]);
       optionalOpaqueId(message, "itemId");
       optionalFiniteNumber(message, "audioStartMs", { minimum: 0, maximum: 3_600_000 });
+      break;
+    case "input.pause_requested":
+      requireOnlyKeys(message, ["type", "reason"]);
+      requireEnum(message, "reason", ["voice_command"]);
       break;
     case "response.started":
     case "response.completed":
@@ -1721,7 +1725,7 @@ export function validateServerMessage(value) {
     default:
       if (message.type.startsWith("run.")) {
         throw new TypeError(
-          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v5 client accepts task.* lifecycle messages only.`,
+          `Hermes Live received legacy protocol v2 message ${message.type}; this protocol v6 client accepts task.* lifecycle messages only.`,
         );
       }
   }

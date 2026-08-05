@@ -11,7 +11,7 @@ import { startServer } from "./adapters/inbound/http/server.js";
 import { runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
 import { normalizeGatewayWebSocketUrl, runInteractiveTerminal, sanitizeTerminalText } from "./cli/terminal-session.js";
-import { runOfflineTaskCommand } from "./cli/task-operator.js";
+import { runOfflineTaskCommand, taskCommandHelp } from "./cli/task-operator.js";
 import {
   installHermesPlugin,
   pluginInstallStatus,
@@ -22,7 +22,7 @@ import { applyManagedConfigToProcess } from "./cli/managed-config.js";
 import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
 import { runSetupCommand } from "./cli/setup.js";
 import { runDoctorCommand } from "./cli/doctor.js";
-import { runLocalVoiceCommand } from "./cli/local-voice.js";
+import { printLocalVoiceHelp, runLocalVoiceCommand } from "./cli/local-voice.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import type { ConversationSelection } from "./domain/protocol/client-protocol.js";
 import { parseServerMessage as parseProtocolServerMessage } from "./domain/protocol/server-protocol.js";
@@ -39,6 +39,9 @@ const MAX_TEXT_CLIENT_ID_CHARS = 256;
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";
+  const commandArgs = process.argv.slice(3);
+
+  if (printRequestedCommandHelp(command, commandArgs)) return;
 
   if (usesManagedRuntimeConfig(command)) {
     await applyManagedConfigToProcess();
@@ -235,6 +238,86 @@ function usesManagedRuntimeConfig(command: string): boolean {
   ].includes(command);
 }
 
+function printRequestedCommandHelp(command: string, args: readonly string[]): boolean {
+  if (args.length !== 1 || !["help", "--help", "-h"].includes(args[0]!)) return false;
+
+  if (command === "local") {
+    printLocalVoiceHelp();
+    return true;
+  }
+  if (command === "tasks") {
+    console.log(taskCommandHelp());
+    return true;
+  }
+
+  const help = commandHelp(command);
+  if (!help) return false;
+  console.log(help);
+  return true;
+}
+
+function commandHelp(command: string): string | undefined {
+  if (command === "service") {
+    return `hermes-live service <action>
+
+Manage the Hermes Live gateway as a private user service.
+
+Actions:
+  status       Show whether the service is installed and running
+  restart      Reinstall the current package path and restart
+  logs         Show recent private service logs
+  stop         Stop the service without uninstalling it
+  start        Start an installed service
+  install      Install and start the service
+  uninstall    Stop and remove the service definition`;
+  }
+  if (command === "plugin") {
+    return `hermes-live plugin <status|install|path> [options]
+
+Inspect or install the bundled Hermes Dashboard plugin.
+
+Options:
+  --dir <path>  Override the Hermes plugins directory
+  --copy        Install a private copy (default)
+  --symlink     Link the checkout for development
+  --force       Replace an existing plugin installation`;
+  }
+  if (command === "terminal" || command === "chat") {
+    return `hermes-live terminal [--new | --resume <sessionId> | --unbound]
+
+Open a persistent headless conversation and task inbox. The default starts a
+new Hermes chat. Leaving the terminal detaches without cancelling tasks.`;
+  }
+  if (command === "client") {
+    return `hermes-live client "<request>"
+
+Send one text request through the configured realtime gateway. If it delegates
+work, wait for that exact durable task while unrelated tasks keep running.`;
+  }
+  if (command === "check") {
+    return `hermes-live check
+
+Print machine-readable gateway, Hermes, task-store, and provider readiness.`;
+  }
+  if (command === "provider-smoke" || command === "check-live-provider") {
+    return `hermes-live provider-smoke
+
+Open and cleanly close a real session with the configured voice provider.`;
+  }
+  if (command === "print-config") {
+    return `hermes-live print-config
+
+Print the resolved configuration with credentials and URL path/query data redacted.`;
+  }
+  if (command === "serve" || command === "dev") {
+    return `hermes-live serve
+
+Run the gateway in the foreground. Normal installations should use
+\`hermes-live setup\`, which installs and starts the private user service.`;
+  }
+  return undefined;
+}
+
 function redact(value: string | undefined): string | undefined {
   return value ? "***" : undefined;
 }
@@ -245,71 +328,35 @@ function positiveInt(value: string | undefined, fallback: number): number {
 }
 
 function printHelp(): void {
-  console.log(`hermes-live
+  console.log(`hermes-live — real-time voice for Hermes Agent
 
-Usage:
-  hermes-live --version     Print the installed package version
-  hermes-live setup         Configure, install, verify, and start Live Voice
-  hermes-live doctor        Check the installation and print exact fixes
-  hermes-live local         Run fully-local Hugging Face voice on Apple Silicon
-  hermes-live serve         Start the realtime gateway and web demo
-  hermes-live dev           Alias for serve
-  hermes-live client "..."  Send one prompt; wait for its exact task result
-  hermes-live terminal      Open a new persisted chat and the task inbox
-  hermes-live terminal --resume <sessionId> Continue an existing Hermes chat
-  hermes-live terminal --unbound Open voice without attaching a saved chat
-  hermes-live chat          Alias for terminal
-  hermes-live check         Check Hermes capabilities and realtime provider config
-  hermes-live provider-smoke Open and close a real local/Gemini/OpenAI session
-  hermes-live tasks unresolved Inspect unresolved outcomes with the gateway stopped
-  hermes-live tasks contain <taskId> --confirm-contained Unblock one unknown outcome after containment
-  hermes-live tasks unlock --confirm-no-gateway Clear a crash-left state lock after verifying shutdown
-  hermes-live print-config  Print resolved config with secrets redacted
-  hermes-live plugin install Install the Hermes plugin into ~/.hermes/plugins
-  hermes-live plugin status  Show Hermes plugin install status
-  hermes-live plugin path    Print this package's Hermes plugin directory
-  hermes-live service install Install and load the user gateway service
-  hermes-live service status  Show whether the gateway service is running
-  hermes-live service logs    Show the most recent gateway service logs
+Quick start:
+  hermes-live setup
+  hermes dashboard          Open Dashboard, then choose Live Voice
 
-Required environment:
-  HERMES_BASE_URL           Hermes API Server URL, default http://127.0.0.1:8642
-  HERMES_AGENT_API_SERVER_KEY Hermes Agent API_SERVER_KEY bearer token
-  HERMES_LIVE_PROVIDER      local, gemini, openai, or mock
-  GEMINI_API_KEY            Gemini Developer API key, unless using local voice or Enterprise auth
-  OPENAI_API_KEY            OpenAI API key when HERMES_LIVE_PROVIDER=openai
+Everyday commands:
+  hermes-live setup         Configure, verify, and start everything
+  hermes-live doctor        Diagnose the installation and print exact fixes
+  hermes-live terminal      Open a new headless chat and task inbox
+  hermes-live terminal --resume <sessionId>
 
-Optional:
-  HERMES_LIVE_URL           Remote gateway HTTP/WS URL for client and terminal
-  HERMES_LIVE_PORT          Gateway port, default 8788
-  HERMES_LIVE_AUTH_TOKEN    Require auth for /v1/live, /ready, and /v1/capabilities
-  HERMES_LIVE_ALLOW_UNAUTHENTICATED  Unsafe opt-out for network-accessible binds
-  HERMES_LIVE_MAX_TEXT_CHARS Text/tool-call character limit, default 20000
-  HERMES_LIVE_MAX_SESSIONS Concurrent WebSocket session limit, default 8
-  HERMES_LIVE_TRUST_CLIENT_IDENTITY Allow profileId/userLabel from clients; default false
-  HERMES_LIVE_TRUST_DECLARED_READ_ONLY Trust model-declared read-only task scopes; default false
-  HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS  Hermes run SSE idle timeout, default 120000
-  HERMES_LIVE_LOCAL_URL     Hugging Face realtime endpoint, default ws://127.0.0.1:8765/v1/realtime
-  HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS  Provider session ready timeout, default 15000
-  HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS  Optional timeout for provider-smoke
-  HERMES_LIVE_CLIENT_READY_TIMEOUT_MS  One-shot client handshake timeout, default 10000
-  HERMES_LIVE_CLIENT_RESULT_TIMEOUT_MS One-shot response/task timeout, default 3600000
-  OPENAI_REALTIME_MODEL     OpenAI Realtime model, default gpt-realtime-2.1
-  OPENAI_REALTIME_TURN_DETECTION disabled, semantic_vad, or server_vad
+Operations:
+  hermes-live service <status|restart|logs|stop|start|uninstall>
+  hermes-live local <status|restart|logs|stop|start|uninstall>
+  hermes-live check         Check Hermes and provider readiness
+  hermes-live provider-smoke  Open and close a real provider session
+  hermes-live print-config  Show resolved settings with secrets redacted
 
-Terminal client:
-  The terminal console controls a remote Hermes Live session without native
-  audio dependencies. Use /tasks, /status <taskId>, /result <taskId>,
-  /followup <taskId> <text>, and /stop <taskId>. Quitting only detaches;
-  server-owned tasks keep running.
-  For local microphone use, run Hermes and press Ctrl+B for official Hermes
-  Voice Mode. Use the Dashboard/browser UI for gateway audio.
+Advanced:
+  hermes-live serve         Run the gateway in the foreground
+  hermes-live client "..."  Submit one prompt and wait for its exact task
+  hermes-live tasks --help  Offline task recovery
+  hermes-live plugin <status|install|path>
 
-Plugin options:
-  --dir <path>              Hermes plugins directory, default ~/.hermes/plugins
-  --copy                    Copy plugin files, default
-  --symlink                 Symlink plugin directory instead of copying
-  --force                   Replace an existing hermes-live plugin install
+Setup manages the normal local Hermes bridge, its private credential, the
+Dashboard plugin, and user services automatically. It prompts only for a
+hosted voice-provider key when one is needed. Run \`hermes-live setup --help\`
+for deployment flags or see https://github.com/bielcarpi/hermes-live-voice.
 `);
 }
 

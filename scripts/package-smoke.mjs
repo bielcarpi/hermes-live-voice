@@ -54,6 +54,7 @@ try {
     "dist/cli/task-operator.js",
     "dist/cli/terminal-session.js",
     "dist/cli/doctor.js",
+    "dist/cli/gateway-probe.js",
     "dist/cli/managed-config.js",
     "dist/cli/local-voice.js",
     "dist/cli/plugin-installer.js",
@@ -62,6 +63,7 @@ try {
     "dist/cli/setup.js",
     "dist/config.js",
     "dist/live-provider-smoke.js",
+    "dist/service-identity.js",
     "dist/adapters/inbound/http/server.js",
     "dist/adapters/inbound/http/static.js",
     "dist/adapters/inbound/http/websocket-client-connection.js",
@@ -180,7 +182,10 @@ try {
     !help.stdout.includes("doctor") ||
     !help.stdout.includes("service") ||
     !help.stdout.includes("provider-smoke") ||
-    !help.stdout.includes("HERMES_LIVE_PROVIDER")
+    !help.stdout.includes("hermes dashboard") ||
+    !help.stdout.includes("setup --help") ||
+    help.stdout.includes("Required environment:") ||
+    help.stdout.includes("HERMES_AGENT_API_SERVER_KEY")
   ) {
     throw new Error(`Installed CLI help failed with status ${help.status ?? "null"}\n${help.stdout}\n${help.stderr}`);
   }

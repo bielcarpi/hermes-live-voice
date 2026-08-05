@@ -213,7 +213,7 @@ const TaskEventBase = {
 const SessionReadyMessageSchema = z
   .object({
     type: z.literal("session.ready"),
-    protocolVersion: z.union([z.literal(3), z.literal(4), z.literal(5)]),
+    protocolVersion: z.union([z.literal(3), z.literal(4), z.literal(5), z.literal(6)]),
     requestId: RequestIdSchema.optional(),
     sessionId: PublicIdSchema,
     model: z.string().min(1).max(PUBLIC_MODEL_MAX_CHARS),
@@ -264,6 +264,13 @@ const InputSpeechStartedMessageSchema = z
     provider: z.enum(["openai", "local"]),
     itemId: PublicIdSchema.optional(),
     audioStartMs: z.number().finite().nonnegative().max(60 * 60 * 1_000).optional(),
+  })
+  .strict();
+
+const InputPauseRequestedMessageSchema = z
+  .object({
+    type: z.literal("input.pause_requested"),
+    reason: z.literal("voice_command"),
   })
   .strict();
 
@@ -396,6 +403,7 @@ export const ServerMessageSchema = z.union([
   AudioOutputMessageSchema,
   TranscriptDeltaMessageSchema,
   InputSpeechStartedMessageSchema,
+  InputPauseRequestedMessageSchema,
   ResponseStartedMessageSchema,
   ResponseCompletedMessageSchema,
   ResponseCancelledMessageSchema,
@@ -419,7 +427,7 @@ export type TaskSnapshotMessage = Extract<ServerMessage, { type: "task.snapshot"
 export type TaskLifecycleMessage = Extract<ServerMessage, { type: `task.${string}` }>;
 
 // HermesRunEvent remains an internal upstream-adapter type. Raw run events are
-// deliberately not members of the public protocol-v5 ServerMessage union.
+// deliberately not members of the public protocol-v6 ServerMessage union.
 export interface HermesRunEvent {
   event?: string;
   run_id?: string;

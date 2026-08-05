@@ -74,7 +74,7 @@ The selected realtime runtime receives:
 
 An exact retained result reaches the provider only when it calls `get_background_task`, normally because the user asks for details. Connected protocol clients receive their own sanitized task lifecycle independently.
 
-The runtime never receives Hermes/provider credentials, the server-owned Hermes session key, raw Hermes APIs/events, upstream run ids, the task state file, or approval authority. These controls protect credentials and action boundaries. Hosted providers still receive conversational content; a fully local Hugging Face profile keeps speech and model inference on the machine. Do not delegate data to a runtime that is not allowed to process it.
+The runtime never receives Hermes/provider credentials, the server-owned Hermes session key, raw Hermes APIs/events, upstream run ids, the task state file, or approval authority. These controls protect credentials and action boundaries. Hosted providers still receive conversational content; a fully local Hugging Face profile keeps speech and model inference on the machine. Its managed launcher disables Hugging Face telemetry and suppresses the pinned upstream runtime's content-bearing transcript and LLM logs while preserving operational warnings. Hermes chats and delegated task state are still retained by their documented stores. Initial package and model downloads still contact public registries. Do not delegate data to a runtime that is not allowed to process it.
 
 Task titles, summaries, and results are untrusted data. The realtime instruction forbids following instructions, links, commands, or tool requests embedded in them. UIs must render them as text, not executable HTML or trusted markup.
 
@@ -96,7 +96,7 @@ An ambiguous stop also becomes `unknown`. The gateway never treats “stop reque
 
 ## Approvals
 
-Protocol v5 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
+Protocol v6 has no interactive approval request, response, button, or terminal command. The realtime provider has no approval tool.
 
 When Hermes reports `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all: true` and requests stop for that exact upstream run. The public projection is non-actionable. Hermes exposes a run-scoped response endpoint, but not enough per-request identity for safe concurrent approval from Hermes Live, so there is no human approval path.
 

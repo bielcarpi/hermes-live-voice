@@ -25,6 +25,7 @@ describe("config", () => {
     expect(config.server.maxTextChars).toBe(20_000);
     expect(config.server.providerReadyTimeoutMs).toBe(15_000);
     expect(config.hermes.baseUrl).toBe("http://127.0.0.1:8642");
+    expect(config.hermes.model).toBeUndefined();
     expect(config.hermes.timeoutMs).toBe(30_000);
     expect(config.hermes.streamIdleTimeoutMs).toBe(120_000);
     expect(config.tasks).toMatchObject({
@@ -40,9 +41,18 @@ describe("config", () => {
       url: "ws://127.0.0.1:8765/v1/realtime",
       voice: "Aiden",
       allowRemote: false,
+      ownsTurnRouting: false,
     });
     expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
     expect(config.realtime.model).toBe(config.gemini.model);
+  });
+
+  it("matches the default local session limit to the managed single-pipeline provider", () => {
+    expect(loadConfig({ HERMES_LIVE_PROVIDER: "local" }).server.maxSessions).toBe(1);
+    expect(loadConfig({
+      HERMES_LIVE_PROVIDER: "local",
+      HERMES_LIVE_MAX_SESSIONS: "4",
+    }).server.maxSessions).toBe(4);
   });
 
   it("uses PORT over HERMES_LIVE_PORT", () => {
@@ -55,6 +65,12 @@ describe("config", () => {
     const config = loadConfig({ HERMES_LIVE_HERMES_TIMEOUT_MS: "1200" });
 
     expect(config.hermes.timeoutMs).toBe(1200);
+  });
+
+  it("uses an explicit Hermes model only as an operator override", () => {
+    expect(loadConfig({ HERMES_MODEL: "openai/gpt-5.4-mini" }).hermes.model)
+      .toBe("openai/gpt-5.4-mini");
+    expect(() => loadConfig({ HERMES_MODEL: "" })).toThrow();
   });
 
   it("rejects disabled or negative Hermes request timeouts", () => {
@@ -116,6 +132,7 @@ describe("config", () => {
       url: "ws://localhost:9876/v1/realtime",
       voice: "Ryan",
       allowRemote: false,
+      ownsTurnRouting: false,
     });
     expect(realtimeProviderConfigured(local)).toBe(true);
     expect(() => assertRuntimeConfig(local)).not.toThrow();

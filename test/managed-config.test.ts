@@ -55,6 +55,18 @@ describe("managed config", () => {
     }
   });
 
+  it("can keep managed settings inside an explicit Hermes profile home", async () => {
+    const home = await temporaryHome();
+    const hermesHome = join(home, "profiles", "work");
+    const path = await writeManagedConfig({ HERMES_LIVE_PROVIDER: "mock" }, { home, hermesHome });
+
+    expect(path).toBe(join(hermesHome, "hermes-live", "config.env"));
+    await expect(readManagedConfig({ home, hermesHome })).resolves.toMatchObject({
+      exists: true,
+      values: { HERMES_LIVE_PROVIDER: "mock" },
+    });
+  });
+
   it("rejects unapproved keys, duplicates, and non-string values", () => {
     expect(() => parseManagedConfig('NODE_OPTIONS="--import=evil"')).toThrow(/not a supported/u);
     expect(() => parseManagedConfig('HERMES_LIVE_PORT="8788"\nHERMES_LIVE_PORT="9999"')).toThrow(/duplicate/u);

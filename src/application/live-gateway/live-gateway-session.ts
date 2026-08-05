@@ -28,11 +28,13 @@ import type { TaskSupervisorPort } from "./ports/task-supervisor.port.js";
 import {
   type LiveModelEvent,
   type LiveToolCall,
+  type LiveToolName,
   type LiveModelAdapter,
   type LiveModelSession,
 } from "./ports/realtime-model.port.js";
 import { buildSystemInstruction } from "./system-instruction.js";
 import {
+  isTaskNotificationState,
   projectSupersededTaskNotification,
   projectTaskLifecycle,
   projectTaskNotification,
@@ -189,14 +191,24 @@ export class LiveGatewaySession {
         resolveOpen = resolve;
         rejectOpen = reject;
       });
+      // Some adapters reject connect and report the same pre-ready failure
+      // through callbacks. The connect path is awaited below, while this
+      // readiness latch may otherwise reject first and become an unhandled
+      // promise before startup cleanup can attach its await.
+      void providerOpen.catch(() => undefined);
 
       const connect = this.deps.liveModel.connect({
         sessionId: this.id,
         systemInstruction: buildSystemInstruction(
           this.notificationToken,
           this.deps.config.tasks.trustDeclaredReadOnly === true,
-          { bound: this.conversation.mode !== "unbound" },
+          {
+            bound: this.conversation.mode !== "unbound",
+            voiceInputPause: this.protocolVersion >= 6,
+          },
+          this.deps.config.realtime.provider === "local",
         ),
+        availableTools: this.availableProviderTools(),
         safetyIdentifier: safetyIdentifierForSessionKey(this.sessionKey),
         callbacks: {
           onOpen: () => {
@@ -378,7 +390,7 @@ export class LiveGatewaySession {
         this.deps.logger.warn("live session startup failed", {
           sessionId: this.id,
           phase: startupPhase,
-          error: "startup_failed",
+          ...startupFailureLogDetail(error),
         });
         this.fail(
           "session_start_failed",
@@ -613,6 +625,23 @@ export class LiveGatewaySession {
     return result;
   }
 
+  private availableProviderTools(): LiveToolName[] {
+    const tools: LiveToolName[] = [
+      "start_background_task",
+      "list_background_tasks",
+      "get_background_task",
+      "stop_background_task",
+    ];
+    if (this.protocolVersion >= 4 && this.deps.taskSupervisor.followUp) {
+      tools.push("follow_up_background_task");
+    }
+    if (this.protocolVersion >= 4 && this.conversation.mode !== "unbound" && this.deps.hermes.chatSession) {
+      tools.unshift("continue_hermes_conversation");
+    }
+    if (this.protocolVersion >= 6) tools.push("pause_voice_input");
+    return tools;
+  }
+
   private executeToolCall(call: LiveToolCall): Promise<Record<string, unknown>> {
     if (!this.ownerId || !this.sessionKey) throw new Error("session.start has not completed.");
     switch (call.name) {
@@ -673,6 +702,7 @@ export class LiveGatewaySession {
           ...(resourceKeys ? { resourceKeys } : {}),
           ...(this.conversation.sessionId ? { originConversationId: this.conversation.sessionId } : {}),
         }), "Background task could not be accepted safely.").then((task) => ({
+          spoken_response: "I've started that in the background. You can keep talking.",
           ok: true,
           task_id: task.taskId,
           status: task.status,
@@ -682,15 +712,19 @@ export class LiveGatewaySession {
       }
       case "list_background_tasks": {
         const includeCompleted = booleanArg(call, "include_completed", true);
+        const summaryOnly = booleanArg(call, "summary_only", false);
         return this.runTaskOperation(
           () => this.deps.taskSupervisor.list(this.ownerId!, 25),
           "Unable to read the background task inbox.",
-        ).then((records) => ({
-          ok: true,
-          tasks: records
-            .filter((record) => includeCompleted || !["completed", "failed", "cancelled"].includes(record.status))
-            .map((record) => projectTaskSnapshot(record)),
-        }));
+        ).then((records) => {
+          const selected = records
+            .filter((record) => includeCompleted || !isTaskNotificationState(record.status));
+          return {
+            ...(summaryOnly ? { spoken_response: taskInboxSpokenSummary(selected) } : {}),
+            ok: true,
+            tasks: selected.map((record) => projectTaskSnapshot(record)),
+          };
+        });
       }
       case "get_background_task": {
         const taskId = stringArg(call, "task_id");
@@ -722,6 +756,7 @@ export class LiveGatewaySession {
           ...(title ? { title } : {}),
           ...(this.conversation.sessionId ? { originConversationId: this.conversation.sessionId } : {}),
         }), "Unable to start that task follow-up.").then((task) => ({
+          spoken_response: "I've started that follow-up in the background.",
           ok: true,
           task_id: task.taskId,
           parent_task_id: task.parentTaskId,
@@ -737,10 +772,26 @@ export class LiveGatewaySession {
           () => this.deps.taskSupervisor.stop(this.ownerId!, taskId, optionalStringArg(call, "reason")),
           "Unable to stop that background task safely.",
         ).then((task) => ({
+          spoken_response: "I've asked Hermes to stop that task.",
           ok: true,
           task_id: task.taskId,
           status: projectTaskSnapshot(task).state,
         }));
+      }
+      case "pause_voice_input": {
+        if (this.protocolVersion < 6) {
+          return Promise.resolve({
+            ok: false,
+            error: "Voice-controlled microphone pause requires Hermes Live protocol v6.",
+          });
+        }
+        this.send({ type: "input.pause_requested", reason: "voice_command" });
+        return Promise.resolve({
+          spoken_response: "Listening is paused. Use the microphone button when you want me back.",
+          ok: true,
+          listening: false,
+          message: "Microphone listening paused. The user can resume from the client microphone control.",
+        });
       }
       default:
         return Promise.resolve({ ok: false, error: `Unknown hermes-live tool: ${call.name}` });
@@ -1471,6 +1522,30 @@ export class LiveGatewaySession {
   }
 }
 
+function startupFailureLogDetail(error: unknown): {
+  error: "startup_failed";
+  hermesStatus?: number;
+  hermesErrorCode?: string;
+} {
+  const detail: {
+    error: "startup_failed";
+    hermesStatus?: number;
+    hermesErrorCode?: string;
+  } = { error: "startup_failed" };
+  if (!error || typeof error !== "object" || (error as { name?: unknown }).name !== "HermesRequestError") {
+    return detail;
+  }
+  const status = (error as { status?: unknown }).status;
+  if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) {
+    detail.hermesStatus = status;
+  }
+  const errorCode = (error as { errorCode?: unknown }).errorCode;
+  if (typeof errorCode === "string" && /^[A-Za-z0-9._-]{1,80}$/u.test(errorCode)) {
+    detail.hermesErrorCode = errorCode;
+  }
+  return detail;
+}
+
 function publicConversation(
   mode: "new" | "resume",
   session: HermesSessionSummary,
@@ -1661,6 +1736,19 @@ function boundedProviderToolResponse(response: Record<string, unknown>): Record<
   return safeJsonByteLength(response) <= MAX_PROVIDER_TOOL_RESPONSE_BYTES
     ? response
     : { ok: false, error: "Task result exceeded the safe provider response limit." };
+}
+
+function taskInboxSpokenSummary(records: readonly TaskRecord[]): string {
+  if (records.length === 0) return "Your background task inbox is empty.";
+  const finished = records.filter((record) => ["completed", "failed", "cancelled"].includes(record.status)).length;
+  const uncertain = records.filter((record) => ["unknown", "dispatch_unknown"].includes(record.status)).length;
+  const active = records.length - finished - uncertain;
+  const parts: string[] = [];
+  if (active > 0) parts.push(`${active === 1 ? "one" : active} background ${active === 1 ? "task is" : "tasks are"} active`);
+  if (finished > 0) parts.push(`${finished === 1 ? "one task is" : `${finished} tasks are`} finished in the inbox`);
+  if (uncertain > 0) parts.push(`${uncertain === 1 ? "one task has" : `${uncertain} tasks have`} an uncertain state`);
+  const sentence = parts.join(", and ");
+  return `${sentence[0]!.toUpperCase()}${sentence.slice(1)}.`;
 }
 
 function publicHermesCapabilities(

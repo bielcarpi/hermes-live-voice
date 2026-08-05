@@ -14,7 +14,6 @@
     "queued",
     "running",
     "stopping",
-    "unknown",
   ]);
 
   // Capture this while the IIFE is executing: document.currentScript is no
@@ -167,9 +166,11 @@
       : "Speak naturally. You can interrupt Hermes at any time.";
   }
 
-  function connectedSessionNotice(inputAudio, browserMicSupported) {
+  function connectedSessionNotice(inputAudio, browserMicSupported, listening) {
     if (browserMicSupported) {
-      return "Connected. You can keep talking while tasks run.";
+      return listening
+        ? "Connected and listening. You can keep talking while tasks run."
+        : "Connected. You can keep talking while tasks run.";
     }
     return inputAudio && inputAudio.enabled === false
       ? "Live Voice is connected in text mode. Type a message to Hermes."
@@ -200,6 +201,22 @@
       (!mimeType || /^audio\/pcm(?:;|$)/i.test(mimeType));
   }
 
+  async function startMicrophoneAfterConnect(audio, inputAudio, isCurrent) {
+    if (!audio || !supportsBrowserMicrophone(inputAudio)) return { started: false };
+    try {
+      await audio.startMicrophone();
+      if (typeof isCurrent === "function" && !isCurrent()) {
+        try {
+          await audio.stopMicrophone({ endTurn: false });
+        } catch (_) {}
+        return { started: false, stale: true };
+      }
+      return { started: true };
+    } catch (error) {
+      return { started: false, error: error };
+    }
+  }
+
   async function disconnectSession(audio, client, onAudioError) {
     void Promise.resolve()
       .then(function () {
@@ -214,6 +231,11 @@
         }
       });
     await client.disconnect("user disconnected from dashboard");
+  }
+
+  function scrollTranscriptToLatest(container, transcriptCount) {
+    if (!container || transcriptCount < 1) return;
+    container.scrollTop = container.scrollHeight;
   }
 
   function connectionClosedNotice(event, fatalNotice) {
@@ -238,10 +260,17 @@
       tone: "danger",
       detail: "The gateway is offline. Run hermes-live service status, then hermes-live doctor.",
     };
+    if (status.error === "wrong_gateway_service") return {
+      label: "Wrong service",
+      tone: "danger",
+      detail: "Another app is using the configured port. Run hermes-live setup, then restart Hermes Dashboard.",
+    };
     if (status.ready === false) return {
       label: "Not ready",
       tone: "warning",
-      detail: (status.error || "The provider or Hermes bridge is not ready.") + " Run hermes-live doctor for the exact fix.",
+      detail: status.provider === "local"
+        ? "Local voice is not ready. Run hermes-live local restart, then hermes-live doctor."
+        : (status.error || "The provider or Hermes bridge is not ready.") + " Run hermes-live doctor for the exact fix.",
     };
     if (status.ready === true) return { label: "Ready", tone: "success", detail: "Gateway and Hermes bridge are ready." };
     if (status.error) return {
@@ -264,6 +293,23 @@
     };
     const value = values[connection] || [titleCase(connection), "neutral"];
     return { label: value[0], tone: value[1] };
+  }
+
+  function connectControlPresentation(gateway, clientLoading, busyAction, connection) {
+    const transition = ["connecting", "starting", "closing"].includes(connection);
+    const gatewayReady = gateway && gateway.ready === true;
+    return {
+      disabled: Boolean(clientLoading || busyAction === "connect" || transition || !gatewayReady),
+      label: clientLoading
+        ? "Loading voice client\u2026"
+        : busyAction === "connect"
+          ? "Connecting\u2026"
+          : gateway && gateway.loading
+            ? "Checking gateway\u2026"
+            : !gatewayReady
+              ? "Gateway not ready"
+              : "Connect Live Voice",
+    };
   }
 
   function formatTaskTime(timestamp) {
@@ -313,8 +359,8 @@
     const ensureAudioRef = useRef(null);
     const audioUnsubscribersRef = useRef([]);
     const transcriptSequence = useRef(0);
-    const transcriptEndRef = useRef(null);
-    const fatalNoticeRef = useRef(null);
+    const transcriptViewportRef = useRef(null);
+    const disconnectNoticeRef = useRef(null);
 
     const addTranscript = useCallback(function (speaker, text, final, source) {
       const normalized = clampText(text, 20_000);
@@ -440,7 +486,11 @@
 
           clientUnsubscribers.push(
             client.subscribe(function (value) {
-              if (active) setSnapshot(value);
+              if (!active) return;
+              setSnapshot(value);
+              const attachedSessionId = value && value.session && value.session.conversation &&
+                value.session.conversation.sessionId;
+              if (attachedSessionId) setConversationId(attachedSessionId);
             }),
             client.on("transcript.delta", function (message) {
               if (active) addTranscript(message.speaker, message.text, message.final, "stream");
@@ -457,6 +507,11 @@
             }),
             client.on("response.completed", function () {
               if (active) finalizeAssistantTranscript();
+            }),
+            client.on("response.started", function () {
+              if (!active) return;
+              const retained = disconnectNoticeRef.current;
+              if (retained && !retained.sticky) disconnectNoticeRef.current = null;
             }),
             client.on("response.cancelled", function () {
               if (!active) return;
@@ -494,6 +549,25 @@
               const audio = audioRef.current;
               if (audio) audio.interrupt("provider detected user speech");
             }),
+            client.on("input.pause_requested", function () {
+              if (!active) return;
+              const audio = audioRef.current;
+              if (!audio) {
+                setNotice({ tone: "neutral", text: "Listening is paused. Press Start microphone when you want to resume." });
+                return;
+              }
+              void audio.stopMicrophone({ endTurn: false }).then(function () {
+                if (active) setNotice({
+                  tone: "neutral",
+                  text: "Listening paused by voice command. Press Start microphone when you want to resume.",
+                });
+              }).catch(function (error) {
+                if (active) setNotice({
+                  tone: "warning",
+                  text: friendlyError(error, "The microphone pause did not finish. Press Pause microphone."),
+                });
+              });
+            }),
             client.on("audio.dropped", function () {
               if (active) setNotice({
                 tone: "warning",
@@ -503,12 +577,19 @@
             client.on("error", function (event) {
               if (!active) return;
               setBusyAction("");
+              if (event.code === "connection_lost" && disconnectNoticeRef.current) {
+                setNotice(disconnectNoticeRef.current.notice);
+                return;
+              }
               const nextNotice = {
                 tone: "danger",
                 text: friendlyError(event.error, "The Live Voice session reported an error."),
               };
-              if (event.detail && event.detail.type === "session.error" && event.detail.recoverable === false) {
-                fatalNoticeRef.current = nextNotice;
+              if (event.detail && event.detail.type === "session.error") {
+                disconnectNoticeRef.current = {
+                  notice: nextNotice,
+                  sticky: event.detail.recoverable === false,
+                };
               }
               setNotice(nextNotice);
             }),
@@ -521,7 +602,10 @@
               setMicrophone(initialMicrophone());
               setPlayback(initialPlayback());
               setBusyAction("");
-              setNotice(connectionClosedNotice(event, fatalNoticeRef.current));
+              setNotice(connectionClosedNotice(
+                event,
+                disconnectNoticeRef.current && disconnectNoticeRef.current.notice,
+              ));
             }),
           );
         })
@@ -549,10 +633,7 @@
     }, [SDK, addTranscript, finalizeAssistantTranscript]);
 
     useEffect(function () {
-      const element = transcriptEndRef.current;
-      if (element && typeof element.scrollIntoView === "function") {
-        element.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      }
+      scrollTranscriptToLatest(transcriptViewportRef.current, transcript.length);
     }, [transcript.length]);
 
     function runAction(name, action) {
@@ -583,8 +664,8 @@
     function connect() {
       const client = clientRef.current;
       if (!client) return;
-      fatalNoticeRef.current = null;
-      primePlaybackFromGesture();
+      disconnectNoticeRef.current = null;
+      const audio = primePlaybackFromGesture();
       runAction("connect", function () {
         const conversation = conversationId === "new"
           ? { mode: "new" }
@@ -592,12 +673,33 @@
         return client.connect({ conversation: conversation }).then(function () {
           if (ensureAudioRef.current) ensureAudioRef.current();
           const connectedInputAudio = negotiatedInputAudio(client.getSnapshot(), inputAudio);
+          const browserMicrophoneSupported = supportsBrowserMicrophone(connectedInputAudio);
           setNotice({
             tone: "success",
-            text: connectedSessionNotice(
-              connectedInputAudio,
-              supportsBrowserMicrophone(connectedInputAudio),
-            ),
+            text: browserMicrophoneSupported
+              ? "Live Voice connected. Allow microphone access to start talking."
+              : connectedSessionNotice(connectedInputAudio, false, false),
+          });
+          void startMicrophoneAfterConnect(audio, connectedInputAudio, function () {
+            return clientRef.current === client && client.connected && audioRef.current === audio;
+          }).then(function (microphoneStart) {
+            if (clientRef.current !== client || !client.connected || audioRef.current !== audio) return;
+            setNotice(microphoneStart.error
+              ? {
+                  tone: "warning",
+                  text: friendlyError(
+                    microphoneStart.error,
+                    "Live Voice connected, but microphone access failed. Allow it and press Start microphone.",
+                  ),
+                }
+              : {
+                  tone: "success",
+                  text: connectedSessionNotice(
+                    connectedInputAudio,
+                    browserMicrophoneSupported,
+                    microphoneStart.started,
+                  ),
+                });
           });
           refreshStatus();
           refreshConversations();
@@ -694,6 +796,7 @@
 
     const connection = connectionPresentation(snapshot.connection);
     const gatewayState = gatewayPresentation(gateway);
+    const connectControl = connectControlPresentation(gateway, clientLoading, busyAction, snapshot.connection);
     const connected = snapshot.connection === "ready";
     const session = snapshot.session;
     const realtime = session && session.realtime ? session.realtime : {};
@@ -888,10 +991,9 @@
               : h(ControlButton, {
                   variant: "primary",
                   wide: true,
-                  disabled: clientLoading || busyAction === "connect" ||
-                    ["connecting", "starting", "closing"].includes(snapshot.connection),
+                  disabled: connectControl.disabled,
                   onClick: connect,
-                }, clientLoading ? "Loading voice client\u2026" : busyAction === "connect" ? "Connecting\u2026" : "Connect Live Voice"),
+                }, connectControl.label),
           ),
           h("div", { className: "hlv-control-grid hlv-control-grid--voice" },
             microphone.active
@@ -1042,7 +1144,12 @@
             onClick: function () { setTranscript([]); },
           }, "Clear transcript") : null,
         ),
-        h("div", { className: "hlv-transcript", "aria-live": "polite", "aria-relevant": "additions text" },
+        h("div", {
+          ref: transcriptViewportRef,
+          className: "hlv-transcript",
+          "aria-live": "polite",
+          "aria-relevant": "additions text",
+        },
           transcript.length
             ? transcript.map(function (entry) {
                 return h("article", { key: entry.id, className: "hlv-message hlv-message--" + entry.speaker },
@@ -1057,9 +1164,8 @@
             : h("div", { className: "hlv-empty" },
                 h("div", { className: "hlv-empty__mark", "aria-hidden": "true" }, "\u223F"),
                 h("h3", null, "Your conversation will appear here"),
-                h("p", null, "Connect, start the microphone, and speak naturally \u2014 or use text when voice is unavailable."),
+                h("p", null, "Connect and speak naturally \u2014 or use text when voice is unavailable."),
               ),
-          h("div", { ref: transcriptEndRef }),
         ),
       ),
 

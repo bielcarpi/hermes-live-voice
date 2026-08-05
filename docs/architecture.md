@@ -8,7 +8,7 @@ It is an independent community integration, not a replacement for Hermes or an o
 
 ```txt
 Hermes Dashboard / browser / terminal / native client
-  -> authenticated Hermes Live protocol v5 WebSocket
+  -> authenticated Hermes Live protocol v6 WebSocket
   -> LiveGatewaySession (conversation and client subscription)
        -> Hugging Face local, Gemini Live, or OpenAI Realtime (speech and delegation decisions)
        -> Hermes Sessions Chat (selected conversation memory and canonical turns)
@@ -55,7 +55,7 @@ The plugin stays small and Hermes-specific. The companion gateway remains a sepa
 - protocol negotiation, client authentication, and browser origin checks;
 - creation or resumption of one persisted Hermes conversation;
 - realtime provider connection and interruption state;
-- canonical Hermes chat turns plus five narrow background-task tools;
+- canonical Hermes chat turns, five narrow background-task tools, and explicit voice-input pause;
 - subscription to the owner's durable task stream;
 - safe completion announcements while the conversation is idle.
 
@@ -88,6 +88,7 @@ The realtime provider owns speech recognition/generation, conversational flow, a
 - `get_background_task`
 - `follow_up_background_task`
 - `stop_background_task`
+- `pause_voice_input` (client input control; never task cancellation)
 
 It never receives Hermes credentials, raw Hermes tools, upstream run ids, the local state file, or approval authority. A task receipt returns quickly, so the provider can continue talking while Hermes works.
 
@@ -103,7 +104,7 @@ Hermes owns the actual delegated work. The gateway currently requires these Herm
 - `run_stop`
 - `run_approval_response`
 
-Canonical chat uses Hermes Sessions Chat so the selected conversation keeps its persisted history and compression lineage. Background workers use `POST /v1/runs`, `GET /v1/runs/{run_id}`, `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/stop`, and the approval endpoint only for fail-closed denial. These upstream details never appear in protocol v5.
+Canonical chat uses Hermes Sessions Chat so the selected conversation keeps its persisted history and compression lineage. Background workers use `POST /v1/runs`, `GET /v1/runs/{run_id}`, `GET /v1/runs/{run_id}/events`, `POST /v1/runs/{run_id}/stop`, and the approval endpoint only for fail-closed denial. These upstream details never appear in protocol v6.
 
 These are two separate execution planes. The conversation plane serializes canonical turns into one selected Hermes session. The task plane starts independent Hermes `AIAgent` runs so long work can continue after voice disconnects. Hermes Live does not automatically decompose every request into subagents; the realtime model delegates only when work should outlive or run beside the current conversation.
 
@@ -135,7 +136,7 @@ Every state is persisted before subscribers see it. The store uses atomic replac
 
 ## Public Projection
 
-Hermes event streams are internal. Protocol v5 exposes only bounded task snapshots and lifecycle facts:
+Hermes event streams are internal. The public protocol exposes only bounded task snapshots and lifecycle facts:
 
 - no upstream run id;
 - no raw reasoning, tool arguments/output, approval identity, or provider envelopes;

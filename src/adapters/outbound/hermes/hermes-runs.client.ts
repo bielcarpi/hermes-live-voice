@@ -24,12 +24,20 @@ import { parseSseStream } from "./sse.js";
 export const MAX_HERMES_JSON_RESPONSE_BYTES = 1_000_000;
 export const MAX_HERMES_RUN_OUTPUT_CHARS = 200_000;
 export const MAX_HERMES_RETRY_AFTER_CHARS = 128;
+export const REQUIRED_HERMES_SESSION_FEATURES = [
+  "session_resources",
+  "session_chat",
+  "session_chat_streaming",
+  "model_options",
+  "session_model_lock",
+] as const;
 const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 const MAX_HERMES_RETRY_AFTER_SECONDS = 86_400;
 const MAX_HERMES_RUN_METADATA_CHARS = 512;
 const MAX_HERMES_SESSION_TITLE_CHARS = 100;
 const MAX_HERMES_SESSION_TEXT_CHARS = 20_000;
 const MAX_HERMES_SESSION_MESSAGES = 10_000;
+const MAX_HERMES_PROVIDER_ID_CHARS = 80;
 const HERMES_RUN_STATUSES = new Set<HermesRunStatus>([
   "queued",
   "running",
@@ -39,6 +47,11 @@ const HERMES_RUN_STATUSES = new Set<HermesRunStatus>([
   "failed",
   "cancelled",
 ]);
+
+interface HermesModelSelection {
+  model: string;
+  provider?: string;
+}
 
 export class HermesRequestError extends Error {
   override readonly name = "HermesRequestError";
@@ -61,9 +74,10 @@ export class HermesRequestError extends Error {
 export class HermesClient implements HermesRunsPort {
   readonly baseUrl: string;
   private readonly apiKey: string | undefined;
-  private readonly model: string;
+  private readonly model: string | undefined;
   private readonly timeoutMs: number;
   private readonly streamIdleTimeoutMs: number;
+  private readonly sessionModelsReady = new Set<string>();
 
   constructor(config: AppConfig["hermes"]) {
     this.baseUrl = config.baseUrl;
@@ -97,8 +111,7 @@ export class HermesClient implements HermesRunsPort {
   async assertSessionsSupported(signal?: AbortSignal): Promise<HermesCapabilities> {
     const capabilities = await this.capabilities(signal);
     const features = capabilities.features ?? {};
-    const required = ["session_resources", "session_chat", "session_chat_streaming"];
-    const missing = required.filter((name) => features[name] !== true);
+    const missing = REQUIRED_HERMES_SESSION_FEATURES.filter((name) => features[name] !== true);
     if (missing.length > 0) {
       throw new Error(`Hermes API Server is missing required session features: ${missing.join(", ")}`);
     }
@@ -126,7 +139,14 @@ export class HermesClient implements HermesRunsPort {
   }
 
   async createSession(options: CreateHermesSessionOptions = {}): Promise<HermesSessionSummary> {
-    const body: Record<string, unknown> = { model: this.model };
+    const body: Record<string, unknown> = {};
+    const modelSelection = this.model
+      ? { model: this.model }
+      : await this.defaultModelSelection(options.signal);
+    if (modelSelection) {
+      body.model = modelSelection.model;
+      if (modelSelection.provider) body.provider = modelSelection.provider;
+    }
     if (options.title !== undefined) {
       body.title = boundedSafeText(options.title, MAX_HERMES_SESSION_TITLE_CHARS, "Hermes session title");
     }
@@ -138,7 +158,11 @@ export class HermesClient implements HermesRunsPort {
     if (!isRecord(response) || response.object !== "hermes.session") {
       throw new Error("Hermes returned an invalid created session.");
     }
-    return parseHermesSessionSummary(response.session);
+    const session = parseHermesSessionSummary(response.session);
+    if (modelSelection && session.model === modelSelection.model) {
+      this.sessionModelsReady.add(session.id);
+    }
+    return session;
   }
 
   async getSession(sessionId: string, signal?: AbortSignal): Promise<HermesSessionSummary> {
@@ -183,6 +207,7 @@ export class HermesClient implements HermesRunsPort {
   ): Promise<HermesSessionChatResult> {
     requireHermesSessionId(sessionId);
     const input = boundedSafeText(message, 100_000, "Hermes session message", true);
+    await this.ensureSessionModelReady(sessionId, options.signal);
     const body: Record<string, unknown> = { message: input };
     if (options.instructions !== undefined) {
       body.instructions = boundedSafeText(options.instructions, 100_000, "Hermes session instructions", true);
@@ -212,12 +237,77 @@ export class HermesClient implements HermesRunsPort {
     };
   }
 
+  private async defaultModelSelection(signal?: AbortSignal): Promise<HermesModelSelection | undefined> {
+    const response = await this.requestJson<unknown>("/api/model/options", {
+      method: "GET",
+      ...signalInit(signal),
+    });
+    if (!isRecord(response)) {
+      throw new Error("Hermes returned invalid model options.");
+    }
+    const model = optionalBoundedSafeText(
+      response.model,
+      MAX_HERMES_RUN_METADATA_CHARS,
+      "Hermes selected model",
+    );
+    if (!model) {
+      throw new Error("Hermes did not report its selected model.");
+    }
+    const provider = optionalBoundedSafeText(
+      response.provider,
+      MAX_HERMES_PROVIDER_ID_CHARS,
+      "Hermes selected provider",
+    );
+    return { model, ...(provider ? { provider } : {}) };
+  }
+
+  private async ensureSessionModelReady(sessionId: string, signal?: AbortSignal): Promise<void> {
+    if (this.sessionModelsReady.has(sessionId)) return;
+
+    const [session, capabilities] = await Promise.all([
+      this.getSession(sessionId, signal),
+      this.assertSessionsSupported(signal),
+    ]);
+    const virtualModel = optionalBoundedSafeText(
+      capabilities.model,
+      MAX_HERMES_RUN_METADATA_CHARS,
+      "Hermes virtual model",
+    );
+    if (!session.model || !virtualModel || session.model !== virtualModel) {
+      this.sessionModelsReady.add(sessionId);
+      return;
+    }
+
+    const selection = this.model
+      ? { model: this.model }
+      : await this.defaultModelSelection(signal);
+    if (!selection) {
+      throw new Error("Hermes could not resolve a real model for this saved conversation.");
+    }
+    const response = await this.requestJson<unknown>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/model`,
+      {
+        method: "POST",
+        body: JSON.stringify(selection),
+        ...signalInit(signal),
+      },
+    );
+    if (
+      !isRecord(response)
+      || response.object !== "hermes.session.model_lock"
+      || response.session_id !== sessionId
+    ) {
+      throw new Error("Hermes did not confirm the saved conversation model.");
+    }
+    this.sessionModelsReady.add(sessionId);
+  }
+
   async startRun(params: StartRunParams, signal?: AbortSignal): Promise<StartRunResult> {
     const body: Record<string, unknown> = {
-      model: this.model,
       input: params.input,
       session_id: params.sessionId,
     };
+    if (this.model) body.model = this.model;
     if (params.instructions) {
       body.instructions = params.instructions;
     }
@@ -628,6 +718,11 @@ function boundedSafeText(value: unknown, maximum: number, label: string, multili
   return value;
 }
 
+function optionalBoundedSafeText(value: unknown, maximum: number, label: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return boundedSafeText(value, maximum, label);
+}
+
 function boundedInteger(value: number, minimum: number, maximum: number, label: string): number {
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
     throw new Error(`${label} must be an integer between ${minimum} and ${maximum}.`);
@@ -752,10 +847,11 @@ function isBoundedHermesIdentifier(value: unknown): value is string {
 }
 
 function publicHermesRequestPath(path: string): string {
-  if (["/health", "/v1/capabilities", "/v1/runs"].includes(path)) return path;
+  if (["/health", "/v1/capabilities", "/v1/runs", "/api/model/options"].includes(path)) return path;
   if (/^\/api\/sessions(?:\?.*)?$/u.test(path)) return "/api/sessions";
   if (/^\/api\/sessions\/[^/]+\/messages$/u.test(path)) return "/api/sessions/{session_id}/messages";
   if (/^\/api\/sessions\/[^/]+\/chat$/u.test(path)) return "/api/sessions/{session_id}/chat";
+  if (/^\/api\/sessions\/[^/]+\/model$/u.test(path)) return "/api/sessions/{session_id}/model";
   if (/^\/api\/sessions\/[^/]+$/u.test(path)) return "/api/sessions/{session_id}";
   if (/^\/v1\/runs\/[^/]+\/events$/u.test(path)) return "/v1/runs/{run_id}/events";
   if (/^\/v1\/runs\/[^/]+\/stop$/u.test(path)) return "/v1/runs/{run_id}/stop";

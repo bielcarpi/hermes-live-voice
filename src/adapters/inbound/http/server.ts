@@ -31,6 +31,7 @@ import {
 } from "../../../domain/protocol/version.js";
 import { realtimeClientCapabilities } from "../../../application/live-gateway/client-capabilities.js";
 import { negotiateHermesApprovalCompatibility } from "../../../application/live-gateway/hermes-approval-compatibility.js";
+import { HERMES_LIVE_SERVICE_ID } from "../../../service-identity.js";
 
 const SERVER_SESSION_CLOSE_TIMEOUT_MS = 6_000;
 const SERVER_WEBSOCKET_CLOSE_GRACE_MS = 250;
@@ -402,7 +403,7 @@ async function handleHttp(
       methodNotAllowed(req, res, "GET, HEAD");
       return;
     }
-    json(req, res, 200, { status: "ok", service: "hermes-live" });
+    json(req, res, 200, { status: "ok", service: HERMES_LIVE_SERVICE_ID });
     return;
   }
   if (requiresHttpAuth(url.pathname) && !isAuthorized(req, options.config, url, { allowQueryToken: false })) {
@@ -422,6 +423,7 @@ async function handleHttp(
     });
     json(req, res, report.ok ? 200 : 503, {
       status: report.ok ? "ready" : "not_ready",
+      service: HERMES_LIVE_SERVICE_ID,
       checks: {
         gateway: report.gateway,
         hermes: report.hermes,
@@ -439,7 +441,7 @@ async function handleHttp(
     const approvals = await negotiateHermesApprovalCompatibility(options.hermes);
     json(req, res, 200, {
       object: "hermes_live.capabilities",
-      service: "hermes-live",
+      service: HERMES_LIVE_SERVICE_ID,
       protocolVersion: HERMES_LIVE_PROTOCOL_VERSION,
       supportedProtocolVersions: HERMES_LIVE_SUPPORTED_PROTOCOL_VERSIONS,
       websocket: { path: "/v1/live", protocol: "json-base64-audio" },

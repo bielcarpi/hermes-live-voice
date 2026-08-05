@@ -6,7 +6,7 @@ import {
   isSafeGoogleGenAiApiVersion,
   type AppConfig,
 } from "../../../config.js";
-import { HERMES_LIVE_TOOL_DECLARATIONS } from "../../../application/live-gateway/tool-definitions.js";
+import { selectHermesLiveToolDeclarations } from "../../../application/live-gateway/tool-definitions.js";
 import {
   requireLiveTaskNotification,
   type LiveModelAdapter,
@@ -42,7 +42,7 @@ export class GeminiLiveAdapter implements LiveModelAdapter {
     const closeConfirmation = createCloseConfirmation();
     const session: any = await (ai as any).live.connect({
       model: this.config.model,
-      config: buildGeminiLiveConnectConfig(params.systemInstruction),
+      config: buildGeminiLiveConnectConfig(params.systemInstruction, params.availableTools),
       callbacks: {
         onopen: () => params.callbacks.onOpen?.(),
         onclose: (event: unknown) => {
@@ -132,13 +132,17 @@ export function createGeminiLiveEventForwarder(onEvent: (event: LiveModelEvent) 
   };
 }
 
-export function buildGeminiLiveConnectConfig(systemInstruction: string) {
+export function buildGeminiLiveConnectConfig(
+  systemInstruction: string,
+  availableTools?: LiveModelConnectParams["availableTools"],
+) {
+  const functionDeclarations = selectHermesLiveToolDeclarations(availableTools);
   return {
     responseModalities: [Modality.AUDIO],
     inputAudioTranscription: {},
     outputAudioTranscription: {},
     systemInstruction,
-    tools: [{ functionDeclarations: HERMES_LIVE_TOOL_DECLARATIONS }],
+    ...(functionDeclarations.length > 0 ? { tools: [{ functionDeclarations }] } : {}),
   };
 }
 

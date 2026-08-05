@@ -72,7 +72,11 @@ export function pluginTargetDir(options: PluginInstallOptions = {}): string {
 }
 
 export function hermesPluginsDir(options: PluginInstallOptions = {}): string {
-  return resolve(options.dir ?? process.env.HERMES_LIVE_HERMES_PLUGINS_DIR ?? join(homedir(), ".hermes", "plugins"));
+  return resolve(
+    options.dir
+      ?? process.env.HERMES_LIVE_HERMES_PLUGINS_DIR
+      ?? join(process.env.HERMES_HOME ?? join(homedir(), ".hermes"), "plugins"),
+  );
 }
 
 export function packageRoot(): string {

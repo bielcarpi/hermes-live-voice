@@ -22,7 +22,8 @@ Hermes still supplies the model, tools, memory, and skills. This project adds th
 
 ## Quick start
 
-You need Node.js 20+ and Hermes Agent's API Server running.
+You need an up-to-date Hermes Agent and Node.js 20+. Fully local voice on Apple Silicon also
+needs [uv](https://docs.astral.sh/uv/).
 
 ```sh
 npm install --global hermes-live-voice
@@ -30,20 +31,13 @@ hermes-live setup
 hermes dashboard
 ```
 
-Open **Live Voice** in the Dashboard and choose a new or saved chat. Setup installs and enables the plugin, verifies Hermes and your voice provider, and keeps the gateway running as a user service.
+Open **Live Voice**, choose a new or saved chat, and click **Connect**. The microphone starts automatically. Say “pause listening” or use the same screen to pause; resume from the microphone button.
 
-For fully local voice on Apple Silicon, start the tested [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) stack first:
+On Apple Silicon, setup defaults to the tested [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) stack and starts both local voice and the gateway as private user services. The first setup downloads the models, then verifies and warms a real task tool call plus spoken receipt. Nothing has to stay open in another terminal. Gemini Live and OpenAI Realtime remain available with `hermes-live setup --provider gemini` or `--provider openai`.
 
-```sh
-# Terminal 1 — local STT, LLM, and TTS
-hermes-live local
+For the normal local Hermes installation, setup also enables the private Hermes API bridge, creates its random credential, and starts `hermes gateway`. Existing remote or custom Hermes endpoints remain operator-managed.
 
-# Terminal 2
-hermes-live setup --provider local
-hermes dashboard
-```
-
-The first local start downloads Python packages and model weights. Gemini Live and OpenAI Realtime remain available from the same setup prompt.
+The managed local stack needs at least 12 GB of physical memory; a 16 GB Apple Silicon Mac is recommended (roughly 8–9 GB is used while warm).
 
 ## What it does
 
@@ -65,7 +59,7 @@ The voice conversation stays responsive while a server-side supervisor owns the 
 
 ![Hermes Live Voice architecture](assets/architecture.svg)
 
-1. The Dashboard, browser SDK, or terminal opens the authenticated protocol v5 WebSocket and selects a Hermes conversation.
+1. The Dashboard, browser SDK, or terminal opens the authenticated protocol v6 WebSocket and selects a Hermes conversation.
 2. Local speech-to-speech, Gemini Live, or OpenAI Realtime handles the live voice turn and can call the gateway's small task-control toolset.
 3. The gateway persists accepted work, starts a separate Hermes `/v1/runs` worker, and publishes bounded progress events.
 4. Results remain in the task inbox across reconnects. Follow-ups create new durable workers with explicit parent/root lineage.
@@ -79,7 +73,7 @@ Task state lives at `~/.hermes/hermes-live/tasks-v1.json` by default. It is boun
 | Everyday voice | Hermes Dashboard → Live Voice |
 | SSH or headless control | `hermes-live terminal` |
 | Your own web UI | `hermes-live-voice/browser` |
-| Gateway development | `http://127.0.0.1:8788` |
+| Gateway development | `hermes-live print-config` → configured local gateway |
 
 The terminal can resume chats and inspect or control tasks:
 
@@ -111,10 +105,12 @@ See [UI integration](docs/ui-integration.md) for authentication and the full cli
 hermes-live doctor --provider-smoke
 hermes-live service status
 hermes-live service logs
+hermes-live local status
+hermes-live local logs
 hermes-live print-config
 ```
 
-`hermes-live setup` writes an allow-listed config to `~/.hermes/hermes-live/config.env` with private permissions. Environment variables override it; project `.env` files are never loaded or executed.
+`hermes-live setup` writes an allow-listed config to `$HERMES_HOME/hermes-live/config.env` (normally `~/.hermes/hermes-live/config.env`) with private permissions. The gateway and Dashboard plugin read the same file. If the default port belongs to another app, setup picks a free local port automatically. Environment variables override the managed config; project `.env` files are never loaded or executed.
 
 For any non-loopback gateway bind, use a strong `HERMES_LIVE_AUTH_TOKEN`, an exact allowed origin, TLS, and edge rate limits. Keep Hermes itself private. See the [security model](docs/security.md).
 
@@ -130,7 +126,7 @@ For any non-loopback gateway bind, use a strong `HERMES_LIVE_AUTH_TOKEN`, an exa
 - [Setup, configuration, and Docker](docs/setup.md)
 - [Background tasks and recovery](docs/background-tasks.md)
 - [Architecture](docs/architecture.md)
-- [Protocol v5](docs/client-protocol.md)
+- [Protocol v6](docs/client-protocol.md)
 - [Security](docs/security.md)
 - [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md)
 

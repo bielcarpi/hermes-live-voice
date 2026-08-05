@@ -11,7 +11,9 @@ import asyncio
 import json
 import logging
 import os
+import stat
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -36,6 +38,12 @@ MAX_TOKEN_BYTES = 8_192
 MAX_GATEWAY_URL_CHARS = 2_048
 STATUS_TIMEOUT_SECONDS = 2.5
 MAX_CONVERSATIONS = 50
+MAX_MANAGED_CONFIG_BYTES = 64 * 1024
+_MANAGED_GATEWAY_KEYS = {
+    "HERMES_LIVE_AUTH_TOKEN",
+    "HERMES_LIVE_HOST",
+    "HERMES_LIVE_PORT",
+}
 
 
 class GatewayConfigurationError(ValueError):
@@ -116,11 +124,16 @@ def _normalise_gateway_url(value: str | None = None) -> str:
 
 
 def _gateway_url() -> str:
-    return _normalise_gateway_url(os.getenv("HERMES_LIVE_URL") or DEFAULT_GATEWAY_URL)
+    explicit = os.getenv("HERMES_LIVE_URL")
+    return _normalise_gateway_url(
+        explicit or _managed_gateway_url(_read_managed_gateway_config()) or DEFAULT_GATEWAY_URL
+    )
 
 
 def _gateway_token() -> str | None:
     token = os.getenv("HERMES_LIVE_AUTH_TOKEN")
+    if not token:
+        token = _read_managed_gateway_config().get("HERMES_LIVE_AUTH_TOKEN")
     if not token:
         return None
     try:
@@ -133,6 +146,81 @@ def _gateway_token() -> str | None:
     ):
         raise GatewayConfigurationError("gateway token contains unsafe characters")
     return token
+
+
+def _managed_gateway_url(values: dict[str, str]) -> str | None:
+    host = values.get("HERMES_LIVE_HOST")
+    port = values.get("HERMES_LIVE_PORT")
+    if host is None and port is None:
+        return None
+    host = host or "127.0.0.1"
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    try:
+        numeric_port = int(port or "8788", 10)
+    except ValueError as exc:
+        raise GatewayConfigurationError("managed gateway port is invalid") from exc
+    if numeric_port < 1 or numeric_port > 65535:
+        raise GatewayConfigurationError("managed gateway port is invalid")
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{numeric_port}"
+
+
+def _read_managed_gateway_config() -> dict[str, str]:
+    configured_path = os.getenv("HERMES_LIVE_CONFIG_FILE")
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+    path = Path(configured_path).expanduser() if configured_path else hermes_home / "hermes-live" / "config.env"
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return {}
+    except (OSError, TypeError, ValueError) as exc:
+        raise GatewayConfigurationError("managed gateway config is not safe to read") from exc
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise GatewayConfigurationError("managed gateway config must be a regular file")
+        if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
+            raise GatewayConfigurationError("managed gateway config must be owned by the current user")
+        if os.name != "nt" and stat.S_IMODE(file_stat.st_mode) != 0o600:
+            raise GatewayConfigurationError("managed gateway config permissions must be 0600")
+        if file_stat.st_size > MAX_MANAGED_CONFIG_BYTES:
+            raise GatewayConfigurationError("managed gateway config is too large")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            body = handle.read(MAX_MANAGED_CONFIG_BYTES + 1)
+        if len(body) > MAX_MANAGED_CONFIG_BYTES:
+            raise GatewayConfigurationError("managed gateway config is too large")
+        source = body.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise GatewayConfigurationError("managed gateway config is not safe to read") from exc
+    finally:
+        os.close(descriptor)
+
+    result: dict[str, str] = {}
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        separator = line.find("=")
+        if separator <= 0:
+            raise GatewayConfigurationError("managed gateway config is malformed")
+        key = line[:separator].strip()
+        if key not in _MANAGED_GATEWAY_KEYS:
+            continue
+        if key in result:
+            raise GatewayConfigurationError("managed gateway config contains a duplicate gateway setting")
+        try:
+            value = json.loads(line[separator + 1 :].strip())
+        except (json.JSONDecodeError, RecursionError) as exc:
+            raise GatewayConfigurationError("managed gateway config is malformed") from exc
+        if not isinstance(value, str):
+            raise GatewayConfigurationError("managed gateway settings must be strings")
+        result[key] = value
+    return result
 
 
 def _gateway_websocket_url(gateway_url: str) -> str:
@@ -194,6 +282,11 @@ async def gateway_status() -> dict[str, Any]:
         )
 
     reachable = any(probe.reached_server for probe in (health, capabilities, readiness))
+    wrong_service = (
+        health.ok
+        and isinstance(health.body, dict)
+        and health.body.get("service") != "hermes-live"
+    )
     capabilities_valid = _capabilities_identity_is_valid(capabilities)
     ready = capabilities_valid and _readiness_is_ready(readiness)
     protocol_version, provider, model, audio, tasks = _capabilities_summary(
@@ -204,6 +297,8 @@ async def gateway_status() -> dict[str, Any]:
     error: str | None
     if not reachable:
         error = "gateway_unreachable"
+    elif wrong_service:
+        error = "wrong_gateway_service"
     elif capabilities.status in {401, 403} or readiness.status in {401, 403}:
         error = "gateway_auth_failed"
     elif not capabilities_valid:

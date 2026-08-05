@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Iterator
 from unittest.mock import patch
+from pathlib import Path
 
 
 Route = tuple[int, dict[str, str], bytes]
@@ -18,6 +20,7 @@ def run_status_probe_smoke(tools: Any) -> None:
     """Exercise URL validation, redirect policy, auth boundaries, and output bounds."""
     _check_gateway_origin_validation(tools)
     _check_auth_token_validation(tools)
+    _check_managed_config_discovery(tools)
     _check_probe_sanitization_and_auth(tools)
     _check_token_reflection_and_control_suppression(tools)
     _check_protocol_version_bounds(tools)
@@ -85,6 +88,40 @@ def _check_auth_token_validation(tools: Any) -> None:
         assert_equal(payload["error"]["code"], "invalid_auth_token", "safe auth token error code")
         if token in payload_text:
             raise AssertionError("invalid auth token leaked into tool output")
+
+
+def _check_managed_config_discovery(tools: Any) -> None:
+    names = ("HERMES_LIVE_URL", "HERMES_LIVE_AUTH_TOKEN", "HERMES_LIVE_CONFIG_FILE", "HERMES_HOME")
+    previous = {name: os.environ.get(name) for name in names}
+    with tempfile.TemporaryDirectory(prefix="hermes-live-plugin-config-") as directory:
+        path = Path(directory) / "config.env"
+        path.write_text(
+            'HERMES_LIVE_HOST="0.0.0.0"\n'
+            'HERMES_LIVE_PORT="8793"\n'
+            'HERMES_LIVE_AUTH_TOKEN="managed-private-token"\n',
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+        try:
+            os.environ.pop("HERMES_LIVE_URL", None)
+            os.environ.pop("HERMES_LIVE_AUTH_TOKEN", None)
+            os.environ["HERMES_LIVE_CONFIG_FILE"] = str(path)
+            assert_equal(tools.configured_gateway_url(), "http://127.0.0.1:8793", "managed gateway URL")
+            assert_equal(tools.configured_gateway_token(), "managed-private-token", "managed gateway token")
+            profile_path = Path(directory) / "profile" / "hermes-live" / "config.env"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            profile_path.chmod(0o600)
+            os.environ.pop("HERMES_LIVE_CONFIG_FILE", None)
+            os.environ["HERMES_HOME"] = str(Path(directory) / "profile")
+            assert_equal(tools.configured_gateway_url(), "http://127.0.0.1:8793", "profile gateway URL")
+            assert_equal(tools.configured_gateway_token(), "managed-private-token", "profile gateway token")
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
 
 def _check_probe_sanitization_and_auth(tools: Any) -> None:

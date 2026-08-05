@@ -49,7 +49,7 @@ const EnvSchema = z.object({
   HERMES_LIVE_PROFILE_ID: z.string().default("default"),
   HERMES_LIVE_USER_LABEL: z.string().default("voice"),
   HERMES_LIVE_TRUST_CLIENT_IDENTITY: z.string().optional(),
-  HERMES_LIVE_MAX_SESSIONS: z.coerce.number().int().positive().default(8),
+  HERMES_LIVE_MAX_SESSIONS: z.coerce.number().int().positive().optional(),
   HERMES_LIVE_MAX_AUDIO_BYTES: z.coerce
     .number()
     .int()
@@ -77,7 +77,7 @@ const EnvSchema = z.object({
   HERMES_BASE_URL: HermesBaseUrlSchema.default("http://127.0.0.1:8642"),
   HERMES_AGENT_API_SERVER_KEY: z.string().optional(),
   HERMES_API_KEY: z.string().optional(),
-  HERMES_MODEL: z.string().default("hermes-agent"),
+  HERMES_MODEL: z.string().trim().min(1).max(512).optional(),
   HERMES_LIVE_RUN_INSTRUCTIONS: z.string().optional(),
   HERMES_LIVE_HERMES_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS: z.coerce
@@ -91,6 +91,7 @@ const EnvSchema = z.object({
   HERMES_LIVE_LOCAL_URL: LocalRealtimeUrlSchema.default("ws://127.0.0.1:8765/v1/realtime"),
   HERMES_LIVE_LOCAL_VOICE: z.string().trim().min(1).max(128).default("Aiden"),
   HERMES_LIVE_LOCAL_ALLOW_REMOTE: z.string().optional(),
+  HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-3.1-flash-live-preview"),
@@ -131,7 +132,7 @@ export interface AppConfig {
   hermes: {
     baseUrl: string;
     apiKey?: string;
-    model: string;
+    model?: string;
     instructions?: string;
     timeoutMs: number;
     streamIdleTimeoutMs?: number;
@@ -153,6 +154,8 @@ export interface AppConfig {
     url: string;
     voice: string;
     allowRemote: boolean;
+    /** Managed runtime compatibility mode; external upstream endpoints leave this unset. */
+    ownsTurnRouting?: boolean;
   };
   gemini: {
     apiKey?: string;
@@ -192,7 +195,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       defaultProfileId: parsed.HERMES_LIVE_PROFILE_ID,
       defaultUserLabel: parsed.HERMES_LIVE_USER_LABEL,
       trustClientIdentity: parseBool(parsed.HERMES_LIVE_TRUST_CLIENT_IDENTITY),
-      maxSessions: parsed.HERMES_LIVE_MAX_SESSIONS,
+      maxSessions: parsed.HERMES_LIVE_MAX_SESSIONS ?? (parsed.HERMES_LIVE_PROVIDER === "local" ? 1 : 8),
       maxAudioBytes: parsed.HERMES_LIVE_MAX_AUDIO_BYTES,
       maxTextChars: parsed.HERMES_LIVE_MAX_TEXT_CHARS,
       providerReadyTimeoutMs: parsed.HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS,
@@ -204,7 +207,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     hermes: {
       baseUrl: withoutTrailingSlash(parsed.HERMES_BASE_URL),
       ...(hermesApiKey ? { apiKey: hermesApiKey } : {}),
-      model: parsed.HERMES_MODEL,
+      ...(parsed.HERMES_MODEL ? { model: parsed.HERMES_MODEL } : {}),
       ...(parsed.HERMES_LIVE_RUN_INSTRUCTIONS ? { instructions: parsed.HERMES_LIVE_RUN_INSTRUCTIONS } : {}),
       timeoutMs: parsed.HERMES_LIVE_HERMES_TIMEOUT_MS,
       streamIdleTimeoutMs: parsed.HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS,
@@ -226,6 +229,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       url: parsed.HERMES_LIVE_LOCAL_URL,
       voice: parsed.HERMES_LIVE_LOCAL_VOICE,
       allowRemote: parseBool(parsed.HERMES_LIVE_LOCAL_ALLOW_REMOTE),
+      ownsTurnRouting: parseBool(parsed.HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING),
     },
     gemini: {
       ...(geminiApiKey ? { apiKey: geminiApiKey } : {}),

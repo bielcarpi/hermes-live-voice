@@ -113,6 +113,99 @@ describe("provider error formatting", () => {
       for (const secret of secrets) expect(serialized).not.toContain(secret);
     },
   );
+
+  it("verifies a real local task tool call and deterministic spoken receipt", async () => {
+    vi.mocked(createLiveModelAdapter).mockReturnValue({
+      connect: vi.fn(async (params) => {
+        params.callbacks.onOpen?.();
+        return {
+          sendText: vi.fn(async () => {
+            params.callbacks.onEvent({
+              type: "tool_call",
+              call: {
+                id: "call_smoke",
+                name: "start_background_task",
+                args: { message: "Reply with exactly PROVIDER SMOKE OK." },
+              },
+            });
+            params.callbacks.onEvent({ type: "response", status: "completed" });
+          }),
+          sendToolResponse: vi.fn(async () => {
+            params.callbacks.onEvent({
+              type: "audio",
+              audio: { data: "cGNt", mimeType: "audio/pcm;rate=24000" },
+            });
+            params.callbacks.onEvent({ type: "response", status: "completed" });
+          }),
+          close: vi.fn(async () => params.callbacks.onClose?.({ code: 1000 })),
+        } as any;
+      }),
+    });
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "local" });
+
+    const report = await runLiveProviderSmoke(config, { timeoutMs: 100, verifyToolCall: true });
+
+    expect(report.functional).toMatchObject({
+      checked: true,
+      toolCall: true,
+      spokenReceipt: true,
+    });
+    const connect = vi.mocked(createLiveModelAdapter).mock.results.at(-1)?.value.connect as ReturnType<typeof vi.fn>;
+    expect(connect.mock.calls[0]?.[0].availableTools).toEqual([
+      "start_background_task",
+      "list_background_tasks",
+      "get_background_task",
+      "follow_up_background_task",
+      "stop_background_task",
+      "pause_voice_input",
+    ]);
+  });
+
+  it("rejects a local model that answers directly instead of calling the task tool", async () => {
+    vi.mocked(createLiveModelAdapter).mockReturnValue({
+      connect: vi.fn(async (params) => {
+        params.callbacks.onOpen?.();
+        return {
+          sendText: vi.fn(async () => {
+            params.callbacks.onEvent({ type: "text", text: "I will do that.", speaker: "assistant" });
+            params.callbacks.onEvent({ type: "response", status: "completed" });
+          }),
+          close: vi.fn(async () => undefined),
+        } as any;
+      }),
+    });
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "local" });
+
+    await expect(runLiveProviderSmoke(config, { timeoutMs: 100, verifyToolCall: true })).rejects.toThrow(
+      "answered directly instead of emitting the required task tool call",
+    );
+  });
+
+  it("rejects a local task tool call that replaces the requested work with a placeholder", async () => {
+    vi.mocked(createLiveModelAdapter).mockReturnValue({
+      connect: vi.fn(async (params) => {
+        params.callbacks.onOpen?.();
+        return {
+          sendText: vi.fn(async () => {
+            params.callbacks.onEvent({
+              type: "tool_call",
+              call: {
+                id: "call_placeholder",
+                name: "start_background_task",
+                args: { message: "Begin processing the user request." },
+              },
+            });
+          }),
+          close: vi.fn(async () => undefined),
+        } as any;
+      }),
+    });
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "local" });
+
+    await expect(runLiveProviderSmoke(config, { timeoutMs: 100, verifyToolCall: true })).rejects.toThrow(
+      "did not preserve the requested work",
+    );
+  });
 });
 
 function providerConfig(provider: "openai" | "gemini") {

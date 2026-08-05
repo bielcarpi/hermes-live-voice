@@ -376,6 +376,9 @@ export class TerminalGatewaySession {
         return;
       case "input.speech_started":
         return;
+      case "input.pause_requested":
+        this.line("[voice] The provider requested a microphone pause. This text console has no active microphone; background tasks keep running.");
+        return;
     }
   }
 

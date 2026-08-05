@@ -133,6 +133,30 @@ try {
 
 console.log("CLI plugin smoke ok: plugin install/status verified.");
 
+for (const command of [
+  "service",
+  "plugin",
+  "local",
+  "tasks",
+  "terminal",
+  "client",
+  "check",
+  "provider-smoke",
+  "print-config",
+  "serve",
+]) {
+  const help = spawnSync(process.execPath, ["dist/cli.js", command, "--help"], {
+    encoding: "utf8",
+    env: invalidRuntimeEnv,
+  });
+  if (help.status !== 0 || !help.stdout.includes(`hermes-live ${command === "provider-smoke" ? "provider-smoke" : command}`)) {
+    throw new Error(`Expected ${command} help to ignore invalid runtime config.\n${help.stdout}\n${help.stderr}`);
+  }
+  assertNotIncludes(help.stderr, "fatal", `${command} help stderr`);
+}
+
+console.log("CLI help smoke ok: every operational subcommand works without valid runtime config.");
+
 function assertEqual(actual, expected, label) {
   if (actual !== expected) {
     throw new Error(`${label} mismatch. Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}.`);

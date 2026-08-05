@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from os import getenv
+import os
+import stat
+from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, urlsplit
@@ -16,6 +18,12 @@ MAX_AUTH_TOKEN_BYTES = 8 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024
 MAX_OUTPUT_CHARS = 16 * 1024
 MAX_FIELD_CHARS = 256
+MAX_MANAGED_CONFIG_BYTES = 64 * 1024
+_MANAGED_GATEWAY_KEYS = {
+    "HERMES_LIVE_AUTH_TOKEN",
+    "HERMES_LIVE_HOST",
+    "HERMES_LIVE_PORT",
+}
 
 _INVALID_GATEWAY_URL_MESSAGE = (
     "HERMES_LIVE_URL must be a credential-free HTTP(S) origin without a path, query, or fragment."
@@ -120,7 +128,8 @@ def gateway_status(args: dict[str, Any], **_kwargs: Any) -> str:
 
 def configured_gateway_url() -> str:
     """Return the configured gateway as a validated, credential-free origin."""
-    raw_value = getenv("HERMES_LIVE_URL") or DEFAULT_GATEWAY_URL
+    explicit = os.getenv("HERMES_LIVE_URL")
+    raw_value = explicit or _managed_gateway_url(_read_managed_gateway_config()) or DEFAULT_GATEWAY_URL
     if (
         not isinstance(raw_value, str)
         or not raw_value
@@ -146,7 +155,9 @@ def configured_gateway_url() -> str:
 
 def configured_gateway_token() -> str | None:
     """Return a bounded bearer that is safe to place in one HTTP header."""
-    token = getenv("HERMES_LIVE_AUTH_TOKEN")
+    token = os.getenv("HERMES_LIVE_AUTH_TOKEN")
+    if not token:
+        token = _read_managed_gateway_config().get("HERMES_LIVE_AUTH_TOKEN")
     if not token:
         return None
     try:
@@ -158,6 +169,81 @@ def configured_gateway_token() -> str | None:
     ):
         raise ValueError(_INVALID_AUTH_TOKEN_MESSAGE)
     return token
+
+
+def _managed_gateway_url(values: dict[str, str]) -> str | None:
+    host = values.get("HERMES_LIVE_HOST")
+    port = values.get("HERMES_LIVE_PORT")
+    if host is None and port is None:
+        return None
+    host = host or "127.0.0.1"
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    try:
+        numeric_port = int(port or "8788", 10)
+    except ValueError as error:
+        raise ValueError(_INVALID_GATEWAY_URL_MESSAGE) from error
+    if numeric_port < 1 or numeric_port > 65535:
+        raise ValueError(_INVALID_GATEWAY_URL_MESSAGE)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{numeric_port}"
+
+
+def _read_managed_gateway_config() -> dict[str, str]:
+    configured_path = os.getenv("HERMES_LIVE_CONFIG_FILE")
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+    path = Path(configured_path).expanduser() if configured_path else hermes_home / "hermes-live" / "config.env"
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return {}
+    except (OSError, TypeError, ValueError) as error:
+        raise ValueError("Hermes Live managed config is not safe to read.") from error
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("Hermes Live managed config must be a regular file.")
+        if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
+            raise ValueError("Hermes Live managed config must be owned by the current user.")
+        if os.name != "nt" and stat.S_IMODE(file_stat.st_mode) != 0o600:
+            raise ValueError("Hermes Live managed config permissions must be 0600.")
+        if file_stat.st_size > MAX_MANAGED_CONFIG_BYTES:
+            raise ValueError("Hermes Live managed config is too large.")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            body = handle.read(MAX_MANAGED_CONFIG_BYTES + 1)
+        if len(body) > MAX_MANAGED_CONFIG_BYTES:
+            raise ValueError("Hermes Live managed config is too large.")
+        source = body.decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError("Hermes Live managed config is not safe to read.") from error
+    finally:
+        os.close(descriptor)
+
+    result: dict[str, str] = {}
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        separator = line.find("=")
+        if separator <= 0:
+            raise ValueError("Hermes Live managed config is malformed.")
+        key = line[:separator].strip()
+        if key not in _MANAGED_GATEWAY_KEYS:
+            continue
+        if key in result:
+            raise ValueError("Hermes Live managed config contains a duplicate gateway setting.")
+        try:
+            value = json.loads(line[separator + 1 :].strip())
+        except (json.JSONDecodeError, RecursionError) as error:
+            raise ValueError("Hermes Live managed config is malformed.") from error
+        if not isinstance(value, str):
+            raise ValueError("Hermes Live managed config gateway settings must be strings.")
+        result[key] = value
+    return result
 
 
 def _validate_gateway_origin(parsed: SplitResult) -> None:

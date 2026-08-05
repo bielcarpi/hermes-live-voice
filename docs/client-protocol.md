@@ -1,12 +1,12 @@
 # Client Protocol
 
-Hermes Live protocol v5 is strict JSON over WebSocket:
+Hermes Live protocol v6 is strict JSON over WebSocket:
 
 ```txt
 ws://127.0.0.1:8788/v1/live
 ```
 
-Use `wss://` behind TLS for non-local clients. Protocol v4 added persisted conversation binding and durable task follow-ups. Protocol v5 adds the local Hugging Face provider and final user/assistant transcript events. The gateway still accepts v3 and v4 for existing hosted-provider clients; new clients should send v5.
+Use `wss://` behind TLS for non-local clients. Protocol v4 added persisted conversation binding and durable task follow-ups. Protocol v5 added the local Hugging Face provider and final transcripts. Protocol v6 adds an explicit voice-requested microphone pause. The gateway still accepts v3-v5 clients; new clients should send v6.
 
 The TypeScript schemas in `src/domain/protocol/` and the browser validator in `clients/browser/hermes-live-client.js` are the normative contract.
 
@@ -35,7 +35,7 @@ The first client message must be:
 {
   "type": "session.start",
   "id": "start_1",
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "conversation": { "mode": "resume", "sessionId": "saved_session_id" }
 }
 ```
@@ -47,7 +47,7 @@ On success, the server sends `session.ready` followed by one or more bounded ini
 ```json
 {
   "type": "session.ready",
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "requestId": "start_1",
   "sessionId": "live_...",
   "model": "gpt-realtime-2.1",
@@ -140,6 +140,7 @@ Server conversation events are:
 - `transcript.delta` with `speaker`, `text`, and optional `final`;
 - `audio.output` with base64 data, MIME type, and optional playback correlation;
 - `input.speech_started` for OpenAI or local VAD;
+- `input.pause_requested` when the user explicitly asks the realtime model to pause listening;
 - `response.started`, `response.completed`, `response.cancelled`, and `response.failed`;
 - bounded `log` and `session.error` messages.
 
@@ -315,6 +316,14 @@ Cancel the current provider response without touching tasks:
 
 OpenAI uses the optional truncation metadata to keep provider conversation history aligned with what the user actually heard. Local voice cancels through the upstream generation scope without truncation. Gemini handles speech interruption through live audio activity and does not expose an equivalent direct cancel event.
 
+When the user explicitly asks to pause or mute listening, a protocol v6 provider may call `pause_voice_input`. The gateway sends:
+
+```json
+{ "type": "input.pause_requested", "reason": "voice_command" }
+```
+
+Clients should stop microphone capture with `endTurn: false` and keep playback, the WebSocket, and all background tasks alive. Resume must stay a visible client action: a paused microphone cannot hear a voice command.
+
 Detach cleanly:
 
 ```json
@@ -343,6 +352,7 @@ client.subscribe(({ tasks, unreadNotifications }) => renderInbox(tasks, unreadNo
 client.on("transcript.delta", renderTranscript);
 client.on("task.completed", renderTaskUpdate);
 client.on("task.notification", renderNotification);
+client.on("input.pause_requested", () => audio.stopMicrophone({ endTurn: false }));
 client.on("error", renderError);
 
 const audio = new HermesLiveAudio(client, { workletUrl: "/mic-worklet.js" });
@@ -380,7 +390,7 @@ Errors use:
 {
   "type": "session.error",
   "code": "unsupported_protocol_version",
-  "message": "Hermes Live protocol v2 is incompatible with protocol v5. Upgrade hermes-live-voice and every connected client to the same release before reconnecting.",
+  "message": "Hermes Live protocol v2 is incompatible with supported protocols v3, v4, v5, v6. Upgrade hermes-live-voice and every connected client to the same release before reconnecting.",
   "requestId": "start_1",
   "recoverable": false
 }

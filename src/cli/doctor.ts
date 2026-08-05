@@ -1,18 +1,27 @@
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
+import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { loadConfig, type AppConfig } from "../config.js";
+import { isLoopbackHostname, loadConfig, type AppConfig } from "../config.js";
 import { runLiveProviderSmoke } from "../live-provider-smoke.js";
 import { buildReadinessReport, type ReadinessReport } from "../readiness.js";
 import { errorToMessage } from "../domain/error-message.js";
 import { readManagedConfig } from "./managed-config.js";
 import { pluginInstallStatus } from "./plugin-installer.js";
-import { findExecutable, type CommandRunner } from "./process.js";
+import { findExecutable, runCommand, type CommandRunner } from "./process.js";
 import { serviceStatus, type ServiceStatus } from "./service-manager.js";
+import {
+  MIN_MANAGED_LOCAL_MEMORY_BYTES,
+  probeLocalVoiceEndpoint,
+} from "./local-voice.js";
+import { gatewayOrigin, probeGatewayReadiness } from "./gateway-probe.js";
+import { isDefaultLocalHermesApi, resolveHermesHome } from "./hermes-api-bootstrap.js";
 
 const packageRequire = createRequire(import.meta.url);
 const PACKAGE_VERSION = (packageRequire("../../package.json") as { version: string }).version;
 const MINIMUM_NODE_MAJOR = 20;
+const RECOMMENDED_MANAGED_LOCAL_MEMORY_BYTES = 16 * 1024 * 1024 * 1024;
+const HIGH_SWAP_MINIMUM_BYTES = 4 * 1024 * 1024 * 1024;
 
 export type DiagnosticStatus = "pass" | "warn" | "fail";
 
@@ -30,6 +39,7 @@ export interface DoctorReport {
   checks: DiagnosticCheck[];
   readiness?: ReadinessReport;
   service?: ServiceStatus;
+  localService?: ServiceStatus;
 }
 
 export interface DoctorOptions {
@@ -45,9 +55,12 @@ export interface DoctorDependencies {
   home?: string;
   platform?: NodeJS.Platform;
   arch?: string;
+  uid?: number;
   nodeVersion?: string;
+  totalMemoryBytes?: number;
   runner?: CommandRunner;
   findCommand?: (name: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>;
+  probeLocalEndpoint?: (url: string) => Promise<boolean>;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -80,6 +93,12 @@ export async function runDoctor(
   dependencies: DoctorDependencies = {},
 ): Promise<DoctorReport> {
   const env = dependencies.env ?? process.env;
+  const home = dependencies.home ?? homedir();
+  const hermesHome = resolveHermesHome(home, env);
+  const managedConfigPath = options.configPath
+    ?? (env.HERMES_HOME ? join(hermesHome, "hermes-live", "config.env") : undefined);
+  const pluginsDir = options.pluginsDir
+    ?? (env.HERMES_HOME ? join(hermesHome, "plugins") : undefined);
   const checks: DiagnosticCheck[] = [];
   const nodeVersion = dependencies.nodeVersion ?? process.versions.node;
   const nodeMajor = Number(nodeVersion.split(".")[0]);
@@ -89,7 +108,7 @@ export async function runDoctor(
 
   let managedValues: NodeJS.ProcessEnv = {};
   try {
-    const managed = await readManagedConfig({ path: options.configPath, home: dependencies.home });
+    const managed = await readManagedConfig({ path: managedConfigPath, home });
     managedValues = managed.values;
     checks.push(managed.exists
       ? pass("config", "Managed config", shortHome(managed.path, dependencies.home))
@@ -107,10 +126,10 @@ export async function runDoctor(
   }
 
   const plugin = await pluginInstallStatus({
-    ...(options.pluginsDir
-      ? { dir: options.pluginsDir }
+    ...(pluginsDir
+      ? { dir: pluginsDir }
       : dependencies.home
-        ? { dir: join(dependencies.home, ".hermes", "plugins") }
+        ? { dir: join(home, ".hermes", "plugins") }
         : {}),
   });
   if (!plugin.installed || !plugin.manifestFound) {
@@ -128,17 +147,48 @@ export async function runDoctor(
   }
 
   const findCommand = dependencies.findCommand ?? findExecutable;
+  let localService: ServiceStatus | undefined;
   if (config?.realtime.provider === "local") {
     const endpoint = new URL(config.local.url);
-    if (["127.0.0.1", "localhost", "::1", "[::1]"].includes(endpoint.hostname.toLowerCase())) {
+    if (isLoopbackHostname(endpoint.hostname)) {
       const uv = await findCommand("uv", env);
       const managedProfileSupported = (dependencies.platform ?? process.platform) === "darwin"
         && (dependencies.arch ?? process.arch) === "arm64";
       checks.push(uv
         ? pass("local-launcher", "Local voice launcher", `${shortHome(uv, dependencies.home)} (speech-to-speech 0.2.11)`)
         : managedProfileSupported
-          ? warn("local-launcher", "Local voice launcher", "uv is not installed.", "Install uv, then run `hermes-live local`.")
+          ? fail("local-launcher", "Local voice launcher", "uv is not installed.", "Run `brew install uv`, then rerun `hermes-live setup`.")
           : pass("local-launcher", "Local voice launcher", "External speech-to-speech runtime expected on this platform."));
+      if (managedProfileSupported) {
+        const memory = await inspectManagedLocalMemory(
+          dependencies.totalMemoryBytes ?? totalmem(),
+          dependencies.runner,
+        );
+        checks.push(memory);
+        localService = await serviceStatus({
+          kind: "local-voice",
+          home: dependencies.home,
+          platform: dependencies.platform,
+          uid: dependencies.uid,
+          runner: dependencies.runner,
+        });
+        if (!localService.installed) {
+          checks.push(fail("local-service", "Local voice service", localService.detail, "Run `hermes-live setup`."));
+        } else if (!localService.running) {
+          checks.push(fail("local-service", "Local voice service", localService.detail, "Run `hermes-live local restart`, then inspect `hermes-live local logs`."));
+        } else {
+          const listening = await (dependencies.probeLocalEndpoint ?? probeLocalVoiceEndpoint)(config.local.url)
+            .catch(() => false);
+          checks.push(listening
+            ? pass("local-service", "Local voice service", `${localService.platform}: running; endpoint is listening`)
+            : fail(
+              "local-service",
+              "Local voice service",
+              `${localService.platform}: running, but the provider endpoint is not listening yet`,
+              "Wait for the models to load. If it does not recover, run `hermes-live local logs`, then `hermes-live local restart`.",
+            ));
+        }
+      }
     } else {
       checks.push(pass("local-launcher", "Local voice launcher", "Using an operator-managed remote speech-to-speech endpoint."));
     }
@@ -158,9 +208,19 @@ export async function runDoctor(
   let readiness: ReadinessReport | undefined;
   if (config) {
     readiness = await buildReadinessReport(config);
+    const hermesReadinessError = String(readiness.hermes.error ?? "Not ready.");
     checks.push(readiness.hermes.ok
-      ? pass("hermes-api", "Hermes API", `${String(readiness.hermes.baseUrl)} supports durable runs`)
-      : fail("hermes-api", "Hermes API", String(readiness.hermes.error ?? "Not ready."), "Start the Hermes API Server, then rerun `hermes-live doctor`."));
+      ? pass("hermes-api", "Hermes API", `${String(readiness.hermes.baseUrl)} supports durable runs and saved chats`)
+      : fail(
+        "hermes-api",
+        "Hermes API",
+        hermesReadinessError,
+        hermesReadinessError.startsWith("Hermes API Server is missing required ")
+          ? "Update Hermes Agent, restart `hermes gateway`, then rerun `hermes-live doctor`."
+          : hermesCommand && isDefaultLocalHermesApi(config.hermes.baseUrl)
+          ? "Run `hermes-live setup`; it configures and starts Hermes' private API bridge."
+          : "Enable the Hermes API Server, start `hermes gateway`, then rerun `hermes-live doctor`.",
+      ));
     checks.push(readiness.realtime.ok
       ? pass("provider-config", "Voice provider", `${config.realtime.provider} configuration is valid`)
       : fail("provider-config", "Voice provider", String(readiness.realtime.error ?? "Not configured."), "Run `hermes-live setup`."));
@@ -180,7 +240,7 @@ export async function runDoctor(
         checks.push(pass("provider-session", "Provider session", `Connected to ${config.realtime.provider} realtime`));
       } catch (error) {
         const fix = config.realtime.provider === "local"
-          ? "Run `hermes-live local` in another terminal, then rerun with --provider-smoke."
+          ? "Run `hermes-live local restart`, inspect `hermes-live local logs`, then rerun with --provider-smoke."
           : "Check the provider key, model access, and network, then rerun with --provider-smoke.";
         checks.push(fail("provider-session", "Provider session", errorToMessage(error), fix));
       }
@@ -191,7 +251,7 @@ export async function runDoctor(
     home: dependencies.home,
     platform: dependencies.platform,
     runner: dependencies.runner,
-    configPath: options.configPath,
+    configPath: managedConfigPath,
   });
   if (service.platform === "unsupported") {
     checks.push(warn("service", "Gateway service", service.detail, "Run `hermes-live serve` manually."));
@@ -204,10 +264,19 @@ export async function runDoctor(
   }
 
   if (config) {
-    const gateway = await probeGateway(config, dependencies.fetch ?? globalThis.fetch);
+    const gateway = await probeGatewayReadiness(publicGatewayOrigin(config), {
+      ...(config.server.authToken ? { authToken: config.server.authToken } : {}),
+      fetch: dependencies.fetch ?? globalThis.fetch,
+      timeoutMs: 3_000,
+    });
+    const gatewayFix = gateway.ok
+      ? undefined
+      : gateway.error.includes("belongs to another service")
+        ? "Run `hermes-live setup` so it can select and share a free local port."
+        : "Run `hermes-live service restart` and inspect `hermes-live service logs`.";
     checks.push(gateway.ok
       ? pass("gateway", "Live gateway", `${publicGatewayOrigin(config)} is ready`)
-      : fail("gateway", "Live gateway", gateway.error, "Run `hermes-live service restart` and inspect `hermes-live service logs`."));
+      : fail("gateway", "Live gateway", gateway.error, gatewayFix));
   } else {
     checks.push(fail("gateway", "Live gateway", "Skipped because runtime settings are invalid.", "Fix runtime settings first."));
   }
@@ -218,7 +287,86 @@ export async function runDoctor(
     checks,
     ...(readiness ? { readiness } : {}),
     service,
+    ...(localService ? { localService } : {}),
   };
+}
+
+export function diagnoseManagedLocalMemory(
+  totalMemoryBytes: number,
+  memoryPressureOutput = "",
+  swapUsageOutput = "",
+): DiagnosticCheck {
+  const totalGiB = totalMemoryBytes / 1024 ** 3;
+  const freePercent = /memory\s+free\s+percentage:\s*(\d{1,3})%/iu.exec(memoryPressureOutput)?.[1];
+  const parsedFreePercent = freePercent === undefined ? undefined : Number(freePercent);
+  const swapUsedBytes = parseMacSwapUsedBytes(swapUsageOutput);
+  const facts = [
+    `${formatGiB(totalGiB)} GB physical`,
+    ...(parsedFreePercent !== undefined && parsedFreePercent <= 100
+      ? [`${parsedFreePercent}% pressure-free`]
+      : []),
+    ...(swapUsedBytes !== undefined ? [`${formatGiB(swapUsedBytes / 1024 ** 3)} GB swap used`] : []),
+  ].join("; ");
+
+  if (!Number.isFinite(totalMemoryBytes) || totalMemoryBytes < MIN_MANAGED_LOCAL_MEMORY_BYTES) {
+    return fail(
+      "local-memory",
+      "Local voice memory",
+      `${facts}. Managed local voice needs at least 12 GB.`,
+      "Choose OpenAI or Gemini in `hermes-live setup`, or use a larger Apple Silicon host.",
+    );
+  }
+  if (totalMemoryBytes < RECOMMENDED_MANAGED_LOCAL_MEMORY_BYTES) {
+    return warn(
+      "local-memory",
+      "Local voice memory",
+      `${facts}. 16 GB or more is recommended for consistent latency.`,
+      "Close memory-heavy apps before using local voice, or choose a hosted voice provider.",
+    );
+  }
+
+  const highSwapThreshold = Math.max(HIGH_SWAP_MINIMUM_BYTES, totalMemoryBytes * 0.25);
+  if (
+    (parsedFreePercent !== undefined && parsedFreePercent < 10)
+    || (swapUsedBytes !== undefined && swapUsedBytes >= highSwapThreshold)
+  ) {
+    return warn(
+      "local-memory",
+      "Local voice memory",
+      `${facts}. Host memory pressure may make speech turns much slower.`,
+      "Close memory-heavy apps, then run `hermes-live local restart` before judging local voice latency.",
+    );
+  }
+  return pass("local-memory", "Local voice memory", facts);
+}
+
+async function inspectManagedLocalMemory(
+  totalMemoryBytes: number,
+  runner: CommandRunner | undefined,
+): Promise<DiagnosticCheck> {
+  const run = runner ?? runCommand;
+  const [pressure, swap] = await Promise.all([
+    run("/usr/bin/memory_pressure", ["-Q"]).catch(() => undefined),
+    run("/usr/sbin/sysctl", ["-n", "vm.swapusage"]).catch(() => undefined),
+  ]);
+  return diagnoseManagedLocalMemory(
+    totalMemoryBytes,
+    pressure?.code === 0 ? pressure.stdout : "",
+    swap?.code === 0 ? swap.stdout : "",
+  );
+}
+
+function parseMacSwapUsedBytes(value: string): number | undefined {
+  const match = /\bused\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT])\b/iu.exec(value);
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  const exponent = { K: 1, M: 2, G: 3, T: 4 }[match[2]!.toUpperCase() as "K" | "M" | "G" | "T"];
+  const bytes = amount * 1024 ** exponent;
+  return Number.isFinite(bytes) ? bytes : undefined;
+}
+
+function formatGiB(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 export async function runDoctorCommand(args: string[]): Promise<void> {
@@ -262,27 +410,8 @@ function printDoctorReport(report: DoctorReport): void {
   console.log(report.ok ? "\nEverything required is ready." : "\nOne or more required checks failed.");
 }
 
-async function probeGateway(config: AppConfig, fetchImplementation: typeof globalThis.fetch): Promise<{ ok: true } | { ok: false; error: string }> {
-  try {
-    const response = await fetchImplementation(`${publicGatewayOrigin(config)}/ready`, {
-      redirect: "error",
-      headers: config.server.authToken ? { authorization: `Bearer ${config.server.authToken}` } : {},
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!response.ok) return { ok: false, error: `Readiness returned HTTP ${response.status}.` };
-    const body = await response.json() as { ok?: boolean; status?: string };
-    return body.ok === true || body.status === "ready"
-      ? { ok: true }
-      : { ok: false, error: "Gateway responded but reported that a dependency is not ready." };
-  } catch (error) {
-    return { ok: false, error: errorToMessage(error) };
-  }
-}
-
 function publicGatewayOrigin(config: AppConfig): string {
-  const rawHost = config.server.host === "0.0.0.0" || config.server.host === "::" ? "127.0.0.1" : config.server.host;
-  const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
-  return `http://${host}:${config.server.port}`;
+  return gatewayOrigin(config.server.host, config.server.port);
 }
 
 async function pluginVersion(target: string): Promise<string | undefined> {

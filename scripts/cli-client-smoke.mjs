@@ -30,8 +30,8 @@ server.on("connection", (socket, request) => {
   socket.on("message", (raw) => {
     const message = JSON.parse(raw.toString("utf8"));
     if (message.type === "session.start") {
-      if (message.protocolVersion !== 5) {
-        throw new Error(`CLI smoke expected protocol v5, received ${String(message.protocolVersion)}.`);
+      if (message.protocolVersion !== 6) {
+        throw new Error(`CLI smoke expected protocol v6, received ${String(message.protocolVersion)}.`);
       }
       if (request.url === "/session-timeout") return;
       if (request.url === "/oversized-message") {
@@ -39,7 +39,7 @@ server.on("connection", (socket, request) => {
         return;
       }
       if (request.url === "/invalid-ready") {
-        socket.send(JSON.stringify({ type: "session.ready", protocolVersion: 5, sessionId: "live_cli_smoke" }));
+        socket.send(JSON.stringify({ type: "session.ready", protocolVersion: 6, sessionId: "live_cli_smoke" }));
         return;
       }
       if (request.url === "/wrong-version") {
@@ -231,17 +231,17 @@ try {
   });
   await runClient(port, invalidOutputPrompt, "", {
     expectFailure: true,
-    stderrIncludes: "task.completed did not match the bounded protocol-v5 schema",
+    stderrIncludes: "task.completed did not match the bounded protocol-v6 schema",
   });
   await runClient(port, "invalid ready", "", {
     path: "/invalid-ready",
     expectFailure: true,
-    stderrIncludes: "session.ready did not match the bounded protocol-v5 schema",
+    stderrIncludes: "session.ready did not match the bounded protocol-v6 schema",
   });
   await runClient(port, "wrong version", "", {
     path: "/wrong-version",
     expectFailure: true,
-    stderrIncludes: "Gateway protocol mismatch: expected v5, received 2",
+    stderrIncludes: "Gateway protocol mismatch: expected v6, received 2",
   });
   await runClient(port, "session timeout", "", {
     path: "/session-timeout",
@@ -288,7 +288,7 @@ if (!retainedResultFetched) throw new Error("One-shot CLI did not fetch a retain
 function readyMessage() {
   return {
     type: "session.ready",
-    protocolVersion: 5,
+    protocolVersion: 6,
     sessionId: "live_cli_smoke",
     model: "mock-live",
     hermes: {},

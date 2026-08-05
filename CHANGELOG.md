@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-08-05
+
+- Make `hermes-live setup` the complete install path. It now configures Hermes' private API bridge, installs the Dashboard plugin, starts both services, waits for them to become ready, and warms a real task call. Custom and remote Hermes deployments remain operator-managed.
+- Run the tested Hugging Face speech-to-speech stack as a private Apple Silicon service. Setup owns its install, startup, endpoint selection, health checks, log limits, retries, and removal when switching providers; a second terminal is no longer part of the normal workflow.
+- Let Hermes choose its configured model instead of sending the old `hermes-agent` alias as a literal model override. New and resumed chats resolve the real selection, while `HERMES_MODEL` remains available for deliberate overrides.
+- Resolve config, plugin state, and task state from `HERMES_HOME`, including named Hermes profiles.
+- Add protocol v6 microphone pause by voice or UI. Pausing keeps playback, the conversation, and background work alive; resuming always requires an explicit user action.
+- Make Dashboard Connect wait for the gateway, Hermes, task store, and provider to be ready, then start the microphone automatically. Disconnect remains immediate even while browser permission is pending, and late microphone grants are discarded.
+- Keep saved-chat conversation responsive while durable work runs. The voice can inspect bounded live activity, target tasks by a short spoken reference, start follow-ups, and report completion without exposing internal reasoning or opaque IDs in normal speech.
+- Harden local provider compatibility around exact speech turns, tool-call history, fragmented transcripts, empty responses, response deadlines, disconnects, provider crashes, and the upstream single-pipeline limit.
+- Preserve accepted work when the voice provider dies or disconnects. Public task state now distinguishes confirmed terminal outcomes from unknown ones instead of guessing or repeating a possibly accepted mutation.
+- Detect occupied local ports and unrelated processes before setup claims them. Managed endpoints move safely when possible, every readiness probe verifies Hermes Live service identity, and normal setup leaves the standalone browser demo disabled.
+- Keep local speech and assistant text out of managed runtime logs while retaining operational warnings. The package also excludes Python cache artifacts and provides configuration-free CLI help.
+
 ## 0.8.0 - 2026-08-01
 
 - Add fully local voice on Apple Silicon through the official Hugging Face `speech-to-speech` stack, with a pinned one-command launcher and no provider API key.

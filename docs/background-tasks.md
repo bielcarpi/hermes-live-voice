@@ -1,6 +1,6 @@
 # Durable Background Tasks
 
-Hermes Live protocol v5 separates the realtime conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
+Hermes Live protocol v6 separates the realtime conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
 
 ```txt
 voice or text turn
@@ -38,7 +38,7 @@ The public states are:
 | `cancelled` | Hermes confirmed cancellation, or a queued task was cancelled before dispatch. |
 | `unknown` | The gateway cannot prove the outcome. It must not be described as success or failure. |
 
-Every task has a monotonically increasing, per-task `sequence`, but clients retain two independent revisions: lifecycle state by `taskId` and notification state by `taskId`, `notificationId`, and acknowledgement. Lifecycle and notification messages can share one sequence and arrive in either order; both must be applied. Exact repeats within one channel are idempotent, while conflicting content at the same channel sequence must fail closed. The upstream Hermes run id is private and is never part of protocol v5.
+Every task has a monotonically increasing, per-task `sequence`, but clients retain two independent revisions: lifecycle state by `taskId` and notification state by `taskId`, `notificationId`, and acknowledgement. Lifecycle and notification messages can share one sequence and arrive in either order; both must be applied. Exact repeats within one channel are idempotent, while conflicting content at the same channel sequence must fail closed. The upstream Hermes run id is private and is never part of protocol v6.
 
 Hermes `tool.started` and `tool.completed` events can advance `task.progress` with a sanitized tool name and bounded preview. Raw arguments, output, reasoning, credentials, and upstream event envelopes remain private. This is enough to answer “what is that task doing?” without turning the public protocol into a trace viewer.
 
@@ -120,7 +120,7 @@ The durable source of truth is the task inbox, not whether a provider spoke. Ann
 
 ## Approval Boundary
 
-Protocol v5 has no interactive approval messages, buttons, or terminal commands. If Hermes enters `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all`, then stops that exact upstream run. Clients see a non-actionable stopping/progress state.
+Protocol v6 has no interactive approval messages, buttons, or terminal commands. If Hermes enters `waiting_for_approval`, the supervisor attempts `deny` with `resolve_all`, then stops that exact upstream run. Clients see a non-actionable stopping/progress state.
 
 This is fail-closed. Do not advertise that approvals can be completed in another Hermes Live surface. A future approval workflow requires a proven upstream identity contract that targets exactly one request.
 

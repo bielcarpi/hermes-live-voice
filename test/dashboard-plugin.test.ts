@@ -58,6 +58,7 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).toContain('? { mode: "new" }');
     expect(source).not.toContain('{ mode: "new", title: "Live Voice" }');
     expect(source).toContain('{ mode: "resume", sessionId: conversationId }');
+    expect(source).toContain("if (attachedSessionId) setConversationId(attachedSessionId);");
     expect(source).toContain("client.connect({ conversation: conversation })");
   });
 
@@ -91,9 +92,12 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).toContain("Assistant speech interrupted. Background tasks keep running.");
     expect(source).toContain("Interrupt speech");
     expect(source).toContain("Stop task");
+    expect(source).toContain('client.on("input.pause_requested"');
+    expect(source).toContain('text: "Listening paused by voice command. Press Start microphone when you want to resume."');
+    expect(source).toContain("audio.stopMicrophone({ endTurn: false })");
     expect(source).toContain("audio.clearPlayback()");
     expect(source).toContain("audio.primePlayback()");
-    expect(source).toContain("primePlaybackFromGesture();");
+    expect(source).toContain("const audio = primePlaybackFromGesture();");
   });
 
   it("keeps stable task identity and attaches unread updates under out-of-order completion", () => {
@@ -171,7 +175,7 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.taskStatePresentation("running")).toEqual({ label: "Running", tone: "active" });
     expect(utilities.taskStatePresentation("completed")).toEqual({ label: "Completed", tone: "success" });
     expect(utilities.taskStatePresentation("failed")).toEqual({ label: "Failed", tone: "danger" });
-    expect(utilities.isTaskActive({ state: "unknown" })).toBe(true);
+    expect(utilities.isTaskActive({ state: "unknown" })).toBe(false);
     expect(utilities.isTaskActive({ state: "completed" })).toBe(false);
     expect(utilities.taskProgressText({ message: "Reviewing", percent: 48.6 })).toBe("Reviewing · 49%");
     expect(utilities.taskProgressText({ message: "Files", current: 2, total: 5 })).toBe("Files · 2/5");
@@ -209,8 +213,9 @@ describe("Hermes Dashboard plugin", () => {
     expect(client.disconnect).toHaveBeenCalledOnce();
   });
 
-  it("preserves fatal errors and accurately describes durable work after closure", () => {
+  it("preserves the useful session error when a provider closure follows it", () => {
     const utilities = loadDashboardUtilities();
+    const source = dashboardSource();
     const fatal = { tone: "danger", text: "The provider rejected this voice session." };
 
     expect(utilities.connectionClosedNotice({ clean: true }, fatal)).toMatchObject(fatal);
@@ -220,6 +225,10 @@ describe("Hermes Dashboard plugin", () => {
     });
     expect(utilities.connectionClosedNotice({ clean: true }, null).text)
       .toBe("Live Voice disconnected.");
+    expect(source).toContain('client.on("response.started"');
+    expect(source).toContain('event.detail && event.detail.type === "session.error"');
+    expect(source).toContain('event.code === "connection_lost" && disconnectNoticeRef.current');
+    expect(source).toContain("disconnectNoticeRef.current && disconnectNoticeRef.current.notice");
   });
 
   it("gives accurate microphone and text-only guidance from negotiated capabilities", () => {
@@ -230,12 +239,65 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.connectedSessionNotice({ enabled: false }, false))
       .toBe("Live Voice is connected in text mode. Type a message to Hermes.");
     expect(utilities.connectedSessionGuidance(false)).toBe("Type a message below.");
-    expect(utilities.connectedSessionNotice({ enabled: true }, true)).toContain("keep talking");
+    expect(utilities.connectedSessionNotice({ enabled: true }, true, true)).toContain("Connected and listening");
     expect(utilities.connectedSessionGuidance(true)).toContain("Start the microphone");
     expect(utilities.supportsBrowserPlayback({ enabled: false })).toBe(false);
     expect(utilities.supportsBrowserPlayback({ enabled: true, mimeType: "audio/pcm;rate=24000" })).toBe(true);
     expect(utilities.supportsBrowserPlayback({ enabled: true, mimeType: "audio/opus" })).toBe(false);
     expect(utilities.supportsBrowserMicrophone({ enabled: true, mimeType: "audio/pcm;rate=16000" })).toBe(true);
+  });
+
+  it("starts a compatible microphone automatically after one Connect click", async () => {
+    const utilities = loadDashboardUtilities();
+    const source = dashboardSource();
+    const audio = { startMicrophone: vi.fn(async () => undefined) };
+
+    await expect(utilities.startMicrophoneAfterConnect(audio, {
+      enabled: true,
+      mimeType: "audio/pcm;rate=16000",
+    })).resolves.toEqual({ started: true });
+    expect(audio.startMicrophone).toHaveBeenCalledOnce();
+
+    await expect(utilities.startMicrophoneAfterConnect(audio, {
+      enabled: false,
+    })).resolves.toEqual({ started: false });
+    expect(audio.startMicrophone).toHaveBeenCalledOnce();
+    expect(source).toContain("void startMicrophoneAfterConnect(audio, connectedInputAudio, function () {");
+    expect(source).not.toContain("client.connect({ conversation: conversation }).then(async function");
+    expect(source).toContain("Live Voice connected. Allow microphone access to start talking.");
+  });
+
+  it("keeps the connection controls in view until a transcript actually exists", () => {
+    const utilities = loadDashboardUtilities();
+    const viewport = { scrollTop: 0, scrollHeight: 640 };
+
+    utilities.scrollTranscriptToLatest(viewport, 0);
+    expect(viewport.scrollTop).toBe(0);
+
+    utilities.scrollTranscriptToLatest(viewport, 1);
+    expect(viewport.scrollTop).toBe(640);
+    expect(dashboardSource()).not.toContain("scrollIntoView");
+  });
+
+  it("stops a microphone permission result that arrives after disconnect", async () => {
+    const utilities = loadDashboardUtilities();
+    let finishPermission!: () => void;
+    let current = true;
+    const permission = new Promise<void>((resolve) => { finishPermission = resolve; });
+    const audio = {
+      startMicrophone: vi.fn(async () => await permission),
+      stopMicrophone: vi.fn(async () => undefined),
+    };
+    const pending = utilities.startMicrophoneAfterConnect(
+      audio,
+      { enabled: true, mimeType: "audio/pcm;rate=16000" },
+      () => current,
+    );
+    current = false;
+    finishPermission();
+
+    await expect(pending).resolves.toEqual({ started: false, stale: true });
+    expect(audio.stopMicrophone).toHaveBeenCalledWith({ endTurn: false });
   });
 
   it("uses freshly negotiated audio and never primes playback for text-only sessions", () => {
@@ -256,8 +318,21 @@ describe("Hermes Dashboard plugin", () => {
 
     expect(utilities.gatewayPresentation({ configured: false }).detail).toContain("hermes-live setup");
     expect(utilities.gatewayPresentation({ reachable: false }).detail).toContain("hermes-live service status");
+    expect(utilities.gatewayPresentation({ reachable: true, ready: false, error: "wrong_gateway_service" }).detail)
+      .toContain("hermes-live setup");
     expect(utilities.gatewayPresentation({ ready: false, error: "Hermes is offline." }).detail)
       .toBe("Hermes is offline. Run hermes-live doctor for the exact fix.");
+  });
+
+  it("does not offer a connection until the gateway is actually ready", () => {
+    const utilities = loadDashboardUtilities();
+
+    expect(utilities.connectControlPresentation({ loading: true }, false, "", "idle"))
+      .toEqual({ disabled: true, label: "Checking gateway…" });
+    expect(utilities.connectControlPresentation({ ready: false }, false, "", "idle"))
+      .toEqual({ disabled: true, label: "Gateway not ready" });
+    expect(utilities.connectControlPresentation({ ready: true }, false, "", "idle"))
+      .toEqual({ disabled: false, label: "Connect Live Voice" });
   });
 });
 
@@ -292,6 +367,7 @@ function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
       connectedSessionGuidance,
       connectedSessionNotice,
       connectionClosedNotice,
+      connectControlPresentation,
       disconnectSession,
       gatewayPresentation,
       isTaskActive,
@@ -299,6 +375,8 @@ function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
       negotiatedInputAudio,
       supportsBrowserPlayback,
       supportsBrowserMicrophone,
+      startMicrophoneAfterConnect,
+      scrollTranscriptToLatest,
       taskDetail,
       taskInboxItems,
       taskInboxSummary,
