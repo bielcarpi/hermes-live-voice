@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.9.0 - 2026-08-05
+## 0.9.1 - 2026-08-05
 
 - Make `hermes-live setup` the complete install path. It now configures Hermes' private API bridge, installs the Dashboard plugin, starts both services, waits for them to become ready, and warms a real task call. Custom and remote Hermes deployments remain operator-managed.
 - Run the tested Hugging Face speech-to-speech stack as a private Apple Silicon service. Setup owns its install, startup, endpoint selection, health checks, log limits, retries, and removal when switching providers; a second terminal is no longer part of the normal workflow.
