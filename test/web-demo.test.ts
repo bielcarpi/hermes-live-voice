@@ -7,7 +7,7 @@ describe("web demo v3 task inbox", () => {
     const html = readFileSync(new URL("../apps/web-demo/index.html", import.meta.url), "utf8");
     const source = readFileSync(new URL("../apps/web-demo/app.js", import.meta.url), "utf8");
 
-    expect(html).toContain("Hermes, now with a real-time voice.");
+    expect(html).toContain("Keep talking while Hermes keeps working.");
     expect(html).toContain("Voice can disconnect without cancelling tasks.");
     expect(html).toContain('id="task-inbox-title"');
     expect(html).not.toContain('id="stop"');

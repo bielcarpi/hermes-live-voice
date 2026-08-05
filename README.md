@@ -5,8 +5,8 @@
 <h1 align="center">Hermes Live Voice</h1>
 
 <p align="center">
-  <strong>Real-time voice for Hermes Agent.</strong><br>
-  Keep talking while Hermes works in the background.
+  <strong>Talk to Hermes while it works.</strong><br>
+  Continuous voice for saved chats, durable tasks, and live progress.
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
 </p>
 
-Hermes Live Voice is a continuous, interruptible voice layer for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Open a saved Hermes chat, delegate work, keep the conversation going, ask what each task is doing, and hear when it finishes.
+Hermes Live Voice is a continuous, interruptible voice layer for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Open a new or saved chat, delegate work, keep talking, ask what any task is doing, and hear when it finishes—even if you disconnected in between.
 
 Hermes still supplies the model, tools, memory, and skills. This project adds the live conversation, durable task supervision, and Dashboard UI.
 

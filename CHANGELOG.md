@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Make the product promise consistent across npm, the README, CLI, Dashboard, and plugin metadata: continuous voice for saved Hermes chats while durable work runs and reports back.
+- Add a branded social preview and focused discovery keywords for Hermes, local speech-to-speech, and full-duplex voice directories.
+
 ## 0.9.1 - 2026-08-05
 
 - Make `hermes-live setup` the complete install path. It now configures Hermes' private API bridge, installs the Dashboard plugin, starts both services, waits for them to become ready, and warms a real task call. Custom and remote Hermes deployments remain operator-managed.

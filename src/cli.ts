@@ -328,7 +328,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
 }
 
 function printHelp(): void {
-  console.log(`hermes-live — real-time voice for Hermes Agent
+  console.log(`hermes-live — continuous voice for Hermes Agent
 
 Quick start:
   hermes-live setup
