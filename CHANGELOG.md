@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.2 - 2026-08-05
+
 - Make the product promise consistent across npm, the README, CLI, Dashboard, and plugin metadata: continuous voice for saved Hermes chats while durable work runs and reports back.
 - Add a branded social preview and focused discovery keywords for Hermes, local speech-to-speech, and full-duplex voice directories.
 
