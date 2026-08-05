@@ -9,7 +9,7 @@ hermes-live doctor
 hermes-live doctor --provider-smoke
 ```
 
-The smoke opens the same adapter used by the gateway, waits for provider readiness, and closes it cleanly. It does not send audio or start a Hermes task.
+The manual smoke opens the same adapter used by the gateway, waits for provider readiness, and closes it cleanly. It does not send audio or start a Hermes task. Managed Apple Silicon setup additionally runs an isolated task-tool and spoken-receipt check before declaring local voice ready.
 
 For a source checkout:
 
@@ -18,13 +18,19 @@ npm run verify
 npm audit --audit-level=moderate
 ```
 
+With the managed local provider already running, the full local gateway gate also proves model-selected delegation, a fake Hermes run, SSE completion, and delivery back to the browser protocol:
+
+```sh
+npm run check:gateway:local
+```
+
 ## Local Hugging Face
 
 Start the upstream server, then run the smoke:
 
 ```sh
-# Terminal 1, Apple Silicon
-hermes-live local
+# Foreground provider, Apple Silicon
+hermes-live local run
 
 # Terminal 2
 HERMES_LIVE_PROVIDER=local hermes-live provider-smoke
@@ -32,7 +38,7 @@ HERMES_LIVE_PROVIDER=local hermes-live provider-smoke
 
 Confirm:
 
-- the server emits `session.created` and accepts the protocol v5 session update;
+- the server emits `session.created` and accepts the protocol v6 session update;
 - input and output use the upstream OpenAI Realtime PCM16 wire format at 24 kHz (the local pipeline resamples internally);
 - VAD starts and stops turns without a push-to-talk click;
 - speaking over the assistant cancels old output;
@@ -40,7 +46,7 @@ Confirm:
 - one task tool call returns a receipt and the conversation continues;
 - a completion notice waits until the current turn is idle.
 
-`hermes-live local` pins the upstream Python package version tested by the release. Other platforms should run the upstream `realtime` mode separately and point `HERMES_LIVE_LOCAL_URL` at it.
+`hermes-live local run` pins the upstream Python package version tested by the release. Normal installs use the managed service created by `hermes-live setup`. Other platforms should run the upstream `realtime` mode separately and point `HERMES_LIVE_LOCAL_URL` at it.
 
 ## Gemini
 

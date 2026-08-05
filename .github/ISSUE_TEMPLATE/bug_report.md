@@ -18,11 +18,11 @@ Please include the smallest reproducible sequence and whether mock mode reproduc
 
 - hermes-live version:
 - Node version:
-- Provider: Gemini / OpenAI / mock
+- Provider: local / Gemini / OpenAI / mock
 - Provider model:
 - Hermes version or commit:
 - Operating system:
-- Install method: GitHub clone / release tarball / Docker / npm
+- Install method: npm / GitHub clone / Docker
 - Client: Hermes Dashboard / browser demo / terminal / custom client
 
 ## Diagnostics

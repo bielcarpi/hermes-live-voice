@@ -2,7 +2,7 @@
 
 ## Normal install
 
-Start Hermes Agent's API Server, keep its `API_SERVER_KEY` in `~/.hermes/.env`, then run:
+Run:
 
 ```sh
 npm install --global hermes-live-voice
@@ -10,7 +10,7 @@ hermes-live setup
 hermes dashboard
 ```
 
-Setup writes a private config, installs and enables the bundled Dashboard plugin, checks Hermes and the selected voice provider, then installs a launchd or systemd user service.
+Setup enables Hermes' private API bridge, creates a random bridge credential when needed, installs and enables the bundled Dashboard plugin, checks both runtimes, then installs the required user services. On Apple Silicon it defaults to fully local voice. Existing custom or remote Hermes API endpoints are never reconfigured.
 
 If activation fails, run:
 
@@ -23,17 +23,20 @@ Both commands suppress credentials and print the next concrete fix.
 
 ## Local voice
 
-On Apple Silicon, the package can launch the tested Hugging Face stack directly:
+On Apple Silicon, `hermes-live setup` uses `uv` to install and run `speech-to-speech==0.2.11` with local Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and the realtime WebSocket transport. It installs a private launchd service, waits for the models, proves a structured task tool call and spoken receipt, then starts the gateway. This also warms the first real inference path. No second terminal is needed.
+
+The managed profile requires at least 12 GB of physical memory; a 16 GB Apple Silicon Mac is recommended (7.6 GB observed warm, 9.0 GB peak on the tested 16 GB M1 Pro). Setup checks this before downloading models. It moves an implicit local endpoint to a nearby free port when needed; an explicit `HERMES_LIVE_LOCAL_URL` is never changed.
+
+The `hermes-live local` commands are for diagnostics and development:
 
 ```sh
-# First terminal
-hermes-live local
-
-# Second terminal
-hermes-live setup --provider local
+hermes-live local status
+hermes-live local logs
+hermes-live local restart
+hermes-live local uninstall  # remove the managed service
+hermes-live local run       # foreground debugging
+hermes-live local command   # print the pinned command
 ```
-
-`hermes-live local` uses `uv` to run `speech-to-speech==0.2.11` with local Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and the realtime WebSocket transport. It spells out the Apple Silicon settings because upstream's direct-microphone preset selects a different transport, and supplies macOS's CA bundle to standalone Python installs when needed. The first run downloads dependencies and model weights. `hermes-live local command` prints the exact command without running it.
 
 On Linux, Windows, CUDA systems, or a separate voice host, run [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) in `realtime` mode and set:
 
@@ -57,14 +60,14 @@ OPENAI_API_KEY=... hermes-live setup --provider openai
 hermes-live setup --provider mock
 ```
 
-Secrets can come from the process environment, an existing managed config, or `~/.hermes/.env`. Setup prompts without echoing missing values. Secret command-line flags are deliberately unsupported.
+Provider secrets can come from the process environment, an existing managed config, or `~/.hermes/.env`. Setup prompts without echoing missing values. The normal local install generates its internal Hermes bridge key automatically. Secret command-line flags are deliberately unsupported.
 
 ## Configuration
 
 Managed settings live at:
 
 ```txt
-~/.hermes/hermes-live/config.env
+$HERMES_HOME/hermes-live/config.env
 ```
 
 The directory is `0700` and the file is `0600` on POSIX systems. The parser accepts only known keys and JSON strings; it refuses symlinks, duplicate or unknown keys, unsafe permissions, and oversized files. Environment variables take precedence. Project `.env` files are not loaded.
@@ -74,15 +77,19 @@ Common settings:
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `HERMES_BASE_URL` | `http://127.0.0.1:8642` | Hermes API Server |
+| `HERMES_MODEL` | Hermes profile default | Optional literal model override; normally leave unset |
 | `HERMES_LIVE_PROVIDER` | selected by setup | `local`, `gemini`, `openai`, or `mock` |
 | `HERMES_LIVE_LOCAL_URL` | `ws://127.0.0.1:8765/v1/realtime` | Hugging Face realtime endpoint |
-| `HERMES_LIVE_HOST` / `HERMES_LIVE_PORT` | `127.0.0.1` / `8788` | Gateway listener |
+| `HERMES_LIVE_HOST` / `HERMES_LIVE_PORT` | `127.0.0.1` / first free port from `8788` | Gateway listener |
 | `HERMES_LIVE_AUTH_TOKEN` | unset | Required for network-accessible gateway binds |
+| `HERMES_LIVE_MAX_SESSIONS` | `1` local / `8` hosted | Concurrent voice sessions; match the provider pool |
 | `HERMES_LIVE_MAX_CONCURRENT_TASKS` | `3` | Bounded worker slots |
 | `HERMES_LIVE_MAX_QUEUED_TASKS` | `32` | Bounded pending work |
 | `HERMES_LIVE_TRUST_DECLARED_READ_ONLY` | `false` | Allow declared read-only work to share slots |
 
 Use [.env.example](../.env.example) for containers and `hermes-live print-config` to inspect every resolved value with secrets redacted. `HERMES_LIVE_CONFIG_FILE` selects a different managed file.
+
+`HERMES_HOME` defaults to `~/.hermes`; named Hermes profiles therefore keep their plugin and Live Voice config together. Setup and the Dashboard plugin share the resolved managed file automatically. If `8788` belongs to another local service, setup selects and saves a free port. An explicitly configured port is never changed silently.
 
 ## Service lifecycle
 
@@ -123,8 +130,7 @@ The example binds the host port to loopback, drops Linux capabilities, uses a re
 ## Automation
 
 ```sh
-HERMES_AGENT_API_SERVER_KEY=... \
-hermes-live setup --provider local --non-interactive --json --no-service
+hermes-live setup --provider local --non-interactive --json
 ```
 
-Useful layout flags are `--hermes-url`, `--config`, `--plugins-dir`, `--hermes-command`, `--no-enable`, and `--no-service`.
+For a config-only or remote deployment, provide `HERMES_AGENT_API_SERVER_KEY` and add `--no-service`. Useful layout flags are `--hermes-url`, `--config`, `--plugins-dir`, `--hermes-command`, `--no-enable`, and `--no-service`.
