@@ -2123,15 +2123,11 @@ function createTaskStateFile(): string {
 }
 
 async function seedTaskState(config: AppConfig, records: TaskRecord[]): Promise<void> {
-  const store = new FileTaskStore({
-    directory: dirname(config.tasks.stateFile),
-    filename: basename(config.tasks.stateFile),
-    maxRecords: config.tasks.historyLimit + config.tasks.maxConcurrent + config.tasks.maxQueued,
-    retentionMs: config.tasks.retentionMs,
-    terminalReserveSlots: config.tasks.maxConcurrent,
-  });
-  for (const record of records) await store.put(record);
-  await store.close();
+  writeFileSync(config.tasks.stateFile, JSON.stringify({
+    schemaVersion: 1,
+    updatedAt: Math.max(0, ...records.map((record) => record.updatedAt)),
+    tasks: records,
+  }), { mode: 0o600 });
 }
 
 function seededRunningTask(
