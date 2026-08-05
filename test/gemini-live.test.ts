@@ -23,6 +23,12 @@ describe("Gemini Live adapter helpers", () => {
     });
   });
 
+  it("only advertises negotiated tools and omits the tool block for a provider probe", () => {
+    const scoped = buildGeminiLiveConnectConfig("test instruction", ["start_background_task"]);
+    expect(scoped.tools?.[0]?.functionDeclarations.map((tool) => tool.name)).toEqual(["start_background_task"]);
+    expect(buildGeminiLiveConnectConfig("test instruction", [])).not.toHaveProperty("tools");
+  });
+
   it("pins official Gemini endpoints and ignores ambient SDK endpoint overrides", () => {
     const names = [
       "GOOGLE_GEMINI_BASE_URL",

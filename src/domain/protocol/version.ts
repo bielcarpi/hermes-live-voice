@@ -1,12 +1,12 @@
-export const HERMES_LIVE_PROTOCOL_VERSION = 5 as const;
-export const HERMES_LIVE_SUPPORTED_PROTOCOL_VERSIONS = [3, 4, 5] as const;
+export const HERMES_LIVE_PROTOCOL_VERSION = 6 as const;
+export const HERMES_LIVE_SUPPORTED_PROTOCOL_VERSIONS = [3, 4, 5, 6] as const;
 
 export type HermesLiveProtocolVersion = (typeof HERMES_LIVE_SUPPORTED_PROTOCOL_VERSIONS)[number];
 
 export const HERMES_LIVE_PROTOCOL_ERROR_CODE = "unsupported_protocol_version" as const;
 
 export function isHermesLiveProtocolVersion(value: unknown): value is HermesLiveProtocolVersion {
-  return value === 3 || value === 4 || value === 5;
+  return HERMES_LIVE_SUPPORTED_PROTOCOL_VERSIONS.some((version) => version === value);
 }
 
 export function incompatibleProtocolVersionMessage(value: unknown): string {

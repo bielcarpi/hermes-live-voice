@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import types
+import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -218,6 +219,38 @@ def test_url_and_payload_guards(plugin: Any) -> None:
     assert plugin._normalise_gateway_url("HTTPS://Voice.Example:9443/") == "https://voice.example:9443"
     assert plugin._normalise_gateway_url("http://[::1]:8788") == "http://[::1]:8788"
     assert plugin._gateway_websocket_url("https://voice.example") == "wss://voice.example/v1/live"
+
+    names = ("HERMES_LIVE_URL", "HERMES_LIVE_AUTH_TOKEN", "HERMES_LIVE_CONFIG_FILE", "HERMES_HOME")
+    previous = {name: os.environ.get(name) for name in names}
+    with tempfile.TemporaryDirectory(prefix="hermes-live-dashboard-config-") as directory:
+        path = Path(directory) / "config.env"
+        path.write_text(
+            'HERMES_LIVE_HOST="::"\n'
+            'HERMES_LIVE_PORT="8794"\n'
+            'HERMES_LIVE_AUTH_TOKEN="dashboard-managed-token"\n',
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+        try:
+            os.environ.pop("HERMES_LIVE_URL", None)
+            os.environ.pop("HERMES_LIVE_AUTH_TOKEN", None)
+            os.environ["HERMES_LIVE_CONFIG_FILE"] = str(path)
+            assert plugin._gateway_url() == "http://[::1]:8794"
+            assert plugin._gateway_token() == "dashboard-managed-token"
+            profile_path = Path(directory) / "profile" / "hermes-live" / "config.env"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            profile_path.chmod(0o600)
+            os.environ.pop("HERMES_LIVE_CONFIG_FILE", None)
+            os.environ["HERMES_HOME"] = str(Path(directory) / "profile")
+            assert plugin._gateway_url() == "http://[::1]:8794"
+            assert plugin._gateway_token() == "dashboard-managed-token"
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     invalid_urls = [
         "ws://voice.example",
@@ -434,7 +467,10 @@ async def test_status(plugin: Any) -> None:
     async def fake_fetch(_client: Any, url: str, headers: dict[str, str] | None = None) -> Any:
         calls.append((url, headers))
         if url.endswith("/health"):
-            return plugin._Probe(status=200, body={"status": "ok"})
+            return plugin._Probe(
+                status=200,
+                body={"status": "ok", "service": "wrong-service" if wrong_service else "hermes-live"},
+            )
         if url.endswith("/v1/capabilities"):
             return plugin._Probe(
                 status=200,
@@ -531,7 +567,7 @@ async def test_status(plugin: Any) -> None:
         "model": None,
         "audio": None,
         "tasks": None,
-        "error": "capabilities_unavailable",
+        "error": "wrong_gateway_service",
     }
 
 
@@ -542,7 +578,7 @@ async def test_status_suppresses_reflected_bearer_and_failed_readiness(plugin: A
     async def fake_fetch(_client: Any, url: str, headers: dict[str, str] | None = None) -> Any:
         del headers
         if url.endswith("/health"):
-            return plugin._Probe(status=200, body={"status": "ok"})
+            return plugin._Probe(status=200, body={"status": "ok", "service": "hermes-live"})
         if url.endswith("/v1/capabilities"):
             return plugin._Probe(
                 status=200,

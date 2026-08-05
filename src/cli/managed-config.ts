@@ -28,6 +28,7 @@ export const MANAGED_CONFIG_KEYS = [
   "HERMES_LIVE_HERMES_TIMEOUT_MS",
   "HERMES_LIVE_HOST",
   "HERMES_LIVE_LOCAL_ALLOW_REMOTE",
+  "HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING",
   "HERMES_LIVE_LOCAL_URL",
   "HERMES_LIVE_LOCAL_VOICE",
   "HERMES_LIVE_MAX_AUDIO_BYTES",
@@ -71,6 +72,7 @@ export interface ManagedConfigReadResult {
 export interface ManagedConfigOptions {
   path?: string;
   home?: string;
+  hermesHome?: string;
 }
 
 const managedKeySet = new Set<string>(MANAGED_CONFIG_KEYS);
@@ -79,7 +81,13 @@ export function managedConfigPath(options: ManagedConfigOptions = {}): string {
   return resolve(
     options.path
       || process.env.HERMES_LIVE_CONFIG_FILE
-      || join(options.home ?? homedir(), ".hermes", "hermes-live", "config.env"),
+      || join(
+        options.hermesHome
+          ?? process.env.HERMES_HOME
+          ?? join(options.home ?? homedir(), ".hermes"),
+        "hermes-live",
+        "config.env",
+      ),
   );
 }
 

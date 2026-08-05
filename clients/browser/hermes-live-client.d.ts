@@ -7,7 +7,7 @@ export type HermesLiveClientState =
   | "closed"
   | "failed";
 
-export const HERMES_LIVE_PROTOCOL_VERSION: 5;
+export const HERMES_LIVE_PROTOCOL_VERSION: 6;
 
 export type HermesLiveConversationSelection =
   | { mode: "new"; title?: string }
@@ -102,7 +102,7 @@ export interface HermesLiveTaskCapabilities {
 
 export interface HermesLiveSessionReady {
   type: "session.ready";
-  protocolVersion: 5;
+  protocolVersion: 6;
   requestId?: string;
   sessionId: string;
   model: string;
@@ -138,6 +138,7 @@ export type HermesLiveKnownServerMessage =
   | { type: "audio.output"; data: string; mimeType: string; itemId?: string; contentIndex?: number }
   | { type: "transcript.delta"; speaker: "user" | "assistant" | "system"; text: string; final?: boolean }
   | { type: "input.speech_started"; provider: "openai" | "local"; itemId?: string; audioStartMs?: number }
+  | { type: "input.pause_requested"; reason: "voice_command" }
   | { type: "response.started"; responseId?: string }
   | { type: "response.completed"; responseId?: string }
   | { type: "response.cancelled"; responseId?: string }
@@ -221,6 +222,7 @@ export interface HermesLiveClientEventMap {
   "audio.output": Extract<HermesLiveKnownServerMessage, { type: "audio.output" }>;
   "transcript.delta": Extract<HermesLiveKnownServerMessage, { type: "transcript.delta" }>;
   "input.speech_started": Extract<HermesLiveKnownServerMessage, { type: "input.speech_started" }>;
+  "input.pause_requested": Extract<HermesLiveKnownServerMessage, { type: "input.pause_requested" }>;
   "response.started": Extract<HermesLiveKnownServerMessage, { type: "response.started" }>;
   "response.completed": Extract<HermesLiveKnownServerMessage, { type: "response.completed" }>;
   "response.cancelled": Extract<HermesLiveKnownServerMessage, { type: "response.cancelled" }>;

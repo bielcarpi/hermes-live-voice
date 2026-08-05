@@ -50,6 +50,7 @@ describe("readiness", () => {
           run_events_sse: true,
           run_stop: true,
           run_approval_response: true,
+          ...sessionFeatures(),
         },
       })),
     } as unknown as HermesRunsPort;
@@ -102,7 +103,9 @@ describe("readiness", () => {
       HERMES_LIVE_PROVIDER: "local",
       HERMES_LIVE_LOCAL_URL: "ws://127.0.0.1:8765/v1/realtime",
     }), {
-      hermes: { assertRunsSupported: vi.fn(async () => ({ features: {} })) } as unknown as HermesRunsPort,
+      hermes: {
+        assertRunsSupported: vi.fn(async () => ({ features: sessionFeatures() })),
+      } as unknown as HermesRunsPort,
       requireHermesApiKey: false,
     });
 
@@ -129,6 +132,7 @@ describe("readiness", () => {
           run_stop: true,
           run_approval_response: true,
           run_approval_response_by_id: true,
+          ...sessionFeatures(),
         },
       })),
     } as unknown as HermesRunsPort;
@@ -176,3 +180,13 @@ describe("readiness", () => {
     expect(health).toHaveBeenCalledOnce();
   });
 });
+
+function sessionFeatures(): Record<string, true> {
+  return {
+    session_resources: true,
+    session_chat: true,
+    session_chat_streaming: true,
+    model_options: true,
+    session_model_lock: true,
+  };
+}

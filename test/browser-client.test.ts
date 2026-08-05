@@ -8,7 +8,7 @@ import {
 } from "../clients/browser/hermes-live-client.js";
 
 describe("HermesLiveClient", () => {
-  it("negotiates protocol v5 and sends the exact task command envelopes", async () => {
+  it("negotiates protocol v6 and sends the exact task command envelopes", async () => {
     const client = createClient();
     const connection = client.connect();
     const socket = await nextSocket();
@@ -17,13 +17,13 @@ describe("HermesLiveClient", () => {
     expect(socket.sent[0]).toEqual({
       type: "session.start",
       id: "req_1",
-      protocolVersion: 5,
+      protocolVersion: 6,
       profileId: "demo",
       conversation: { mode: "new" },
     });
     socket.message(readyMessage("live_1"));
 
-    await expect(connection).resolves.toMatchObject({ sessionId: "live_1", protocolVersion: 5 });
+    await expect(connection).resolves.toMatchObject({ sessionId: "live_1", protocolVersion: 6 });
     expect(client.connected).toBe(true);
     expect(client.getSnapshot()).toMatchObject({
       connection: "ready",
@@ -59,7 +59,7 @@ describe("HermesLiveClient", () => {
     socket.open();
     expect(socket.sent[0]).toMatchObject({
       type: "session.start",
-      protocolVersion: 5,
+      protocolVersion: 6,
       conversation: { mode: "resume", sessionId: "saved_chat" },
     });
     socket.message({
@@ -69,6 +69,22 @@ describe("HermesLiveClient", () => {
     await expect(connection).resolves.toMatchObject({
       conversation: { mode: "resume", sessionId: "saved_chat", title: "Saved chat" },
     });
+  });
+
+  it("validates and emits an explicit voice-input pause request", async () => {
+    const { client, socket } = await connectedClient("live_pause_input");
+    const listener = vi.fn();
+    client.on("input.pause_requested", listener);
+
+    socket.message({ type: "input.pause_requested", reason: "voice_command" });
+    await flushMessages();
+
+    expect(listener).toHaveBeenCalledWith({ type: "input.pause_requested", reason: "voice_command" });
+    expect(() => validateServerMessage({
+      type: "input.pause_requested",
+      reason: "voice_command",
+      arbitrary: true,
+    })).toThrow(/unsupported field/i);
   });
 
   it("starts and correlates an exact durable task follow-up", async () => {
@@ -158,6 +174,28 @@ describe("HermesLiveClient", () => {
       sequence: 2,
       currentSequence: 3,
     });
+  });
+
+  it("treats an unknown outcome as terminal UI history, not stoppable active work", async () => {
+    const { client, socket } = await connectedClient("live_unknown_terminal");
+    socket.message(taskAccepted("task_unknown", 1, 100));
+    socket.message({
+      type: "task.unknown",
+      taskId: "task_unknown",
+      sequence: 2,
+      occurredAt: 200,
+      error: {
+        code: "task_state_unknown",
+        message: "Hermes Live cannot prove this task's outcome.",
+        recoverable: false,
+      },
+    });
+    await flushMessages();
+
+    expect(client.activeTasks).toEqual([]);
+    expect(client.recentTasks).toEqual([
+      expect.objectContaining({ taskId: "task_unknown", state: "unknown" }),
+    ]);
   });
 
   it("treats reconnect snapshots as authoritative for retained client history", async () => {
@@ -901,7 +939,7 @@ describe("HermesLiveClient", () => {
     const connection = client.connect();
     const socket = await nextSocket();
     socket.open();
-    socket.message({ type: "session.ready", protocolVersion: 5 });
+    socket.message({ type: "session.ready", protocolVersion: 6 });
 
     await expect(connection).rejects.toThrow(/requires sessionId/);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
@@ -1140,7 +1178,7 @@ describe("HermesLiveClient", () => {
     socket.open();
     socket.message({ ...readyMessage("legacy"), protocolVersion: 2 });
 
-    await expect(connection).rejects.toThrow(/protocol version 2.*protocol v5.*upgrade/i);
+    await expect(connection).rejects.toThrow(/protocol version 2.*protocol v6.*upgrade/i);
     expect(socket.closeCalls.at(-1)).toMatchObject({ code: 4000, reason: "invalid server message" });
   });
 });
@@ -1670,7 +1708,7 @@ function createClient(overrides: Record<string, unknown> = {}): HermesLiveClient
 function readyMessage(sessionId: string) {
   return {
     type: "session.ready",
-    protocolVersion: 5,
+    protocolVersion: 6,
     sessionId,
     model: "mock-live",
     hermes: {},
@@ -1908,10 +1946,9 @@ class FakeBufferSource {
   startedAt = 0;
   connect = vi.fn();
   stop = vi.fn();
-  private ended?: () => void;
 
-  addEventListener(type: string, listener: () => void): void {
-    if (type === "ended") this.ended = listener;
+  addEventListener(_type: string, _listener: () => void): void {
+    // Browser playback cleanup is covered through the public audio state.
   }
 
   start(at: number): void {

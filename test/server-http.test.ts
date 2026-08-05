@@ -196,8 +196,8 @@ describe("HTTP server", () => {
     });
     await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
       object: "hermes_live.capabilities",
-      protocolVersion: 5,
-      supportedProtocolVersions: [3, 4, 5],
+      protocolVersion: 6,
+      supportedProtocolVersions: [3, 4, 5, 6],
       realtime: {
         provider: "openai",
         model: "gpt-realtime-2.1",
@@ -709,6 +709,7 @@ describe("HTTP server", () => {
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
       status: "ready",
+      service: "hermes-live",
       checks: {
         hermes: { ok: true, baseUrl: "http://127.0.0.1:8642" },
         realtime: {
@@ -727,7 +728,10 @@ describe("HTTP server", () => {
     const hermes = fakeHermes();
     vi.mocked(hermes.assertRunsSupported).mockResolvedValueOnce({
       model: "hermes-agent",
-      features: { nonSerializableInternalValue: 1n },
+      features: {
+        ...sessionFeatures(),
+        nonSerializableInternalValue: 1n,
+      },
     });
     const logger = fakeLogger();
     const server = await startServer({
@@ -893,6 +897,7 @@ function fakeHermes(extraFeatures: Record<string, unknown> = {}): HermesRunsPort
       run_events_sse: true,
       run_stop: true,
       run_approval_response: true,
+      ...sessionFeatures(),
       ...extraFeatures,
     },
   };
@@ -907,6 +912,16 @@ function fakeHermes(extraFeatures: Record<string, unknown> = {}): HermesRunsPort
       ...(options?.title ? { title: options.title } : {}),
     })),
   } as unknown as HermesRunsPort;
+}
+
+function sessionFeatures(): Record<string, true> {
+  return {
+    session_resources: true,
+    session_chat: true,
+    session_chat_streaming: true,
+    model_options: true,
+    session_model_lock: true,
+  };
 }
 
 function rawHttpRequest(serverUrl: string, request: string): Promise<string> {

@@ -7,16 +7,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 
-const prompt = "hello from gateway smoke";
+const options = parseOptions(process.argv.slice(2));
+const liveProvider = options.liveProvider;
+const prompt = liveProvider === "local"
+  ? 'Use start_background_task now. Set its message exactly to "local gateway integration check" and do not answer directly.'
+  : "hello from gateway smoke";
+const expectedTaskInput = liveProvider === "local" ? "local gateway integration check" : prompt;
 const expectedOutput = "gateway smoke ok";
 const runId = "run_gateway_smoke";
-const dockerImage = parseDockerImage(process.argv.slice(2));
+const dockerImage = options.dockerImage;
 const dockerContainerName = dockerImage
   ? `hermes-live-gateway-smoke-${process.pid}-${randomUUID().slice(0, 8)}`
   : undefined;
 const stateDirectory = mkdtempSync(join(tmpdir(), "hermes-live-gateway-smoke-"));
 const observed = {
   capabilities: false,
+  modelOptions: false,
   createSession: false,
   events: false,
   startRun: false,
@@ -24,6 +30,10 @@ const observed = {
   startRunBody: undefined,
   hermesError: undefined,
 };
+let releaseLocalRunCompletion = () => undefined;
+const localRunCompletion = new Promise((resolve) => {
+  releaseLocalRunCompletion = resolve;
+});
 
 const hermesServer = createServer((req, res) => {
   void handleHermesRequest(req, res).catch((error) => {
@@ -39,7 +49,6 @@ const gatewayEnvironment = {
   HERMES_BASE_URL: dockerImage
     ? `http://host.docker.internal:${hermesPort}`
     : `http://127.0.0.1:${hermesPort}`,
-  HERMES_MODEL: "hermes-agent",
   HERMES_AGENT_API_SERVER_KEY: "hermes-smoke-secret",
   HERMES_LIVE_ALLOW_UNAUTHENTICATED: dockerImage ? "true" : "false",
   HERMES_LIVE_ALLOW_ORIGIN: "",
@@ -52,8 +61,9 @@ const gatewayEnvironment = {
   HERMES_LIVE_USER_LABEL: "voice",
   HERMES_LIVE_TRUST_CLIENT_IDENTITY: "false",
   HERMES_LIVE_PORT: dockerImage ? "8788" : String(gatewayPort),
-  HERMES_LIVE_PROVIDER: "mock",
-  HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: "5000",
+  HERMES_LIVE_PROVIDER: liveProvider,
+  HERMES_LIVE_LOCAL_URL: "ws://127.0.0.1:8765/v1/realtime",
+  HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: liveProvider === "local" ? "30000" : "5000",
   HERMES_LIVE_SESSION_PREFIX: "agent:main:hermes-live",
   HERMES_LIVE_TASK_POLL_INTERVAL_MS: "250",
   HERMES_LIVE_TASK_STATE_FILE: dockerImage
@@ -110,7 +120,10 @@ const gatewayExit = once(gateway, "exit").then(([code, signal]) => {
 });
 
 try {
-  const readiness = await waitForReadiness(`http://127.0.0.1:${gatewayPort}/ready`, 6_000);
+  const readiness = await waitForReadiness(
+    `http://127.0.0.1:${gatewayPort}/ready`,
+    liveProvider === "local" ? 30_000 : 6_000,
+  );
   if (readiness.status !== "ready") {
     throw new Error(`Gateway readiness status mismatch: ${JSON.stringify(readiness)}.`);
   }
@@ -122,7 +135,8 @@ try {
   ) {
     throw new Error(`Gateway readiness checks were not all ok: ${JSON.stringify(readiness)}.`);
   }
-  if (readiness.checks?.realtime?.provider !== "mock" || readiness.checks?.realtime?.model !== "mock-live") {
+  const expectedModel = liveProvider === "local" ? "huggingface/speech-to-speech" : "mock-live";
+  if (readiness.checks?.realtime?.provider !== liveProvider || readiness.checks?.realtime?.model !== expectedModel) {
     throw new Error(`Gateway readiness advertised unexpected realtime provider: ${JSON.stringify(readiness.checks?.realtime)}.`);
   }
   if (readiness.checks?.realtime?.sessionChecked !== false) {
@@ -143,23 +157,24 @@ try {
 
   socket.send(JSON.stringify({
     type: "session.start",
-    protocolVersion: 5,
+    protocolVersion: 6,
     profileId: "smoke",
     userLabel: "gateway-smoke",
     conversation: { mode: "new", title: "Gateway smoke" },
   }));
-  const ready = await inbox.next("session.ready");
-  if (ready.model !== "mock-live") {
+  const providerTimeoutMs = liveProvider === "local" ? 90_000 : 5_000;
+  const ready = await inbox.next("session.ready", providerTimeoutMs);
+  if (ready.model !== expectedModel) {
     throw new Error(`Gateway session advertised unexpected model: ${JSON.stringify(ready.model)}.`);
   }
   if (
-    ready.protocolVersion !== 5
+    ready.protocolVersion !== 6
     || ready.conversation?.sessionId !== "session_gateway_smoke"
     || ready.tasks?.durable !== true
     || ready.tasks?.supports?.followUp !== true
     || ready.tasks?.reconnect !== "snapshot"
   ) {
-    throw new Error(`Gateway session did not advertise the protocol-v5 conversation/task contract: ${JSON.stringify(ready)}.`);
+    throw new Error(`Gateway session did not advertise the protocol-v6 conversation/task contract: ${JSON.stringify(ready)}.`);
   }
   const initial = await inbox.next("task.snapshot");
   if (initial.reason !== "initial" || initial.tasks.length !== 0 || initial.truncated !== false) {
@@ -167,11 +182,30 @@ try {
   }
 
   socket.send(JSON.stringify({ type: "text.input", text: prompt }));
-  const accepted = await inbox.next("task.accepted");
+  const accepted = await inbox.next("task.accepted", providerTimeoutMs);
   if (!/^task_[0-9a-f]{32}$/u.test(accepted.taskId)) {
     throw new Error(`Gateway emitted an invalid stable task id: ${JSON.stringify(accepted.taskId)}.`);
   }
-  const completed = await inbox.next("task.completed");
+  if (liveProvider === "local") {
+    // Prove the full local tool loop, not only model-selected delegation. Keep
+    // the fake Hermes run open until Qwen consumes the durable receipt, emits
+    // a concise user-facing acknowledgement, and TTS begins speaking it.
+    const [spoken, audio] = await Promise.all([
+      inbox.next("transcript.delta", providerTimeoutMs),
+      inbox.next("audio.output", providerTimeoutMs),
+    ]);
+    if (spoken.speaker !== "assistant" || spoken.final !== true) {
+      throw new Error(`Local voice did not emit a final assistant receipt: ${JSON.stringify(spoken)}.`);
+    }
+    if (spoken.text?.trim() !== "I've started that in the background. You can keep talking.") {
+      throw new Error(`Local voice spoke an unsafe or overly long task receipt: ${JSON.stringify(spoken.text)}.`);
+    }
+    if (!audio.data || !audio.mimeType?.startsWith("audio/pcm")) {
+      throw new Error(`Local voice did not synthesize PCM receipt audio: ${JSON.stringify(audio)}.`);
+    }
+    releaseLocalRunCompletion();
+  }
+  const completed = await inbox.next("task.completed", providerTimeoutMs);
   if (completed.taskId !== accepted.taskId || completed.result?.output !== expectedOutput) {
     throw new Error(`Gateway task output mismatch. Expected ${JSON.stringify(expectedOutput)}, got ${JSON.stringify(completed)}.`);
   }
@@ -181,6 +215,9 @@ try {
 
   if (!observed.capabilities) {
     throw new Error("Gateway did not call Hermes /v1/capabilities.");
+  }
+  if (!observed.modelOptions) {
+    throw new Error("Gateway did not resolve Hermes' configured model.");
   }
   if (!observed.createSession) {
     throw new Error("Gateway did not create the selected Hermes conversation.");
@@ -195,8 +232,9 @@ try {
     throw observed.hermesError;
   }
 
-  console.log(`Gateway smoke ok (${dockerImage ? "Docker image" : "local build"})`);
+  console.log(`Gateway smoke ok (${dockerImage ? "Docker image" : `${liveProvider} provider`})`);
 } finally {
+  releaseLocalRunCompletion();
   if (dockerContainerName) {
     await removeDockerContainer(dockerContainerName);
   }
@@ -205,14 +243,27 @@ try {
   rmSync(stateDirectory, { recursive: true, force: true });
 }
 
-function parseDockerImage(args) {
-  if (args.length === 0) {
-    return undefined;
+function parseOptions(args) {
+  let dockerImage;
+  let liveProvider = "mock";
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--docker-image") {
+      dockerImage = args[index + 1];
+      if (!dockerImage?.trim()) throw new Error("--docker-image requires an image name.");
+      index += 1;
+    } else if (argument === "--live-provider") {
+      liveProvider = args[index + 1];
+      if (!["mock", "local"].includes(liveProvider)) throw new Error("--live-provider must be mock or local.");
+      index += 1;
+    } else {
+      throw new Error("Usage: node scripts/gateway-smoke.mjs [--docker-image <image>] [--live-provider <mock|local>]");
+    }
   }
-  if (args.length !== 2 || args[0] !== "--docker-image" || !args[1]?.trim()) {
-    throw new Error("Usage: node scripts/gateway-smoke.mjs [--docker-image <image>]");
+  if (dockerImage && liveProvider !== "mock") {
+    throw new Error("The Docker smoke uses the self-contained mock provider.");
   }
-  return args[1];
+  return { dockerImage, liveProvider };
 }
 
 async function handleHermesRequest(req, res) {
@@ -231,20 +282,32 @@ async function handleHermesRequest(req, res) {
         session_resources: true,
         session_chat: true,
         session_chat_streaming: true,
+        model_options: true,
+        session_model_lock: true,
       },
     });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/model/options") {
+    observed.modelOptions = true;
+    writeJson(res, 200, { model: "gpt-5.4-mini", provider: "openai-api", providers: [] });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/sessions") {
     const body = await readJson(req);
     observed.createSession = true;
-    if (body.model !== "hermes-agent" || body.title !== "Gateway smoke") {
+    if (
+      body.model !== "gpt-5.4-mini"
+      || body.provider !== "openai-api"
+      || body.title !== "Gateway smoke"
+    ) {
       throw new Error(`Unexpected Hermes session creation body: ${JSON.stringify(body)}.`);
     }
     writeJson(res, 201, {
       object: "hermes.session",
-      session: { id: "session_gateway_smoke", title: "Gateway smoke", model: "hermes-agent" },
+      session: { id: "session_gateway_smoke", title: "Gateway smoke", model: "gpt-5.4-mini" },
     });
     return;
   }
@@ -263,10 +326,10 @@ async function handleHermesRequest(req, res) {
     if (!sessionKey.includes("agent:main:hermes-live:profile:default:user:voice")) {
       throw new Error(`Unexpected Hermes session key: ${JSON.stringify(sessionKey)}.`);
     }
-    if (body.model !== "hermes-agent") {
-      throw new Error(`Unexpected Hermes model: ${JSON.stringify(body.model)}.`);
+    if (Object.hasOwn(body, "model")) {
+      throw new Error(`Hermes should choose the configured task model: ${JSON.stringify(body.model)}.`);
     }
-    if (body.input !== prompt) {
+    if (body.input !== expectedTaskInput) {
       throw new Error(`Unexpected Hermes input: ${JSON.stringify(body.input)}.`);
     }
     if (typeof body.session_id !== "string" || !/^hermes-live:task:task_[0-9a-f]{32}$/u.test(body.session_id)) {
@@ -301,6 +364,12 @@ async function handleHermesRequest(req, res) {
       "cache-control": "no-cache",
       connection: "close",
     });
+    // A real SSE endpoint commits headers before a long-running task emits its
+    // first event. Without this, Node may buffer the headers and make the
+    // client's request deadline look like a task failure during the local
+    // model's spoken acknowledgement.
+    res.flushHeaders();
+    if (liveProvider === "local") await localRunCompletion;
     res.write('event: message.delta\ndata: {"event":"message.delta","run_id":"run_gateway_smoke","delta":"gateway smoke ok"}\n\n');
     res.end('event: run.completed\ndata: {"event":"run.completed","run_id":"run_gateway_smoke","output":"gateway smoke ok","usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}\n\n');
     return;
@@ -396,13 +465,21 @@ function createInbox(socket) {
           reject,
           timer: setTimeout(() => {
             pending = pending.filter((candidate) => candidate !== waiter);
-            reject(new Error(`Timed out waiting for gateway message ${type}. Queued: ${JSON.stringify(queued)}`));
+            reject(new Error(`Timed out waiting for gateway message ${type}. Queued: ${queuedMessageSummary(queued)}`));
           }, timeoutMs),
         };
         pending.push(waiter);
       });
     },
   };
+}
+
+function queuedMessageSummary(messages) {
+  const counts = new Map();
+  for (const message of messages) {
+    counts.set(message.type, (counts.get(message.type) ?? 0) + 1);
+  }
+  return JSON.stringify(Object.fromEntries(counts));
 }
 
 async function waitForReadiness(url, timeoutMs) {

@@ -17,9 +17,9 @@ npm install --global hermes-live-voice
 hermes-live setup
 ```
 
-Use `hermes-live doctor` for exact fixes and `hermes-live service status` for the managed gateway. From a source checkout, the manual equivalent is `node dist/cli.js serve`.
+Setup also enables and starts Hermes' private API bridge. On Apple Silicon it installs and starts the fully local Hugging Face runtime. Use `hermes-live doctor` for exact fixes, `hermes-live service status` for the voice gateway, and `hermes-live local status` for local voice. From a source checkout, the manual voice-gateway equivalent is `node dist/cli.js serve`.
 
-Set `HERMES_LIVE_URL` when the gateway is not at `http://127.0.0.1:8788`. Set `HERMES_LIVE_AUTH_TOKEN` in the Hermes process when the gateway requires authentication. The status tool reports whether a token is configured but never returns its value.
+The normal setup needs no plugin environment variables: the gateway and plugin share `$HERMES_HOME/hermes-live/config.env`, including any automatically selected local port. `HERMES_LIVE_URL` and `HERMES_LIVE_AUTH_TOKEN` remain explicit overrides for custom deployments. The status tool reports whether a token is configured but never returns its value.
 
 Start or restart `hermes dashboard`, then choose **Live Voice**. Start a new Hermes chat or resume a saved one. The tab keeps conversation responsive while delegated tasks continue in a durable inbox, shows sanitized live activity, and supports exact stops and follow-ups from finished work. Disconnecting ends only the voice session; background tasks keep working and synchronize when you reconnect. Its backend applies the gateway bearer server-side, so the browser connects only to authenticated same-origin plugin routes.
 

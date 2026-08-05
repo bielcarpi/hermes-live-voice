@@ -269,6 +269,12 @@ describe("OpenAI Realtime adapter helpers", () => {
     expect(realtime15.session).not.toHaveProperty("parallel_tool_calls");
   });
 
+  it("can disable tools for provider-only connection probes", () => {
+    const update = buildOpenAISessionUpdate(testOpenAIConfig(), "hello", []);
+    expect(update.session.tools).toEqual([]);
+    expect(update.session.tool_choice).toBe("none");
+  });
+
   it.each([
     ["pcm16", { type: "audio/pcm", rate: 24_000 }],
     ["g711_ulaw", { type: "audio/pcmu" }],

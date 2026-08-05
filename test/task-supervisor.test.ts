@@ -28,7 +28,6 @@ import {
   containIndeterminateTask,
   createTaskRecord,
   hashTaskOwnerId,
-  isTaskTerminal,
   markTaskStopRequested,
   parseTaskRecord,
   transitionTask,

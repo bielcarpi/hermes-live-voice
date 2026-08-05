@@ -29,6 +29,11 @@ const hermes = createServer((request, response) => {
         run_events_sse: true,
         run_stop: true,
         run_approval_response: true,
+        session_resources: true,
+        session_chat: true,
+        session_chat_streaming: true,
+        model_options: true,
+        session_model_lock: true,
       },
     }));
     return;

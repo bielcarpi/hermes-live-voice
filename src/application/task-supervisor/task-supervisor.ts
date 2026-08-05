@@ -869,7 +869,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
         await this.applySnapshot(taskId, { object: "hermes.run", run_id: runId, status: "cancelled" });
         return;
       case "approval.request":
-        await this.handleApprovalRequest(taskId, runId, event);
+        await this.handleApprovalRequest(taskId, runId);
         return;
       case "tool.started":
         await this.appendBoundedProgress(taskId, runActivitySummary(event, "started"));
@@ -883,7 +883,7 @@ export class TaskSupervisor implements TaskSupervisorPort {
     }
   }
 
-  private async handleApprovalRequest(taskId: string, runId: string, event: HermesRunEvent): Promise<void> {
+  private async handleApprovalRequest(taskId: string, runId: string): Promise<void> {
     const waiting = await this.moveToStatus(taskId, "waiting_for_approval", {
       summary: "Task requires approval.",
     });

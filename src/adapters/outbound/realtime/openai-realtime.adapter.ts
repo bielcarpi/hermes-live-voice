@@ -11,7 +11,7 @@ import {
 } from "../../../application/live-gateway/ports/realtime-model.port.js";
 import type { RealtimeResponseTruncation } from "../../../domain/protocol/client-protocol.js";
 import { errorToMessage } from "../../../domain/error-message.js";
-import { OPENAI_HERMES_LIVE_TOOLS } from "../../../application/live-gateway/tool-definitions.js";
+import { selectOpenAIHermesLiveTools } from "../../../application/live-gateway/tool-definitions.js";
 import type {
   LiveModelAdapter,
   LiveModelCallbacks,
@@ -116,7 +116,7 @@ export class OpenAIRealtimeAdapter implements LiveModelAdapter {
         cleanup();
         reject(new Error(`OpenAI Realtime WebSocket closed before session start: ${code} ${reason.toString("utf8")}`));
       };
-      const onOpen = () => session.configure(params.systemInstruction);
+      const onOpen = () => session.configure(params.systemInstruction, params.availableTools);
       const onInitialMessage = (raw: WebSocket.RawData) => {
         const event = parseOpenAIEvent(raw);
         if (!event) {
@@ -175,8 +175,11 @@ class OpenAIRealtimeSession implements LiveModelSession {
     this.ws.on("error", (error) => callbacks.onError?.(error));
   }
 
-  configure(systemInstruction: string): void {
-    this.sendJson(buildOpenAISessionUpdate(this.config, systemInstruction));
+  configure(
+    systemInstruction: string,
+    availableTools?: LiveModelConnectParams["availableTools"],
+  ): void {
+    this.sendJson(buildOpenAISessionUpdate(this.config, systemInstruction, availableTools));
   }
 
   markReady(): void {
@@ -1056,7 +1059,9 @@ export function buildOpenAIConversationItemTruncate(truncate: RealtimeResponseTr
 export function buildOpenAISessionUpdate(
   config: AppConfig["openai"],
   systemInstruction: string,
+  availableTools?: LiveModelConnectParams["availableTools"],
 ): { type: "session.update"; session: Record<string, unknown> } {
+  const tools = selectOpenAIHermesLiveTools(availableTools);
   return {
     type: "session.update",
     session: {
@@ -1077,8 +1082,8 @@ export function buildOpenAISessionUpdate(
       ...(isOpenAIReasoningRealtimeModel(config.model)
         ? { reasoning: { effort: config.reasoningEffort }, parallel_tool_calls: false }
         : {}),
-      tools: OPENAI_HERMES_LIVE_TOOLS,
-      tool_choice: "auto",
+      tools,
+      tool_choice: tools.length > 0 ? "auto" : "none",
     },
   };
 }

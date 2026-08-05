@@ -1,7 +1,9 @@
+import type { LiveToolName } from "./ports/realtime-model.port.js";
+
 const TASK_ID_SCHEMA = {
   type: "string",
   pattern: "^task_[a-f0-9]{32}$",
-  description: "The stable Hermes Live task id returned by start_background_task.",
+  description: "The stable Hermes Live task id returned by start_background_task or list_background_tasks.",
 } as const;
 
 const HERMES_LIVE_TOOL_DEFINITIONS = [
@@ -63,6 +65,10 @@ const HERMES_LIVE_TOOL_DEFINITIONS = [
           type: "boolean",
           description: "Include recent terminal tasks. Defaults to true.",
         },
+        summary_only: {
+          type: "boolean",
+          description: "Return a short safe spoken count instead of task details when the user asks only what is running.",
+        },
       },
     },
   },
@@ -110,7 +116,21 @@ const HERMES_LIVE_TOOL_DEFINITIONS = [
       required: ["task_id"],
     },
   },
-] as const;
+  {
+    name: "pause_voice_input",
+    description:
+      "Pause microphone listening only when the user explicitly asks to pause, mute, or stop listening. This keeps Live Voice connected and leaves every background task running; the user resumes from the client control.",
+    parametersJsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+  },
+] as const satisfies ReadonlyArray<{
+  name: LiveToolName;
+  description: string;
+  parametersJsonSchema: Readonly<Record<string, unknown>>;
+}>;
 
 export const HERMES_LIVE_TOOL_DECLARATIONS = HERMES_LIVE_TOOL_DEFINITIONS.map((tool) => ({
   name: tool.name,
@@ -124,3 +144,44 @@ export const OPENAI_HERMES_LIVE_TOOLS = HERMES_LIVE_TOOL_DEFINITIONS.map((tool) 
   description: tool.description,
   parameters: tool.parametersJsonSchema,
 }));
+
+const COMPACT_TOOL_DESCRIPTIONS: Record<LiveToolName, string> = {
+  continue_hermes_conversation: "Continue the selected saved Hermes chat for one short turn.",
+  start_background_task: "Start durable Hermes work while the user keeps talking or disconnects.",
+  list_background_tasks: "List active and recent tasks with their exact ids.",
+  get_background_task: "Get one task's exact status or retained result.",
+  follow_up_background_task: "Start new durable work from one finished task.",
+  stop_background_task: "Request cancellation of one exact task.",
+  pause_voice_input: "Pause microphone input without stopping tasks or disconnecting.",
+};
+
+export function selectHermesLiveToolDeclarations(names?: readonly LiveToolName[]) {
+  if (names === undefined) return HERMES_LIVE_TOOL_DECLARATIONS;
+  const allowed = new Set(names);
+  return HERMES_LIVE_TOOL_DECLARATIONS.filter((tool) => allowed.has(tool.name));
+}
+
+export function selectOpenAIHermesLiveTools(names?: readonly LiveToolName[]) {
+  if (names === undefined) return OPENAI_HERMES_LIVE_TOOLS;
+  const allowed = new Set(names);
+  return OPENAI_HERMES_LIVE_TOOLS.filter((tool) => allowed.has(tool.name));
+}
+
+/** Keep local-model prefill small without changing names, validation, or capabilities. */
+export function selectCompactOpenAIHermesLiveTools(names?: readonly LiveToolName[]) {
+  return selectOpenAIHermesLiveTools(names).map((tool) => ({
+    ...tool,
+    description: COMPACT_TOOL_DESCRIPTIONS[tool.name],
+    parameters: withoutJsonSchemaDescriptions(tool.parameters),
+  }));
+}
+
+function withoutJsonSchemaDescriptions(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutJsonSchemaDescriptions);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== "description")
+      .map(([key, child]) => [key, withoutJsonSchemaDescriptions(child)]),
+  );
+}

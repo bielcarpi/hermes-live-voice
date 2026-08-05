@@ -56,6 +56,35 @@ describe("HermesClient", () => {
     });
   });
 
+  it("lets Hermes choose its configured model when no override is set", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ run_id: "run_default", status: "queued" }))
+      .mockResolvedValueOnce(jsonResponse({ model: "gpt-5.4-mini", provider: "openai-api" }))
+      .mockResolvedValueOnce(jsonResponse({
+        object: "hermes.session",
+        session: { id: "session_default", source: "api_server", model: "gpt-5.4-mini" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = hermesClient({ model: undefined });
+
+    await client.startRun({
+      input: "use the profile model",
+      sessionId: "live_default",
+      sessionKey: "agent:main:hermes-live:profile:default:user:alice",
+    });
+    await client.createSession();
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      input: "use the profile model",
+      session_id: "live_default",
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://127.0.0.1:8642/api/model/options");
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      model: "gpt-5.4-mini",
+      provider: "openai-api",
+    });
+  });
+
   it.each([
     ["missing ids", { status: "queued" }],
     ["an unsafe snake-case id", { run_id: "run\nother", status: "queued" }],
@@ -405,12 +434,20 @@ describe("HermesClient", () => {
         session_resources: true,
         session_chat: true,
         session_chat_streaming: true,
+        model_options: true,
+        session_model_lock: true,
       },
     }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(hermesClient().assertSessionsSupported()).resolves.toMatchObject({
-      features: { session_resources: true, session_chat: true, session_chat_streaming: true },
+      features: {
+        session_resources: true,
+        session_chat: true,
+        session_chat_streaming: true,
+        model_options: true,
+        session_model_lock: true,
+      },
     });
   });
 
@@ -474,12 +511,27 @@ describe("HermesClient", () => {
   });
 
   it("continues a persisted Hermes session using the session chat endpoint", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({
-      object: "hermes.session.chat.completion",
-      session_id: "session_tip",
-      message: { role: "assistant", content: "The tests pass." },
-      usage: { input_tokens: 5, output_tokens: 4, total_tokens: 9 },
-    }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        object: "hermes.session",
+        session: { id: "session_123", model: "gpt-5.4-mini" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        model: "profile-name",
+        features: {
+          session_resources: true,
+          session_chat: true,
+          session_chat_streaming: true,
+          model_options: true,
+          session_model_lock: true,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        object: "hermes.session.chat.completion",
+        session_id: "session_tip",
+        message: { role: "assistant", content: "The tests pass." },
+        usage: { input_tokens: 5, output_tokens: 4, total_tokens: 9 },
+      }));
     vi.stubGlobal("fetch", fetchMock);
     const sessionKey = "agent:main:hermes-live:profile:default:user:alice";
 
@@ -496,7 +548,52 @@ describe("HermesClient", () => {
         headers: expect.objectContaining({ "X-Hermes-Session-Key": sessionKey }),
       }),
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ message: "Do the tests pass?" });
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ message: "Do the tests pass?" });
+  });
+
+  it("repairs current Hermes sessions that persisted the virtual profile model", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        object: "hermes.session",
+        session: { id: "session_alias", model: "work-profile" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        model: "work-profile",
+        features: {
+          session_resources: true,
+          session_chat: true,
+          session_chat_streaming: true,
+          model_options: true,
+          session_model_lock: true,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ model: "gpt-5.4-mini", provider: "openai-api" }))
+      .mockResolvedValueOnce(jsonResponse({
+        object: "hermes.session.model_lock",
+        session_id: "session_alias",
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        object: "hermes.session.chat.completion",
+        session_id: "session_alias",
+        message: { role: "assistant", content: "Recovered." },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      hermesClient({ model: undefined }).chatSession("session_alias", "Continue"),
+    ).resolves.toMatchObject({ content: "Recovered." });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1:8642/api/sessions/session_alias",
+      "http://127.0.0.1:8642/v1/capabilities",
+      "http://127.0.0.1:8642/api/model/options",
+      "http://127.0.0.1:8642/api/sessions/session_alias/model",
+      "http://127.0.0.1:8642/api/sessions/session_alias/chat",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      model: "gpt-5.4-mini",
+      provider: "openai-api",
+    });
   });
 
   it("does not expose Hermes response bodies in request failures", async () => {

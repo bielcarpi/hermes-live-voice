@@ -10,7 +10,10 @@ import {
   hermesApprovalCompatibility,
   unnegotiatedHermesApprovalCompatibility,
 } from "./application/live-gateway/hermes-approval-compatibility.js";
-import { HermesClient } from "./adapters/outbound/hermes/hermes-runs.client.js";
+import {
+  HermesClient,
+  REQUIRED_HERMES_SESSION_FEATURES,
+} from "./adapters/outbound/hermes/hermes-runs.client.js";
 import { errorToMessage } from "./domain/error-message.js";
 
 export interface ReadinessSection extends Record<string, unknown> {
@@ -109,6 +112,15 @@ async function checkHermesConfig(config: AppConfig, options: BuildReadinessRepor
 
   try {
     const capabilities = await hermes.assertRunsSupported();
+    const features = capabilities.features ?? {};
+    const missingSessionFeatures = REQUIRED_HERMES_SESSION_FEATURES.filter(
+      (name) => features[name] !== true,
+    );
+    if (missingSessionFeatures.length > 0) {
+      throw new Error(
+        `Hermes API Server is missing required session features: ${missingSessionFeatures.join(", ")}`,
+      );
+    }
     return {
       ok: true,
       ...base,

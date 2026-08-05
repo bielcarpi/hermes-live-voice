@@ -6,6 +6,15 @@ export interface LiveToolCall {
   args: Record<string, unknown>;
 }
 
+export type LiveToolName =
+  | "continue_hermes_conversation"
+  | "start_background_task"
+  | "list_background_tasks"
+  | "get_background_task"
+  | "follow_up_background_task"
+  | "stop_background_task"
+  | "pause_voice_input";
+
 export interface LiveModelAudio {
   data: string;
   mimeType: string;
@@ -90,6 +99,8 @@ export interface LiveModelSession {
 export interface LiveModelConnectParams {
   sessionId: string;
   systemInstruction: string;
+  /** Only tools that can succeed for this negotiated client/session. */
+  availableTools?: readonly LiveToolName[];
   safetyIdentifier?: string;
   callbacks: LiveModelCallbacks;
 }

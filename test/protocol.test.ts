@@ -14,21 +14,21 @@ import {
 
 const NOW = 1_784_131_200_000;
 
-describe("protocol v5", () => {
+describe("protocol v6", () => {
   it("binds current sessions to a new, resumed, or unbound Hermes conversation", () => {
-    expect(HERMES_LIVE_PROTOCOL_VERSION).toBe(5);
+    expect(HERMES_LIVE_PROTOCOL_VERSION).toBe(6);
     expect(
       parseClientMessage({
         type: "session.start",
         id: "start_1",
-        protocolVersion: 5,
+        protocolVersion: 6,
         profileId: "default",
         conversation: { mode: "resume", sessionId: "session_1" },
       }),
     ).toEqual({
       type: "session.start",
       id: "start_1",
-      protocolVersion: 5,
+      protocolVersion: 6,
       profileId: "default",
       conversation: { mode: "resume", sessionId: "session_1" },
     });
@@ -39,19 +39,20 @@ describe("protocol v5", () => {
     })).toThrow(/requires Hermes Live protocol v4/i);
     expect(() => parseClientMessage({
       type: "session.start",
-      protocolVersion: 5,
+      protocolVersion: 6,
       conversation: { mode: "resume" },
     })).toThrow(/requires sessionId/i);
   });
 
   it("keeps v3 compatible and rejects v2 with an actionable error", () => {
     expect(() => assertHermesLiveProtocolVersion(3)).not.toThrow();
+    expect(() => assertHermesLiveProtocolVersion(6)).not.toThrow();
     const message = parseClientMessage({ type: "session.start", protocolVersion: 2 });
     expect(message.type).toBe("session.start");
     if (message.type !== "session.start") throw new Error("Expected session.start");
     expect(message.protocolVersion).toBe(2);
     expect(() => assertHermesLiveProtocolVersion(message.protocolVersion)).toThrow(
-      /protocol v2 is incompatible with supported protocols v3, v4, v5.*Upgrade hermes-live-voice/i,
+      /protocol v2 is incompatible with supported protocols v3, v4, v5, v6.*Upgrade hermes-live-voice/i,
     );
     expect(incompatibleProtocolVersionMessage(2)).toContain("before reconnecting");
   });
@@ -296,6 +297,10 @@ describe("protocol v5", () => {
       type: "response.completed",
       responseId: "response_1",
     });
+    expect(parseServerMessage({ type: "input.pause_requested", reason: "voice_command" })).toEqual({
+      type: "input.pause_requested",
+      reason: "voice_command",
+    });
   });
 
   it("exposes only gateway tools to OpenAI Realtime", () => {
@@ -306,6 +311,7 @@ describe("protocol v5", () => {
       "get_background_task",
       "follow_up_background_task",
       "stop_background_task",
+      "pause_voice_input",
     ]);
     expect(OPENAI_HERMES_LIVE_TOOLS.every((tool) => tool.type === "function")).toBe(true);
     expect(OPENAI_HERMES_LIVE_TOOLS[0]).toHaveProperty("parameters");
@@ -320,6 +326,7 @@ describe("protocol v5", () => {
       "get_background_task",
       "follow_up_background_task",
       "stop_background_task",
+      "pause_voice_input",
     ]);
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).toHaveProperty("parametersJsonSchema");
     expect(HERMES_LIVE_TOOL_DECLARATIONS[0]).not.toHaveProperty("parameters");

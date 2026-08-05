@@ -65,6 +65,8 @@
     "apps/web-demo/index.html",
     "apps/web-demo/styles.css",
     "assets",
+    "!assets/__pycache__",
+    "!assets/**/*.pyc",
     "docs",
     "examples",
     "plugins/hermes-live",
@@ -90,9 +92,11 @@
     "check:dashboard-assets": "node scripts/sync-dashboard-assets.mjs --check",
     "check:dashboard-plugin": "node --check plugins/hermes-live/dashboard/dist/index.js && python3 scripts/dashboard-plugin-smoke.py",
     "check:gateway": "node scripts/gateway-smoke.mjs",
+    "check:gateway:local": "npm run build && node scripts/gateway-smoke.mjs --live-provider local",
     "check:docs": "node scripts/docs-check.mjs",
     "check:live-provider": "npm run build && node dist/cli.js provider-smoke",
     "check:live-provider-cli": "node scripts/live-provider-cli-smoke.mjs",
+    "check:local-runtime": "python3 scripts/local-runtime-contract-smoke.py",
     "check:package": "node scripts/package-smoke.mjs",
     "check:plugin": "python3 scripts/plugin-smoke.py",
     "check:release-notes": "node scripts/release-notes-smoke.mjs",
@@ -102,18 +106,18 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "sync:dashboard-assets": "node scripts/sync-dashboard-assets.mjs",
-    "verify": "npm run typecheck && npm run check:docs && npm run check:release-notes && npm run check:web-demo && npm run check:dashboard-assets && npm run check:dashboard-plugin && npm run check:plugin && npm test && npm run build && npm run check:live-provider-cli && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
+    "verify": "npm run typecheck && npm run check:docs && npm run check:release-notes && npm run check:web-demo && npm run check:dashboard-assets && npm run check:dashboard-plugin && npm run check:plugin && npm run check:local-runtime && npm test && npm run build && npm run check:live-provider-cli && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
     "prepack": "npm run check:dashboard-assets && npm run build"
   },
   "dependencies": {
     "@google/genai": "2.15.0",
-    "ws": "8.21.1",
+    "ws": "8.21.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.23.1",
+    "tsx": "^4.23.7",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
