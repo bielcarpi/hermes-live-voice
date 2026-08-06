@@ -72,8 +72,8 @@ describe("Hermes Dashboard plugin", () => {
       ["waiting_for_appro", "val"],
     ].map((parts) => parts.join(""));
 
-    expect(source).toContain("Hermes, now with a real-time voice.");
-    expect(source).toContain("Speak, delegate, keep talking, and hear back when the work is done.");
+    expect(source).toContain("Keep talking while Hermes keeps working.");
+    expect(source).toContain("Continuous voice for saved chats, durable tasks, and live progress.");
     expect(source).toContain("Task inbox");
     expect(source).toContain("Stable task ID");
     expect(source).toContain('client.stopTask(task.taskId, "stopped from Hermes Dashboard")');
