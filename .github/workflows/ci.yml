@@ -54,7 +54,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - name: Test Windows gateway and realtime paths
+        run: >-
+          npm test -- --run
+          test/file-task-store.test.ts
+          test/config.test.ts
+          test/openai-realtime.test.ts
+          test/gemini-live.test.ts
+          test/browser-client.test.ts
+          test/live-websocket.test.ts
+          test/server-http.test.ts
       - run: npm run build
       - run: npm run check:gateway
       - run: npm pack --dry-run

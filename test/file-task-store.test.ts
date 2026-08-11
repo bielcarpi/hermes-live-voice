@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { hostname, tmpdir } from "node:os";
+import { hostname, platform, tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FileTaskStore,
@@ -50,10 +50,12 @@ describe("FileTaskStore", () => {
     const task = createTaskRecord({ ownerIdentity: "alice", input: "Review authentication", now: 10 });
 
     await expect(store.put(task)).resolves.toEqual(task);
-    const directoryMode = (await stat(directory)).mode & 0o777;
-    const fileMode = (await stat(store.filePath)).mode & 0o777;
-    expect(directoryMode).toBe(0o700);
-    expect(fileMode).toBe(0o600);
+    if (platform() !== "win32") {
+      const directoryMode = (await stat(directory)).mode & 0o777;
+      const fileMode = (await stat(store.filePath)).mode & 0o777;
+      expect(directoryMode).toBe(0o700);
+      expect(fileMode).toBe(0o600);
+    }
     expect((await readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 
     await store.close();
