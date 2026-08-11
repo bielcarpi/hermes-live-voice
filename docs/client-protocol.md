@@ -133,6 +133,8 @@ End a push-to-talk stream:
 { "type": "audio.end", "id": "audio_end_1" }
 ```
 
+Send `audio.end` whenever the transport stops producing microphone packets. The gateway commits buffered OpenAI audio in both client-owned and provider-VAD modes. It also prevents a late VAD event from starting a second response. Clients should still send `response.cancel` when the user interrupts playback.
+
 For a bound session, the realtime provider calls `continue_hermes_conversation` for canonical chat turns so Hermes owns memory and history. Long or independent work uses `start_background_task`, which returns a fast receipt so voice can continue. There is deliberately no client `task.start`.
 
 Server conversation events are:
@@ -370,7 +372,7 @@ client.stopTask(taskId, "user cancelled");
 client.acknowledgeNotification(taskId, notificationId);
 ```
 
-`sendAudio()` emits `audio.dropped` if browser backpressure is exceeded. Unknown future server types emit `unknownmessage`; malformed known messages close the connection rather than corrupt local state.
+`sendAudio()` emits `audio.dropped` if browser input backpressure is exceeded. `HermesLiveAudio` buffers up to two minutes of output by default. It emits one detailed `audio.dropped` event if a response exceeds the configured duration or frame limit. Unknown future server types emit `unknownmessage`; malformed known messages close the connection rather than corrupt local state.
 
 ## HTTP Readiness And Capabilities
 

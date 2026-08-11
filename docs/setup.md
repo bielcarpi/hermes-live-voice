@@ -60,6 +60,9 @@ OPENAI_API_KEY=... hermes-live setup --provider openai
 hermes-live setup --provider mock
 ```
 
+OpenAI user transcripts use `gpt-4o-mini-transcribe` by default. Set
+`OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE` to a two-letter language code when a known language needs a hint. Set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL=disabled` to turn input transcription off.
+
 Provider secrets can come from the process environment, an existing managed config, or `~/.hermes/.env`. Setup prompts without echoing missing values. The normal local install generates its internal Hermes bridge key automatically. Secret command-line flags are deliberately unsupported.
 
 ## Configuration
@@ -86,6 +89,8 @@ Common settings:
 | `HERMES_LIVE_MAX_CONCURRENT_TASKS` | `3` | Bounded worker slots |
 | `HERMES_LIVE_MAX_QUEUED_TASKS` | `32` | Bounded pending work |
 | `HERMES_LIVE_TRUST_DECLARED_READ_ONLY` | `false` | Allow declared read-only work to share slots |
+| `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | OpenAI user transcript model, or `disabled` |
+| `OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE` | unset | Optional lowercase ISO-639-1 language hint |
 
 Use [.env.example](../.env.example) for containers and `hermes-live print-config` to inspect every resolved value with secrets redacted. `HERMES_LIVE_CONFIG_FILE` selects a different managed file.
 
