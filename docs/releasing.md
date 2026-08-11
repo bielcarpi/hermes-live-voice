@@ -29,6 +29,7 @@ Release notes must distinguish:
    ```sh
    npm ci
    npm run verify
+   npm run check:hermes-compatibility
    npm audit --audit-level=moderate
    npm pack --dry-run
    docker build -t hermes-live-voice:release .
@@ -42,15 +43,16 @@ Release notes must distinguish:
 
 Before tagging a stable release, record evidence for:
 
-- real Hermes submission, SSE completion, retained result, and exact stop;
-- immediate receipt and a second conversation turn while a task remains active;
-- default exclusive serialization plus opt-in disjoint read-only concurrency;
-- client detach/reconnect with snapshot and notification deduplication;
-- gateway restart using the same state file while Hermes stays alive;
-- Hermes restart producing `unknown`, not a fabricated terminal result;
-- fail-closed approval deny-all plus exact stop, with no approval UI;
-- a persistent Docker state volume with non-root/read-only hardening;
-- live session smoke for each changed provider handshake/default, plus official event fixtures and deterministic adapter coverage for event-only normalization changes;
+- real Hermes submission, SSE completion, retained result, and exact stop.
+- the pinned official Hermes v0.20.0 image, required capabilities, and plugin discovery.
+- immediate receipt and a second conversation turn while a task remains active.
+- default exclusive serialization plus opt-in disjoint read-only concurrency.
+- client detach/reconnect with snapshot and notification deduplication.
+- gateway restart using the same state file while Hermes stays alive.
+- Hermes restart producing `unknown`, not a fabricated terminal result.
+- fail-closed approval deny-all plus exact stop, with no approval UI.
+- a persistent Docker state volume with non-root/read-only hardening.
+- live session smoke for each changed provider handshake/default, plus official event fixtures and deterministic adapter coverage for event-only normalization changes.
 - browser/Dashboard/terminal and clean-package installation smokes.
 
 Repeat the gate on the final commit and complete an appropriate soak window. Keep recent live evidence for every advertised provider, and record any account, quota, region, or model-access blocker without relabeling it as a pass. Document manual audio/device coverage; tests cannot prove microphones, autoplay, perceived latency, or provider speech quality on untested hardware.

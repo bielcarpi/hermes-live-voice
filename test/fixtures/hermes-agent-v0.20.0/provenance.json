@@ -1,0 +1,16 @@
+{
+  "source": "Live authenticated API capture from the official Hermes Agent Docker image",
+  "capturedAt": "2026-08-11",
+  "hermesVersion": "0.20.0",
+  "hermesBuild": "2026.8.3",
+  "releaseTag": "v2026.8.3",
+  "releaseCommit": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+  "ociRevision": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+  "sourceRepository": "https://github.com/NousResearch/hermes-agent",
+  "containerImage": "nousresearch/hermes-agent:v2026.8.3@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e",
+  "containerDigest": "sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e",
+  "sanitization": [
+    "Captured only public capability metadata",
+    "Removed no fields and included no user data"
+  ]
+}

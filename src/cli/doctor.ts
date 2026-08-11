@@ -16,6 +16,11 @@ import {
 } from "./local-voice.js";
 import { gatewayOrigin, probeGatewayReadiness } from "./gateway-probe.js";
 import { isDefaultLocalHermesApi, resolveHermesHome } from "./hermes-api-bootstrap.js";
+import {
+  classifyHermesVersion,
+  HERMES_COMPATIBILITY,
+  parseHermesVersion,
+} from "../hermes-compatibility.js";
 
 const packageRequire = createRequire(import.meta.url);
 const PACKAGE_VERSION = (packageRequire("../../package.json") as { version: string }).version;
@@ -36,6 +41,7 @@ export interface DiagnosticCheck {
 export interface DoctorReport {
   ok: boolean;
   version: string;
+  compatibility: typeof HERMES_COMPATIBILITY;
   checks: DiagnosticCheck[];
   readiness?: ReadinessReport;
   service?: ServiceStatus;
@@ -204,13 +210,16 @@ export async function runDoctor(
       "The `hermes` command is not on PATH.",
       "Install Hermes or pass --hermes-command, then enable the plugin.",
     ));
+  if (hermesCommand) {
+    checks.push(await inspectHermesVersion(hermesCommand, dependencies.runner));
+  }
 
   let readiness: ReadinessReport | undefined;
   if (config) {
     readiness = await buildReadinessReport(config);
     const hermesReadinessError = String(readiness.hermes.error ?? "Not ready.");
     checks.push(readiness.hermes.ok
-      ? pass("hermes-api", "Hermes API", `${String(readiness.hermes.baseUrl)} supports durable runs and saved chats`)
+      ? pass("hermes-api", "Hermes API", `${String(readiness.hermes.baseUrl)} supports task runs and saved chats`)
       : fail(
         "hermes-api",
         "Hermes API",
@@ -284,11 +293,74 @@ export async function runDoctor(
   return {
     ok: checks.every((check) => check.status !== "fail"),
     version: PACKAGE_VERSION,
+    compatibility: HERMES_COMPATIBILITY,
     checks,
     ...(readiness ? { readiness } : {}),
     service,
     ...(localService ? { localService } : {}),
   };
+}
+
+async function inspectHermesVersion(
+  hermesCommand: string,
+  runner: CommandRunner | undefined,
+): Promise<DiagnosticCheck> {
+  const result = await (runner ?? runCommand)(hermesCommand, ["--version"], {
+    timeoutMs: 5_000,
+    maxOutputBytes: 16 * 1024,
+  }).catch((error) => ({
+    code: 1,
+    stdout: "",
+    stderr: errorToMessage(error),
+    timedOut: false,
+  }));
+  if (result.code !== 0) {
+    return warn(
+      "hermes-version",
+      "Hermes version",
+      result.timedOut ? "The version check timed out." : "The CLI did not report its version.",
+      `Hermes Agent ${HERMES_COMPATIBILITY.minimumVersion} or newer is required.`,
+    );
+  }
+
+  const version = parseHermesVersion(`${result.stdout}\n${result.stderr}`);
+  const status = classifyHermesVersion(version);
+  if (status === "unsupported") {
+    return fail(
+      "hermes-version",
+      "Hermes version",
+      `v${version} is unsupported.`,
+      `Update Hermes Agent to v${HERMES_COMPATIBILITY.minimumVersion} or newer. v${HERMES_COMPATIBILITY.testedVersion} is the latest tested version.`,
+    );
+  }
+  if (status === "tested") {
+    return pass(
+      "hermes-version",
+      "Hermes version",
+      `v${version} (${HERMES_COMPATIBILITY.testedReleaseTag}) is tested`,
+    );
+  }
+  if (status === "supported") {
+    return pass(
+      "hermes-version",
+      "Hermes version",
+      `v${version} is supported; v${HERMES_COMPATIBILITY.testedVersion} is the latest tested version`,
+    );
+  }
+  if (status === "newer") {
+    return warn(
+      "hermes-version",
+      "Hermes version",
+      `v${version} is newer than the latest tested version, v${HERMES_COMPATIBILITY.testedVersion}.`,
+      "Keep the capability checks enabled and report any compatibility issue.",
+    );
+  }
+  return warn(
+    "hermes-version",
+    "Hermes version",
+    "The CLI output did not contain a semantic version.",
+    `Hermes Agent ${HERMES_COMPATIBILITY.minimumVersion} or newer is required.`,
+  );
 }
 
 export function diagnoseManagedLocalMemory(

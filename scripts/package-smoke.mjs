@@ -54,6 +54,7 @@ try {
     "dist/cli/task-operator.js",
     "dist/cli/terminal-session.js",
     "dist/cli/doctor.js",
+    "dist/cli/diagnostics.js",
     "dist/cli/gateway-probe.js",
     "dist/cli/managed-config.js",
     "dist/cli/local-voice.js",
@@ -61,7 +62,9 @@ try {
     "dist/cli/process.js",
     "dist/cli/service-manager.js",
     "dist/cli/setup.js",
+    "dist/cli/upgrade.js",
     "dist/config.js",
+    "dist/hermes-compatibility.js",
     "dist/live-provider-smoke.js",
     "dist/service-identity.js",
     "dist/adapters/inbound/http/server.js",
@@ -180,6 +183,8 @@ try {
     !help.stdout.includes("terminal") ||
     !help.stdout.includes("setup") ||
     !help.stdout.includes("doctor") ||
+    !help.stdout.includes("diagnostics") ||
+    !help.stdout.includes("upgrade") ||
     !help.stdout.includes("service") ||
     !help.stdout.includes("provider-smoke") ||
     !help.stdout.includes("hermes dashboard") ||
@@ -261,9 +266,10 @@ try {
       "-e",
       [
         `const m = await import(${JSON.stringify(packageJson.name)});`,
-        "const required = ['startServer','loadConfig','assertRuntimeConfig','assertHermesApiConfig','assertRealtimeProviderConfig','assertGatewayExposureConfig','realtimeProviderConfigured','buildReadinessReport','runLiveProviderSmoke','HermesClient','HuggingFaceRealtimeAdapter','OpenAIRealtimeAdapter','GeminiLiveAdapter','parseClientMessage'];",
+        "const required = ['startServer','loadConfig','assertRuntimeConfig','assertHermesApiConfig','assertRealtimeProviderConfig','assertGatewayExposureConfig','realtimeProviderConfigured','buildReadinessReport','runLiveProviderSmoke','HermesClient','HuggingFaceRealtimeAdapter','OpenAIRealtimeAdapter','GeminiLiveAdapter','parseClientMessage','parseHermesVersion','classifyHermesVersion'];",
         "const missing = required.filter((name) => typeof m[name] !== 'function');",
         "if (missing.length) { console.error('Missing exports: ' + missing.join(',')); process.exit(1); }",
+        "if (m.HERMES_COMPATIBILITY?.testedVersion !== '0.20.0') { console.error('Missing compatibility metadata'); process.exit(1); }",
       ].join(" "),
     ],
     {

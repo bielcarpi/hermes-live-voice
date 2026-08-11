@@ -24,7 +24,7 @@ env:
 jobs:
   verify-package:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -74,6 +74,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - run: npm ci
       - run: npm run verify
+      - run: npm run check:hermes-compatibility
       - run: npm audit --audit-level=moderate
       - run: mkdir -p release
       - run: npm pack --pack-destination release
