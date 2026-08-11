@@ -37,6 +37,12 @@ export { createLiveModelAdapter } from "./adapters/outbound/realtime/factory.js"
 export { buildSystemInstruction } from "./application/live-gateway/system-instruction.js";
 export { runLiveProviderSmoke } from "./live-provider-smoke.js";
 export type { LiveProviderSmokeOptions, LiveProviderSmokeReport } from "./live-provider-smoke.js";
+export {
+  classifyHermesVersion,
+  HERMES_COMPATIBILITY,
+  parseHermesVersion,
+} from "./hermes-compatibility.js";
+export type { HermesVersionStatus } from "./hermes-compatibility.js";
 export type {
   LiveModelAdapter,
   LiveModelAudio,

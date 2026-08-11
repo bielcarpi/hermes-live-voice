@@ -1,9 +1,9 @@
 {
   "name": "hermes-live",
   "label": "Live Voice",
-  "description": "Continuous voice for saved Hermes chats while durable background tasks run and report back.",
+  "description": "Real-time voice control for Hermes Agent while background work runs and reports back.",
   "icon": "Zap",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "tab": {
     "path": "/live-voice",
     "position": "after:chat"

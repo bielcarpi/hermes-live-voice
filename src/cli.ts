@@ -22,6 +22,8 @@ import { applyManagedConfigToProcess } from "./cli/managed-config.js";
 import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
 import { runSetupCommand } from "./cli/setup.js";
 import { runDoctorCommand } from "./cli/doctor.js";
+import { diagnosticsHelp, runDiagnosticsCommand } from "./cli/diagnostics.js";
+import { runUpgradeCommand, upgradeHelp } from "./cli/upgrade.js";
 import { printLocalVoiceHelp, runLocalVoiceCommand } from "./cli/local-voice.js";
 import type { PublicTaskSnapshot, ServerMessage } from "./domain/protocol/server-protocol.js";
 import type { ConversationSelection } from "./domain/protocol/client-protocol.js";
@@ -59,6 +61,16 @@ async function main(): Promise<void> {
 
   if (command === "doctor") {
     await runDoctorCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "diagnostics") {
+    await runDiagnosticsCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "upgrade") {
+    await runUpgradeCommand(process.argv.slice(3));
     return;
   }
 
@@ -257,6 +269,8 @@ function printRequestedCommandHelp(command: string, args: readonly string[]): bo
 }
 
 function commandHelp(command: string): string | undefined {
+  if (command === "diagnostics") return diagnosticsHelp();
+  if (command === "upgrade") return upgradeHelp();
   if (command === "service") {
     return `hermes-live service <action>
 
@@ -292,7 +306,7 @@ new Hermes chat. Leaving the terminal detaches without cancelling tasks.`;
     return `hermes-live client "<request>"
 
 Send one text request through the configured realtime gateway. If it delegates
-work, wait for that exact durable task while unrelated tasks keep running.`;
+work, wait for that exact background task while unrelated tasks keep running.`;
   }
   if (command === "check") {
     return `hermes-live check
@@ -328,7 +342,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
 }
 
 function printHelp(): void {
-  console.log(`hermes-live — continuous voice for Hermes Agent
+  console.log(`hermes-live — real-time voice control for Hermes Agent
 
 Quick start:
   hermes-live setup
@@ -336,7 +350,9 @@ Quick start:
 
 Everyday commands:
   hermes-live setup         Configure, verify, and start everything
+  hermes-live upgrade       Reconcile an updated npm package
   hermes-live doctor        Diagnose the installation and print exact fixes
+  hermes-live diagnostics   Write a private, redacted support bundle
   hermes-live terminal      Open a new headless chat and task inbox
   hermes-live terminal --resume <sessionId>
 

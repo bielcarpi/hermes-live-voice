@@ -87,6 +87,13 @@ try {
   if (!pluginManifest.includes(`version: ${expectedVersion}`)) {
     throw new Error("Packed setup installed a plugin with the wrong version.");
   }
+  const upgrade = await run(bin, ["upgrade", "--no-service", "--json"], env);
+  if (upgrade.code !== 0 || JSON.parse(upgrade.stdout).ok !== true) {
+    throw new Error(`Packed upgrade reconciliation failed.\n${upgrade.stdout}\n${upgrade.stderr}`);
+  }
+  if (upgrade.stdout.includes(privateKey) || upgrade.stderr.includes(privateKey)) {
+    throw new Error("Packed upgrade exposed the imported Hermes key.");
+  }
 
   gateway = spawn(bin, ["serve"], { env, stdio: ["ignore", "pipe", "pipe"] });
   gateway.stdout.on("data", (chunk) => { gatewayStdout += chunk; });
@@ -111,13 +118,34 @@ try {
   if (doctor.stdout.includes(privateKey) || doctor.stderr.includes(privateKey)) {
     throw new Error("Packed doctor exposed the imported Hermes key.");
   }
+  const diagnosticsPath = join(workDir, "packed-diagnostics.json");
+  const diagnostics = await run(bin, [
+    "diagnostics",
+    "--output", diagnosticsPath,
+    "--plugins-dir", pluginsDir,
+    "--hermes-command", hermesCommand,
+  ], env);
+  if (diagnostics.code !== 0) {
+    throw new Error(`Packed diagnostics failed.\n${diagnostics.stdout}\n${diagnostics.stderr}`);
+  }
+  const diagnosticBundle = await readFile(diagnosticsPath, "utf8");
+  if (diagnosticBundle.includes(privateKey)) {
+    throw new Error("Packed diagnostics exposed the imported Hermes key.");
+  }
+  const parsedDiagnostics = JSON.parse(diagnosticBundle);
+  if (parsedDiagnostics.schemaVersion !== 1 || parsedDiagnostics.doctor?.ok !== true) {
+    throw new Error(`Packed diagnostics returned an invalid bundle.\n${diagnosticBundle}`);
+  }
+  if (process.platform !== "win32" && ((await stat(diagnosticsPath)).mode & 0o777) !== 0o600) {
+    throw new Error("Packed diagnostics file is not 0600.");
+  }
 } finally {
   gateway?.kill("SIGTERM");
   if (gateway) await new Promise((resolveClose) => gateway.once("close", resolveClose));
   await new Promise((resolveClose, reject) => hermes.close((error) => error ? reject(error) : resolveClose()));
 }
 
-console.log("Packed activation smoke ok: setup, managed config, plugin, gateway, and doctor verified.");
+console.log("Packed activation smoke ok: setup, upgrade, diagnostics, plugin, gateway, and doctor verified.");
 
 async function run(command, args, commandEnv) {
   return await new Promise((resolveRun) => {
