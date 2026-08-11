@@ -1,5 +1,5 @@
 name: hermes-live
-version: 0.9.3
+version: 0.9.4
 description: "Real-time voice control for Hermes Agent while background work runs and reports back."
 author: Biel Carpi and Hermes Live contributors
 kind: standalone
