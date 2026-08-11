@@ -18,6 +18,7 @@ Useful commands:
 
 ```sh
 hermes-live doctor
+hermes-live diagnostics
 hermes-live service status
 hermes-live service logs
 hermes-live terminal

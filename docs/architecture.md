@@ -1,6 +1,6 @@
 # Architecture
 
-Hermes Live Voice is a continuous voice gateway for Hermes Agent. The speech provider handles conversation and turn-taking; Hermes keeps its memory, tools, skills, MCP servers, and execution environment; the gateway owns authentication, durable background-task supervision, and the protocol between them.
+Hermes Live Voice is a continuous voice gateway for Hermes Agent. The speech provider handles conversation and turn-taking. Hermes keeps its memory, tools, skills, MCP servers, and execution environment. The gateway owns authentication, persistent background-task supervision, and the protocol between them.
 
 It is an independent community integration, not a replacement for Hermes or an official NousResearch release.
 
@@ -108,7 +108,7 @@ Canonical chat uses Hermes Sessions Chat so the selected conversation keeps its 
 
 These are two separate execution planes. The conversation plane serializes canonical turns into one selected Hermes session. The task plane starts independent Hermes `AIAgent` runs so long work can continue after voice disconnects. Hermes Live does not automatically decompose every request into subagents; the realtime model delegates only when work should outlive or run beside the current conversation.
 
-Hermes currently retains active run state in its process. The gateway can reconcile after its own restart if that Hermes process remains alive; it cannot make an in-progress Hermes run survive a Hermes restart.
+Hermes currently retains active run state in its process. The gateway can reconcile after its own restart if that Hermes process remains alive. It cannot make an in-progress Hermes run survive a Hermes restart. Task receipts, public state, notifications, and retained results stay in the gateway store.
 
 ## Ownership And Identity
 

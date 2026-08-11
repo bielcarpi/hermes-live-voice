@@ -21,6 +21,8 @@ hermes-live doctor --provider-smoke
 
 Both commands suppress credentials and print the next concrete fix.
 
+To create a support bundle, run `hermes-live diagnostics`. The private JSON file excludes logs, prompts, task results, audio, and secret values.
+
 ## Local voice
 
 On Apple Silicon, `hermes-live setup` uses `uv` to install and run `speech-to-speech==0.2.11` with local Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and the realtime WebSocket transport. It installs a private launchd service, waits for the models, proves a structured task tool call and spoken receipt, then starts the gateway. This also warms the first real inference path. No second terminal is needed.
@@ -107,7 +109,14 @@ hermes-live service start
 hermes-live service uninstall
 ```
 
-Run setup again after upgrading or changing providers. It replaces the bundled plugin, rechecks both runtimes, and refreshes the service definition without putting API keys in launchd or systemd files.
+After updating the npm package, reconcile the installed files:
+
+```sh
+npm install --global hermes-live-voice@latest
+hermes-live upgrade
+```
+
+The upgrade command keeps the existing provider settings and credentials. It replaces the bundled plugin, checks both runtimes, and refreshes the service definitions. Use `hermes-live setup` when you want to change providers.
 
 ## Source development
 

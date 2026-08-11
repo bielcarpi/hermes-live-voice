@@ -1,6 +1,6 @@
 name: hermes-live
 version: 0.9.3
-description: "Continuous voice for saved Hermes chats while durable background tasks run and report back."
+description: "Real-time voice control for Hermes Agent while background work runs and reports back."
 author: Biel Carpi and Hermes Live contributors
 kind: standalone
 provides_tools:

@@ -18,13 +18,13 @@ Run:
 ```sh
 node --version
 hermes-live --version
-hermes-live doctor
+hermes-live diagnostics
 ```
 
-`doctor` reports config presence and paths but never credential values. Review the output again before publishing it.
+The diagnostics command writes a private, redacted JSON file. It excludes logs, prompts, task results, audio, and secret values. Review the file before attaching it to a public issue.
 
-For provider problems, also run `hermes-live doctor --provider-smoke`. This opens a real provider session but does not send audio or start a Hermes run.
+For provider problems, use `hermes-live diagnostics --provider-smoke`. This opens a real provider session but does not send audio or start a Hermes run.
 
-From a source checkout, run `npm run verify` and replace `hermes-live` with `node dist/cli.js` in the diagnostics above.
+From a source checkout, run `npm run verify` and replace `hermes-live` with `node dist/cli.js` in the commands above.
 
 Hermes Agent, Gemini, and OpenAI have their own support channels for upstream behavior outside this gateway.

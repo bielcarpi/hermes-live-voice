@@ -1,6 +1,8 @@
-# Durable Background Tasks
+# Background Tasks
 
-Hermes Live protocol v6 separates the realtime conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
+Hermes Live protocol v6 separates the real-time conversation from Hermes work. A voice turn can delegate a task, receive a stable receipt immediately, and continue while the gateway supervises the Hermes run independently.
+
+The task receipt, state, inbox, notifications, and retained result are durable. The underlying Hermes run is not restart-durable. If Hermes Agent restarts during a run, the gateway reports an `unknown` outcome instead of guessing.
 
 ```txt
 voice or text turn
