@@ -17,7 +17,7 @@ npm install --global hermes-live-voice
 hermes-live setup
 ```
 
-Setup also enables and starts Hermes' private API bridge. On Apple Silicon it installs and starts the fully local Hugging Face runtime. Use `hermes-live doctor` for exact fixes, `hermes-live service status` for the voice gateway, and `hermes-live local status` for local voice. From a source checkout, the manual voice-gateway equivalent is `node dist/cli.js serve`.
+Setup also enables and starts Hermes' private API bridge. On Apple Silicon it installs and starts the fully local Hugging Face runtime. Use `hermes-live doctor` for exact fixes, `hermes-live diagnostics` for a redacted support bundle, and `hermes-live local status` for local voice. From a source checkout, the manual voice-gateway equivalent is `node dist/cli.js serve`.
 
 The normal setup needs no plugin environment variables: the gateway and plugin share `$HERMES_HOME/hermes-live/config.env`, including any automatically selected local port. `HERMES_LIVE_URL` and `HERMES_LIVE_AUTH_TOKEN` remain explicit overrides for custom deployments. The status tool reports whether a token is configured but never returns its value.
 

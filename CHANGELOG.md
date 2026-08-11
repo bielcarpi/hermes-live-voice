@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.9.4 - 2026-08-11
+
+- Test the bundled plugin and required API capabilities against the official Hermes Agent v0.20.0 image. Add scheduled and release compatibility gates. The doctor now checks the installed Hermes version.
+- Add `hermes-live upgrade` to reconcile the npm package with the installed plugin, configuration, Hermes bridge, and user services.
+- Add `hermes-live diagnostics` for a private, redacted support bundle. It excludes logs, prompts, task results, audio, and secret values. It refuses to overwrite a file.
+- Clarify that task state, notifications, and retained results are durable, while in-progress computation still depends on the current Hermes Agent process.
+
 ## 0.9.3 - 2026-08-11
 
 - Start normally on Windows when the filesystem rejects directory `fsync`, while keeping file writes atomic and surfacing real I/O errors. Add a Windows Node 24 CI lane.

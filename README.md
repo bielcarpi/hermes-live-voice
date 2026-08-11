@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Talk to Hermes while it works.</strong><br>
-  Continuous voice for saved chats, durable tasks, and live progress.
+  Real-time voice, background work, and live progress.
 </p>
 
 <p align="center">
@@ -16,14 +16,13 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
 </p>
 
-Hermes Live Voice is a continuous, interruptible voice layer for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Open a new or saved chat, delegate work, keep talking, ask what any task is doing, and hear when it finishes—even if you disconnected in between.
+Hermes Live Voice is a continuous, interruptible voice layer for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Open a new or saved chat and send long work to the background. Keep talking, ask what a task is doing, and hear when it finishes.
 
-Hermes still supplies the model, tools, memory, and skills. This project adds the live conversation, durable task supervision, and Dashboard UI.
+Hermes already has voice features. This project focuses on the longer workflow: the conversation stays available while separate Hermes runs work in the background. Hermes owns the agent model, tools, memory, skills, and execution. The selected voice provider handles speech. Hermes Live owns turn routing, persistent task supervision, and the client experience.
 
 ## Quick start
 
-You need an up-to-date Hermes Agent and Node.js 20+. Fully local voice on Apple Silicon also
-needs [uv](https://docs.astral.sh/uv/).
+You need Hermes Agent 0.18.2 or newer and Node.js 20+. Releases are tested against Hermes Agent 0.20.0 (`v2026.8.3`). Local voice on Apple Silicon also needs [uv](https://docs.astral.sh/uv/).
 
 ```sh
 npm install --global hermes-live-voice
@@ -33,7 +32,7 @@ hermes dashboard
 
 Open **Live Voice**, choose a new or saved chat, and click **Connect**. The microphone starts automatically. Say “pause listening” or use the same screen to pause; resume from the microphone button.
 
-On Apple Silicon, setup defaults to the tested [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) stack and starts both local voice and the gateway as private user services. The first setup downloads the models, then verifies and warms a real task tool call plus spoken receipt. Nothing has to stay open in another terminal. Gemini Live and OpenAI Realtime remain available with `hermes-live setup --provider gemini` or `--provider openai`.
+On Apple Silicon, setup can install the tested [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) stack. It runs local voice and the gateway as private user services. Gemini Live and OpenAI Realtime are also available.
 
 For the normal local Hermes installation, setup also enables the private Hermes API bridge, creates its random credential, and starts `hermes gateway`. Existing remote or custom Hermes endpoints remain operator-managed.
 
@@ -43,10 +42,10 @@ The managed local stack needs at least 12 GB of physical memory; a 16 GB Apple S
 
 - Continuous microphone mode with voice activity detection and barge-in
 - New or resumed Hermes chats with their existing memory and history
-- Durable background tasks that survive voice disconnects
+- Background work that continues through voice disconnects
 - Live, sanitized task progress and tool activity
 - Parallel read-only work when the operator explicitly enables it
-- Spoken completion notices plus a persistent task inbox
+- Spoken completion notices and a persistent task inbox
 - Dashboard, browser SDK, and headless terminal clients
 
 Try:
@@ -62,7 +61,7 @@ The voice conversation stays responsive while a server-side supervisor owns the 
 1. The Dashboard, browser SDK, or terminal opens the authenticated protocol v6 WebSocket and selects a Hermes conversation.
 2. Local speech-to-speech, Gemini Live, or OpenAI Realtime handles the live voice turn and can call the gateway's small task-control toolset.
 3. The gateway persists accepted work, starts a separate Hermes `/v1/runs` worker, and publishes bounded progress events.
-4. Results remain in the task inbox across reconnects. Follow-ups create new durable workers with explicit parent/root lineage.
+4. Results remain in the task inbox across reconnects. Follow-ups create new workers with explicit parent/root lineage.
 
 Task state lives at `~/.hermes/hermes-live/tasks-v1.json` by default. It is bounded, private, and single-writer.
 
@@ -103,6 +102,7 @@ See [UI integration](docs/ui-integration.md) for authentication and the full cli
 
 ```sh
 hermes-live doctor --provider-smoke
+hermes-live diagnostics
 hermes-live service status
 hermes-live service logs
 hermes-live local status
@@ -110,14 +110,17 @@ hermes-live local logs
 hermes-live print-config
 ```
 
+After updating the npm package, run `hermes-live upgrade`. It reinstalls the matching plugin and service definitions without replacing your provider settings. `hermes-live diagnostics` writes a private support bundle without logs, prompts, task results, audio, or secret values.
+
 `hermes-live setup` writes an allow-listed config to `$HERMES_HOME/hermes-live/config.env` (normally `~/.hermes/hermes-live/config.env`) with private permissions. The gateway and Dashboard plugin read the same file. If the default port belongs to another app, setup picks a free local port automatically. Environment variables override the managed config; project `.env` files are never loaded or executed.
 
 For any non-loopback gateway bind, use a strong `HERMES_LIVE_AUTH_TOKEN`, an exact allowed origin, TLS, and edge rate limits. Keep Hermes itself private. See the [security model](docs/security.md).
 
 ## Current boundaries
 
-- Hermes runs do not survive a Hermes Agent restart. Missing or ambiguous outcomes become `unknown`; the gateway never guesses success or repeats a possibly accepted mutation.
+- Durability applies to task receipts, state, notifications, and retained results. In-progress Hermes runs do not survive a Hermes Agent restart. Missing or ambiguous outcomes become `unknown`.
 - Work is exclusive by default. Parallelism requires `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true` because model-declared read-only scope is policy input, not a sandbox.
+- One delegated task creates one Hermes run. Hermes Live does not create a subagent team for every request.
 - The local launcher is currently managed on Apple Silicon. Other systems can run the upstream realtime server and set `HERMES_LIVE_LOCAL_URL`.
 - The local file store is for one gateway process, not a public multi-tenant or multi-node queue.
 

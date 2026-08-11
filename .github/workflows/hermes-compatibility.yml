@@ -1,0 +1,61 @@
+name: Hermes compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/hermes-compatibility.yml"
+      - "package-lock.json"
+      - "package.json"
+      - "plugins/hermes-live/**"
+      - "scripts/hermes-compatibility-smoke.mjs"
+      - "src/adapters/outbound/hermes/**"
+      - "src/application/live-gateway/**"
+      - "src/hermes-compatibility.ts"
+      - "test/fixtures/hermes-agent-v0.20.0/**"
+      - "test/hermes-v0200-fixtures.test.ts"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/hermes-compatibility.yml"
+      - "package-lock.json"
+      - "package.json"
+      - "plugins/hermes-live/**"
+      - "scripts/hermes-compatibility-smoke.mjs"
+      - "src/adapters/outbound/hermes/**"
+      - "src/application/live-gateway/**"
+      - "src/hermes-compatibility.ts"
+      - "test/fixtures/hermes-agent-v0.20.0/**"
+      - "test/hermes-v0200-fixtures.test.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-compatibility-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  official-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Test pinned Hermes release
+        run: npm run check:hermes-compatibility
+      - name: Test current Hermes image
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: npm run check:hermes-compatibility
+        env:
+          HERMES_COMPATIBILITY_IMAGE: nousresearch/hermes-agent:latest
+          HERMES_COMPATIBILITY_EXPECTED_VERSION: "*"

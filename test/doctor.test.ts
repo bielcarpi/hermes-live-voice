@@ -77,7 +77,9 @@ describe("doctor", () => {
       command,
       args,
       code: 0,
-      stdout: args.includes("is-active") ? "active\n" : "",
+      stdout: args.includes("--version")
+        ? "Hermes Agent v0.20.0 (2026.8.3)\n"
+        : args.includes("is-active") ? "active\n" : "",
       stderr: "",
       timedOut: false,
     });
@@ -100,8 +102,9 @@ describe("doctor", () => {
 
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toEqual(expect.arrayContaining([
-        "node", "config", "plugin", "hermes-cli", "hermes-api", "provider-config", "service", "gateway",
+        "node", "config", "plugin", "hermes-cli", "hermes-version", "hermes-api", "provider-config", "service", "gateway",
       ]));
+      expect(report.checks.find((check) => check.id === "hermes-version")).toMatchObject({ status: "pass" });
       expect(JSON.stringify(report)).not.toContain("doctor-hermes-secret");
     } finally {
       await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
