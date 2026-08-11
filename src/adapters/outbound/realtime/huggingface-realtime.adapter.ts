@@ -480,7 +480,8 @@ class HuggingFaceRealtimeSession implements LiveModelSession {
     const normalized = normalizeOpenAIRealtimeEvent(event, "pcm16", {
       provider: "local",
       pcmSampleRate: LOCAL_REALTIME_PCM_SAMPLE_RATE,
-      includeCompletedTranscripts: true,
+      includeCompletedInputTranscript: true,
+      includeCompletedOutputTranscript: true,
     });
     const toolCalls = normalized.filter(
       (value): value is Extract<LiveModelEvent, { type: "tool_call" }> => value.type === "tool_call",

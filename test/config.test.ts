@@ -45,6 +45,8 @@ describe("config", () => {
     });
     expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
     expect(config.realtime.model).toBe(config.gemini.model);
+    expect(config.openai.inputTranscriptionModel).toBe("gpt-4o-mini-transcribe");
+    expect(config.openai.inputTranscriptionLanguage).toBeUndefined();
   });
 
   it("matches the default local session limit to the managed single-pipeline provider", () => {
@@ -403,6 +405,20 @@ describe("config", () => {
     const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_TURN_DETECTION: "semantic_vad" });
 
     expect(config.openai.turnDetection).toBe("semantic_vad");
+  });
+
+  it("configures OpenAI input transcription without assuming a language", () => {
+    const russian = loadConfig({
+      OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: "whisper-1",
+      OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE: "ru",
+    });
+    const disabled = loadConfig({ OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: "disabled" });
+
+    expect(russian.openai.inputTranscriptionModel).toBe("whisper-1");
+    expect(russian.openai.inputTranscriptionLanguage).toBe("ru");
+    expect(disabled.openai.inputTranscriptionModel).toBeUndefined();
+    expect(() => loadConfig({ OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE: "Russian" })).toThrow(/ISO-639-1/u);
+    expect(() => loadConfig({ OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: "../model" })).toThrow(/model id/u);
   });
 
   it("requires a Google Cloud project for Gemini Enterprise mode", () => {

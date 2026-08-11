@@ -300,7 +300,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
       : isOpenAITerminalResponseEvent(event)
         ? responseScopeForKind(this.activeResponseKind)
         : undefined;
-    const modelEvents = normalizeOpenAIRealtimeEvent(event, this.config.outputAudioFormat);
+    const modelEvents = normalizeOpenAIRealtimeEvent(event, this.config.outputAudioFormat, {
+      includeCompletedInputTranscript: Boolean(this.config.inputTranscriptionModel),
+    });
     const toolEvents = modelEvents.filter(
       (modelEvent): modelEvent is Extract<LiveModelEvent, { type: "tool_call" }> =>
         modelEvent.type === "tool_call",
@@ -901,7 +903,8 @@ export function normalizeOpenAIRealtimeEvent(
   options: {
     provider?: "openai" | "local";
     pcmSampleRate?: number;
-    includeCompletedTranscripts?: boolean;
+    includeCompletedInputTranscript?: boolean;
+    includeCompletedOutputTranscript?: boolean;
   } = {},
 ): LiveModelEvent[] {
   const events: LiveModelEvent[] = [];
@@ -940,7 +943,7 @@ export function normalizeOpenAIRealtimeEvent(
     events.push({ type: "text", text: root.delta });
   }
   if (
-    options.includeCompletedTranscripts
+    options.includeCompletedOutputTranscript
     && root?.type === "response.output_audio_transcript.done"
     && typeof root.transcript === "string"
     && root.transcript.length > 0
@@ -948,7 +951,7 @@ export function normalizeOpenAIRealtimeEvent(
     events.push({ type: "text", text: root.transcript, speaker: "assistant", final: true });
   }
   if (
-    options.includeCompletedTranscripts
+    options.includeCompletedInputTranscript
     && root?.type === "conversation.item.input_audio_transcription.completed"
     && typeof root.transcript === "string"
     && root.transcript.length > 0
@@ -1085,6 +1088,14 @@ export function buildOpenAISessionUpdate(
         input: {
           format: openAiSessionAudioFormat(config.inputAudioFormat),
           turn_detection: openAiTurnDetection(config.turnDetection),
+          ...(config.inputTranscriptionModel
+            ? {
+                transcription: {
+                  model: config.inputTranscriptionModel,
+                  ...(config.inputTranscriptionLanguage ? { language: config.inputTranscriptionLanguage } : {}),
+                },
+              }
+            : {}),
         },
         output: {
           format: openAiSessionAudioFormat(config.outputAudioFormat),
