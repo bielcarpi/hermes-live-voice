@@ -1010,11 +1010,24 @@ function isProcessAlive(pid: number): boolean {
 async function syncDirectory(directory: string): Promise<void> {
   const handle = await open(directory, constants.O_RDONLY);
   try {
-    await handle.sync();
-  } catch (error) {
-    if (!isNodeError(error, "EINVAL") && !isNodeError(error, "ENOTSUP")) throw error;
+    await syncDirectoryHandle(handle);
   } finally {
     await handle.close();
+  }
+}
+
+/** Directory sync is not available on every supported operating system. */
+export async function syncDirectoryHandle(handle: { sync(): Promise<void> }): Promise<void> {
+  try {
+    await handle.sync();
+  } catch (error) {
+    if (
+      !isNodeError(error, "EINVAL")
+      && !isNodeError(error, "ENOTSUP")
+      && !isNodeError(error, "EPERM")
+    ) {
+      throw error;
+    }
   }
 }
 

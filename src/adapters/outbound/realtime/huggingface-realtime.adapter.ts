@@ -265,14 +265,15 @@ class HuggingFaceRealtimeSession implements LiveModelSession {
     });
   }
 
-  async sendAudioStreamEnd(): Promise<void> {
-    if (!this.audioBuffered) return;
+  async sendAudioStreamEnd(): Promise<boolean> {
+    if (!this.audioBuffered) return false;
     // The upstream realtime server owns turn finalization through VAD and
     // currently rejects OpenAI's input_audio_buffer.commit event. A bounded
     // tail of PCM silence closes a push-to-talk turn through the same path as
     // natural microphone silence without creating a second transport mode.
     this.sendJson({ type: "input_audio_buffer.append", audio: LOCAL_TURN_END_SILENCE });
     this.audioBuffered = false;
+    return true;
   }
 
   async cancelResponse(_reason?: string, _truncate?: RealtimeResponseTruncation): Promise<boolean> {
@@ -479,7 +480,8 @@ class HuggingFaceRealtimeSession implements LiveModelSession {
     const normalized = normalizeOpenAIRealtimeEvent(event, "pcm16", {
       provider: "local",
       pcmSampleRate: LOCAL_REALTIME_PCM_SAMPLE_RATE,
-      includeCompletedTranscripts: true,
+      includeCompletedInputTranscript: true,
+      includeCompletedOutputTranscript: true,
     });
     const toolCalls = normalized.filter(
       (value): value is Extract<LiveModelEvent, { type: "tool_call" }> => value.type === "tool_call",

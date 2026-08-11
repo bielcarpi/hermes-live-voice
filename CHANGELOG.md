@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.9.3 - 2026-08-11
+
+- Start normally on Windows when the filesystem rejects directory `fsync`, while keeping file writes atomic and surfacing real I/O errors. Add a Windows Node 24 CI lane.
+- Emit each Gemini audio part once. The adapter no longer repeats the SDK's derived top-level `data` value alongside its source parts.
+- Raise the browser playback buffer from 5 seconds to 2 minutes. Keep a hard memory bound and show one detailed warning if a response exceeds it.
+- Honor explicit OpenAI `audio.end` messages in push-to-talk and VAD modes. Clients that stop sending packets at turn end no longer need to synthesize silence.
+- Enable OpenAI input transcription by default and forward completed user transcripts without repeating the assistant transcript. The model and optional language hint are configurable.
+- Resolve the release audit advisory in the development dependency tree.
+
 ## 0.9.2 - 2026-08-05
 
 - Make the product promise consistent across npm, the README, CLI, Dashboard, and plugin metadata: continuous voice for saved Hermes chats while durable work runs and reports back.

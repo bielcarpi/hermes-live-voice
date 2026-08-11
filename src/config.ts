@@ -36,6 +36,16 @@ const TaskStateFileSchema = z.string().min(1).max(MAX_STATE_FILE_PATH_CHARS).ref
   (value) => isAbsolute(value) && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value),
   { message: "HERMES_LIVE_TASK_STATE_FILE must be a bounded absolute path." },
 );
+const OpenAITranscriptionModelSchema = z.string().trim().min(1).max(128).refine(
+  (value) => value === "disabled" || /^[a-z0-9][a-z0-9._-]*$/u.test(value),
+  { message: "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL must be a model id or disabled." },
+);
+const OpenAITranscriptionLanguageSchema = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().regex(/^[a-z]{2}$/u, {
+    message: "OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE must be a lowercase ISO-639-1 code.",
+  }).optional(),
+);
 
 const EnvSchema = z.object({
   NODE_ENV: z.string().optional(),
@@ -108,6 +118,8 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),
   OPENAI_REALTIME_INPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
+  OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: OpenAITranscriptionModelSchema.default("gpt-4o-mini-transcribe"),
+  OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE: OpenAITranscriptionLanguageSchema,
 });
 
 export type RealtimeProvider = "local" | "gemini" | "openai" | "mock";
@@ -174,6 +186,8 @@ export interface AppConfig {
     turnDetection: "disabled" | "semantic_vad" | "server_vad";
     inputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
     outputAudioFormat: "pcm16" | "g711_ulaw" | "g711_alaw";
+    inputTranscriptionModel?: string;
+    inputTranscriptionLanguage?: string;
   };
 }
 
@@ -248,6 +262,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       turnDetection: parsed.OPENAI_REALTIME_TURN_DETECTION,
       inputAudioFormat: parsed.OPENAI_REALTIME_INPUT_AUDIO_FORMAT,
       outputAudioFormat: parsed.OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT,
+      ...(parsed.OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL === "disabled"
+        ? {}
+        : { inputTranscriptionModel: parsed.OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL }),
+      ...(parsed.OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE
+        ? { inputTranscriptionLanguage: parsed.OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE }
+        : {}),
     },
   };
 }

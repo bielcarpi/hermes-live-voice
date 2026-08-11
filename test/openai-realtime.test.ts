@@ -138,6 +138,25 @@ describe("OpenAI Realtime adapter helpers", () => {
     });
   });
 
+  it("forwards only the requested completed transcript directions", () => {
+    const user = normalizeOpenAIRealtimeEvent({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "Can you check the build?",
+    }, "pcm16", { includeCompletedInputTranscript: true });
+    const assistant = normalizeOpenAIRealtimeEvent({
+      type: "response.output_audio_transcript.done",
+      transcript: "I am checking it now.",
+    }, "pcm16", { includeCompletedInputTranscript: true });
+
+    expect(user).toEqual([{
+      type: "text",
+      text: "Can you check the build?",
+      speaker: "user",
+      final: true,
+    }]);
+    expect(assistant).toEqual([]);
+  });
+
   it("normalizes provider response lifecycle events", () => {
     expect(
       normalizeOpenAIRealtimeEvent({ type: "response.created", response: { id: "resp_1", status: "in_progress" } }),
@@ -262,11 +281,27 @@ describe("OpenAI Realtime adapter helpers", () => {
       parallel_tool_calls: false,
       tool_choice: "auto",
     });
+    expect((semanticVad.session.audio as any).input.transcription).toEqual({
+      model: "gpt-4o-mini-transcribe",
+    });
 
     const realtime15 = buildOpenAISessionUpdate(testOpenAIConfig({ model: "gpt-realtime-1.5" }), "hello");
     expect(realtime15.session).toMatchObject({ model: "gpt-realtime-1.5" });
     expect(realtime15.session).not.toHaveProperty("reasoning");
     expect(realtime15.session).not.toHaveProperty("parallel_tool_calls");
+  });
+
+  it("supports a language hint or disabled OpenAI input transcription", () => {
+    const hinted = buildOpenAISessionUpdate(testOpenAIConfig({
+      inputTranscriptionModel: "whisper-1",
+      inputTranscriptionLanguage: "ru",
+    }), "hello");
+    const disabled = buildOpenAISessionUpdate(testOpenAIConfig({
+      inputTranscriptionModel: undefined,
+    }), "hello");
+
+    expect((hinted.session.audio as any).input.transcription).toEqual({ model: "whisper-1", language: "ru" });
+    expect((disabled.session.audio as any).input).not.toHaveProperty("transcription");
   });
 
   it("can disable tools for provider-only connection probes", () => {
@@ -606,6 +641,59 @@ describe("OpenAI Realtime adapter helpers", () => {
       }));
       responses = await waitForResponseCreates(harness.clientMessages, 2);
       expect(responses[1]).toEqual({ type: "response.create" });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("commits an explicit audio end in VAD mode without scheduling a duplicate response", async () => {
+    const harness = await createOpenAITestHarness(undefined, { turnDetection: "semantic_vad" });
+
+    try {
+      await harness.session.sendRealtimeAudio({
+        data: Buffer.alloc(480).toString("base64"),
+        mimeType: "audio/pcm;rate=24000",
+      });
+      await expect(harness.session.sendAudioStreamEnd()).resolves.toBe(true);
+      await vi.waitFor(() => {
+        expect(harness.clientMessages).toContainEqual({ type: "input_audio_buffer.commit" });
+        expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+      });
+
+      harness.upstream.send(JSON.stringify({
+        type: "input_audio_buffer.speech_stopped",
+        item_id: "item_manually_committed",
+        audio_end_ms: 10,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+      await expect(harness.session.sendAudioStreamEnd()).resolves.toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("delivers the configured OpenAI input transcript to the live client", async () => {
+    const transcript = deferred<LiveModelEvent>();
+    const harness = await createOpenAITestHarness({
+      onEvent: (event) => {
+        if (event.type === "text" && event.speaker === "user") transcript.resolve(event);
+      },
+    });
+
+    try {
+      harness.upstream.send(JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed",
+        transcript: "Run the release checks.",
+      }));
+
+      await expect(withTimeout(transcript.promise, 1_000, "Input transcript was not delivered."))
+        .resolves.toEqual({
+          type: "text",
+          text: "Run the release checks.",
+          speaker: "user",
+          final: true,
+        });
     } finally {
       await harness.close();
     }
@@ -2122,6 +2210,7 @@ function testOpenAIConfig(
     turnDetection: "disabled",
     inputAudioFormat: "pcm16",
     outputAudioFormat: "pcm16",
+    inputTranscriptionModel: "gpt-4o-mini-transcribe",
     ...overrides,
   };
 }

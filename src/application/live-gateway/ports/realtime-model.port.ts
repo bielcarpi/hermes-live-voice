@@ -89,7 +89,8 @@ export interface LiveModelCallbacks {
 export interface LiveModelSession {
   sendRealtimeAudio(audio: LiveModelAudio): Promise<void>;
   sendText(text: string): Promise<void>;
-  sendAudioStreamEnd(): Promise<void>;
+  /** Returns true when this call starts or schedules a provider response. */
+  sendAudioStreamEnd(): Promise<boolean>;
   cancelResponse(reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean>;
   sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void>;
   sendTaskNotification?(notification: LiveTaskNotification): Promise<void>;

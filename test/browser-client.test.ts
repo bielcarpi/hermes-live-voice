@@ -1430,6 +1430,20 @@ describe("HermesLiveAudio", () => {
       audio.play({ type: "audio.output", data: pcmFrame(new Array(100).fill(0)), mimeType: "audio/pcm;rate=24000" }),
     ).resolves.toBe(false);
     expect(dropped).toHaveBeenCalledWith(expect.objectContaining({ reason: "playback_backpressure" }));
+    await expect(
+      audio.play({ type: "audio.output", data: pcmFrame([0, 1]), mimeType: "audio/pcm;rate=24000" }),
+    ).resolves.toBe(false);
+    expect(dropped).toHaveBeenCalledOnce();
+    await audio.dispose();
+  });
+
+  it("keeps replies longer than the old five-second playback limit", async () => {
+    const audio = createAudio();
+    const sixSeconds = new Array(24_000 * 6).fill(0);
+
+    await expect(
+      audio.play({ type: "audio.output", data: pcmFrame(sixSeconds), mimeType: "audio/pcm;rate=24000" }),
+    ).resolves.toBe(true);
     await audio.dispose();
   });
 });

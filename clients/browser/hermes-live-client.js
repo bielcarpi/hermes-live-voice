@@ -2,8 +2,8 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_DISCONNECT_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_BUFFERED_AMOUNT_BYTES = 1_000_000;
 const DEFAULT_MAX_INBOUND_MESSAGE_BYTES = 8_000_000;
-const DEFAULT_MAX_QUEUED_AUDIO_MS = 5_000;
-const DEFAULT_MAX_QUEUED_AUDIO_FRAMES = 256;
+const DEFAULT_MAX_QUEUED_AUDIO_MS = 120_000;
+const DEFAULT_MAX_QUEUED_AUDIO_FRAMES = 8_192;
 const DEFAULT_PLAYBACK_RESUME_TIMEOUT_MS = 2_000;
 const DEFAULT_SAMPLE_RATE = 24_000;
 const MIN_PCM_SAMPLE_RATE = 8_000;
@@ -1081,12 +1081,14 @@ export class HermesLiveAudio {
     this.playbackGeneration = 0;
     this.playbackEpoch = createPlaybackEpoch();
     this.playbackSuppressed = false;
+    this.playbackOverflowed = false;
     this.playbackResumeContext = undefined;
     this.playbackResumePromise = undefined;
     this.cancelPlaybackResume = undefined;
     this.unsubscribeClose = client.on?.("close", () => void this.dispose());
     this.unsubscribeResponseStarted = client.on?.("response.started", () => {
       this.playbackSuppressed = false;
+      this.playbackOverflowed = false;
     });
     this.unsubscribeResponseCancelled = client.on?.("response.cancelled", () => this.clearPlayback());
     this.unsubscribeResponseFailed = client.on?.("response.failed", () => this.clearPlayback());
@@ -1249,7 +1251,7 @@ export class HermesLiveAudio {
   }
 
   play(message) {
-    if (this.disposed || this.playbackSuppressed) return Promise.resolve(false);
+    if (this.disposed || this.playbackSuppressed || this.playbackOverflowed) return Promise.resolve(false);
     let frame;
     try {
       frame = preparePlaybackFrame(message, this.decodeBase64);
@@ -1266,11 +1268,15 @@ export class HermesLiveAudio {
       queuedFrames >= this.maxQueuedAudioFrames ||
       queuedMs + frame.durationMs > this.maxQueuedAudioMs
     ) {
+      this.playbackOverflowed = true;
       this.emitter.emit("audio.dropped", {
         direction: "output",
         reason: "playback_backpressure",
         queuedMs,
         droppedMs: frame.durationMs,
+        queuedFrames,
+        maxQueuedAudioMs: this.maxQueuedAudioMs,
+        maxQueuedAudioFrames: this.maxQueuedAudioFrames,
       });
       return Promise.resolve(false);
     }
@@ -1316,11 +1322,15 @@ export class HermesLiveAudio {
 
     const queuedMs = this.calculateQueuedPlaybackMs(context.currentTime);
     if (queuedMs + frame.durationMs > this.maxQueuedAudioMs) {
+      this.playbackOverflowed = true;
       this.emitter.emit("audio.dropped", {
         direction: "output",
         reason: "playback_backpressure",
         queuedMs,
         droppedMs: frame.durationMs,
+        queuedFrames: this.playbackSources.size,
+        maxQueuedAudioMs: this.maxQueuedAudioMs,
+        maxQueuedAudioFrames: this.maxQueuedAudioFrames,
       });
       return false;
     }

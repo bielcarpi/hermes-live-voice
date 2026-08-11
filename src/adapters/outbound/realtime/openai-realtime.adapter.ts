@@ -159,6 +159,8 @@ class OpenAIRealtimeSession implements LiveModelSession {
   private closeOperation?: Promise<void>;
   private closing = false;
   private ready = false;
+  private audioBuffered = false;
+  private suppressNextVadStopResponse = false;
 
   constructor(
     private readonly ws: WebSocket,
@@ -188,6 +190,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
 
   async sendRealtimeAudio(audio: LiveModelAudio): Promise<void> {
     this.sendJson(buildOpenAIRealtimeAudioAppend(audio, this.config.inputAudioFormat));
+    this.audioBuffered = true;
   }
 
   async sendText(text: string): Promise<void> {
@@ -198,14 +201,15 @@ class OpenAIRealtimeSession implements LiveModelSession {
     }, responseRequest);
   }
 
-  async sendAudioStreamEnd(): Promise<void> {
-    if (this.config.turnDetection !== "disabled") {
-      return;
-    }
+  async sendAudioStreamEnd(): Promise<boolean> {
+    if (!this.audioBuffered) return false;
     const responseRequest: OpenAIResponseRequest = { kind: "default" };
     this.assertResponseCanBeRequested(responseRequest);
     this.sendJson({ type: "input_audio_buffer.commit" });
+    this.audioBuffered = false;
+    this.suppressNextVadStopResponse = this.config.turnDetection !== "disabled";
     this.requestResponse(responseRequest);
+    return true;
   }
 
   async cancelResponse(_reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean> {
@@ -296,7 +300,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
       : isOpenAITerminalResponseEvent(event)
         ? responseScopeForKind(this.activeResponseKind)
         : undefined;
-    const modelEvents = normalizeOpenAIRealtimeEvent(event, this.config.outputAudioFormat);
+    const modelEvents = normalizeOpenAIRealtimeEvent(event, this.config.outputAudioFormat, {
+      includeCompletedInputTranscript: Boolean(this.config.inputTranscriptionModel),
+    });
     const toolEvents = modelEvents.filter(
       (modelEvent): modelEvent is Extract<LiveModelEvent, { type: "tool_call" }> =>
         modelEvent.type === "tool_call",
@@ -395,6 +401,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   private trackResponseState(event: any, deferQueuedResponse = false): boolean | undefined {
+    if (event?.type === "input_audio_buffer.speech_started") {
+      this.suppressNextVadStopResponse = false;
+    }
     if (
       event?.type === "input_audio_buffer.speech_started"
       && this.config.turnDetection !== "disabled"
@@ -411,6 +420,11 @@ class OpenAIRealtimeSession implements LiveModelSession {
       event?.type === "input_audio_buffer.speech_stopped"
       && this.config.turnDetection !== "disabled"
     ) {
+      this.audioBuffered = false;
+      if (this.suppressNextVadStopResponse) {
+        this.suppressNextVadStopResponse = false;
+        return undefined;
+      }
       // VAD commits the audio turn, while this adapter owns response creation.
       // A distinct request preserves the voice-turn snapshot and serializes it
       // behind any out-of-band task announcement already in flight.
@@ -889,7 +903,8 @@ export function normalizeOpenAIRealtimeEvent(
   options: {
     provider?: "openai" | "local";
     pcmSampleRate?: number;
-    includeCompletedTranscripts?: boolean;
+    includeCompletedInputTranscript?: boolean;
+    includeCompletedOutputTranscript?: boolean;
   } = {},
 ): LiveModelEvent[] {
   const events: LiveModelEvent[] = [];
@@ -928,7 +943,7 @@ export function normalizeOpenAIRealtimeEvent(
     events.push({ type: "text", text: root.delta });
   }
   if (
-    options.includeCompletedTranscripts
+    options.includeCompletedOutputTranscript
     && root?.type === "response.output_audio_transcript.done"
     && typeof root.transcript === "string"
     && root.transcript.length > 0
@@ -936,7 +951,7 @@ export function normalizeOpenAIRealtimeEvent(
     events.push({ type: "text", text: root.transcript, speaker: "assistant", final: true });
   }
   if (
-    options.includeCompletedTranscripts
+    options.includeCompletedInputTranscript
     && root?.type === "conversation.item.input_audio_transcription.completed"
     && typeof root.transcript === "string"
     && root.transcript.length > 0
@@ -1073,6 +1088,14 @@ export function buildOpenAISessionUpdate(
         input: {
           format: openAiSessionAudioFormat(config.inputAudioFormat),
           turn_detection: openAiTurnDetection(config.turnDetection),
+          ...(config.inputTranscriptionModel
+            ? {
+                transcription: {
+                  model: config.inputTranscriptionModel,
+                  ...(config.inputTranscriptionLanguage ? { language: config.inputTranscriptionLanguage } : {}),
+                },
+              }
+            : {}),
         },
         output: {
           format: openAiSessionAudioFormat(config.outputAudioFormat),

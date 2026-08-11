@@ -171,8 +171,9 @@ export class GeminiLiveSession implements LiveModelSession {
     throw new Error("Gemini Live session does not support realtime text input.");
   }
 
-  async sendAudioStreamEnd(): Promise<void> {
+  async sendAudioStreamEnd(): Promise<boolean> {
     await this.session.sendRealtimeInput({ audioStreamEnd: true });
+    return true;
   }
 
   async cancelResponse(): Promise<boolean> {
@@ -320,14 +321,22 @@ export function normalizeGeminiLiveMessage(message: unknown): LiveModelEvent[] {
   if (cancelledToolCallIds) {
     events.push({ type: "tool_call_cancelled", callIds: cancelledToolCallIds });
   }
+  const parts = extractParts(root);
+  const hasInlineAudio = parts.some((part) => {
+    const inlineData = part.inlineData ?? part.inline_data;
+    return typeof inlineData?.data === "string";
+  });
   const data = root?.data;
-  if (typeof data === "string") {
+  // LiveServerMessage.data is an SDK convenience getter. It concatenates the
+  // same inlineData parts exposed below, so use it only as a fallback for raw
+  // messages that do not carry part-level audio.
+  if (typeof data === "string" && !hasInlineAudio) {
     events.push({
       type: "audio",
       audio: { data, mimeType: root.mimeType ?? root.mime_type ?? "audio/pcm;rate=24000" },
     });
   }
-  for (const part of extractParts(root)) {
+  for (const part of parts) {
     const text = typeof part.text === "string" ? part.text : undefined;
     // Native-audio responses may expose the same spoken content as both a
     // model text part and outputTranscription. Prefer the transcript because

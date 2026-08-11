@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { hostname, tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { hostname, platform, tmpdir } from "node:os";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FileTaskStore,
+  syncDirectoryHandle,
   TaskStoreCapacityError,
   TaskStoreConflictError,
   TaskStoreCorruptionError,
@@ -28,16 +29,33 @@ afterEach(async () => {
 });
 
 describe("FileTaskStore", () => {
+  it.each(["EINVAL", "ENOTSUP", "EPERM"])("continues when directory sync is unavailable with %s", async (code) => {
+    const sync = vi.fn(async () => {
+      throw Object.assign(new Error(`directory sync failed with ${code}`), { code });
+    });
+
+    await expect(syncDirectoryHandle({ sync })).resolves.toBeUndefined();
+    expect(sync).toHaveBeenCalledOnce();
+  });
+
+  it("does not hide an unexpected directory sync failure", async () => {
+    const error = Object.assign(new Error("disk failed"), { code: "EIO" });
+
+    await expect(syncDirectoryHandle({ sync: async () => { throw error; } })).rejects.toBe(error);
+  });
+
   it("atomically persists validated tasks with private permissions and reloads them", async () => {
     const { root, directory } = await temporaryStoreDirectory();
     const store = new FileTaskStore({ directory, now: () => 100 });
     const task = createTaskRecord({ ownerIdentity: "alice", input: "Review authentication", now: 10 });
 
     await expect(store.put(task)).resolves.toEqual(task);
-    const directoryMode = (await stat(directory)).mode & 0o777;
-    const fileMode = (await stat(store.filePath)).mode & 0o777;
-    expect(directoryMode).toBe(0o700);
-    expect(fileMode).toBe(0o600);
+    if (platform() !== "win32") {
+      const directoryMode = (await stat(directory)).mode & 0o777;
+      const fileMode = (await stat(store.filePath)).mode & 0o777;
+      expect(directoryMode).toBe(0o700);
+      expect(fileMode).toBe(0o600);
+    }
     expect((await readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 
     await store.close();

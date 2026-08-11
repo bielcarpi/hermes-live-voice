@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LiveServerMessage } from "@google/genai";
 import {
   buildGeminiClientOptions,
   buildGeminiLiveConnectConfig,
@@ -159,6 +160,25 @@ describe("Gemini Live adapter helpers", () => {
     });
     expect(events).toHaveLength(2);
     expect(events).toContainEqual({ type: "response", status: "completed" });
+  });
+
+  it("emits SDK inline audio once instead of repeating the data getter", () => {
+    const message = new LiveServerMessage();
+    message.serverContent = {
+      modelTurn: {
+        role: "model",
+        parts: [
+          { inlineData: { data: "YQ==", mimeType: "audio/pcm;rate=24000" } },
+          { inlineData: { data: "Yg==", mimeType: "audio/pcm;rate=24000" } },
+        ],
+      },
+    };
+
+    expect(message.data).toBe("YWI=");
+    expect(normalizeGeminiLiveMessage(message).filter((event) => event.type === "audio")).toEqual([
+      { type: "audio", audio: { data: "YQ==", mimeType: "audio/pcm;rate=24000" } },
+      { type: "audio", audio: { data: "Yg==", mimeType: "audio/pcm;rate=24000" } },
+    ]);
   });
 
   it("normalizes input and output transcriptions with speaker and final metadata", () => {
