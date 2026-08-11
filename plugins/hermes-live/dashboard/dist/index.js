@@ -474,10 +474,13 @@
                   text: friendlyError(event.error, "Browser audio failed."),
                 });
               }),
-              audio.on("audio.dropped", function () {
-                if (active) setNotice({
+              audio.on("audio.dropped", function (event) {
+                if (!active) return;
+                var seconds = Math.round(event.maxQueuedAudioMs / 1000);
+                console.warn("[Hermes Live] Assistant playback buffer overflowed.", event);
+                setNotice({
                   tone: "warning",
-                  text: "Some assistant audio was dropped to keep playback responsive.",
+                  text: "Assistant audio exceeded the " + seconds + " second playback buffer. This reply is incomplete.",
                 });
               }),
             ];

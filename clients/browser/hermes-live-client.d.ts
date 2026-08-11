@@ -294,7 +294,15 @@ export interface HermesLiveAudioEventMap {
   microphone: { state: "idle" | "starting" | "active" | "stopping" | "disposed"; active: boolean; sampleRate?: number };
   playback: { active: boolean; queued: number; queuedMs: number };
   error: { error: Error; code: string };
-  "audio.dropped": { direction: "output"; reason: string; queuedMs: number; droppedMs: number };
+  "audio.dropped": {
+    direction: "output";
+    reason: string;
+    queuedMs: number;
+    droppedMs: number;
+    queuedFrames: number;
+    maxQueuedAudioMs: number;
+    maxQueuedAudioFrames: number;
+  };
 }
 
 export class HermesLiveAudio {
