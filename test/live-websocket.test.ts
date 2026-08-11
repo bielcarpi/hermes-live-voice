@@ -2316,7 +2316,9 @@ class RecordingLiveSession implements LiveModelSession {
     await this.textBehavior?.(text);
   }
 
-  async sendAudioStreamEnd(): Promise<void> {}
+  async sendAudioStreamEnd(): Promise<boolean> {
+    return false;
+  }
 
   async cancelResponse(reason?: string, truncate?: any): Promise<boolean> {
     this.cancelCalls.push({ ...(reason ? { reason } : {}), ...(truncate ? { truncate: structuredClone(truncate) } : {}) });

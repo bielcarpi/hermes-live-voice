@@ -491,7 +491,9 @@ export class LiveGatewaySession {
         return;
       case "audio.end":
         this.userSpeaking = false;
-        await this.forwardRealtimeClientInput("audio turn", () => this.liveSession!.sendAudioStreamEnd(), true);
+        await this.forwardRealtimeClientInput("audio turn", async () => {
+          if (await this.liveSession!.sendAudioStreamEnd()) this.providerResponseActive = true;
+        });
         return;
       case "text.input":
         validateText(message.text, this.deps.config.server.maxTextChars, "Text input");

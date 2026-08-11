@@ -159,6 +159,8 @@ class OpenAIRealtimeSession implements LiveModelSession {
   private closeOperation?: Promise<void>;
   private closing = false;
   private ready = false;
+  private audioBuffered = false;
+  private suppressNextVadStopResponse = false;
 
   constructor(
     private readonly ws: WebSocket,
@@ -188,6 +190,7 @@ class OpenAIRealtimeSession implements LiveModelSession {
 
   async sendRealtimeAudio(audio: LiveModelAudio): Promise<void> {
     this.sendJson(buildOpenAIRealtimeAudioAppend(audio, this.config.inputAudioFormat));
+    this.audioBuffered = true;
   }
 
   async sendText(text: string): Promise<void> {
@@ -198,14 +201,15 @@ class OpenAIRealtimeSession implements LiveModelSession {
     }, responseRequest);
   }
 
-  async sendAudioStreamEnd(): Promise<void> {
-    if (this.config.turnDetection !== "disabled") {
-      return;
-    }
+  async sendAudioStreamEnd(): Promise<boolean> {
+    if (!this.audioBuffered) return false;
     const responseRequest: OpenAIResponseRequest = { kind: "default" };
     this.assertResponseCanBeRequested(responseRequest);
     this.sendJson({ type: "input_audio_buffer.commit" });
+    this.audioBuffered = false;
+    this.suppressNextVadStopResponse = this.config.turnDetection !== "disabled";
     this.requestResponse(responseRequest);
+    return true;
   }
 
   async cancelResponse(_reason?: string, truncate?: RealtimeResponseTruncation): Promise<boolean> {
@@ -395,6 +399,9 @@ class OpenAIRealtimeSession implements LiveModelSession {
   }
 
   private trackResponseState(event: any, deferQueuedResponse = false): boolean | undefined {
+    if (event?.type === "input_audio_buffer.speech_started") {
+      this.suppressNextVadStopResponse = false;
+    }
     if (
       event?.type === "input_audio_buffer.speech_started"
       && this.config.turnDetection !== "disabled"
@@ -411,6 +418,11 @@ class OpenAIRealtimeSession implements LiveModelSession {
       event?.type === "input_audio_buffer.speech_stopped"
       && this.config.turnDetection !== "disabled"
     ) {
+      this.audioBuffered = false;
+      if (this.suppressNextVadStopResponse) {
+        this.suppressNextVadStopResponse = false;
+        return undefined;
+      }
       // VAD commits the audio turn, while this adapter owns response creation.
       // A distinct request preserves the voice-turn snapshot and serializes it
       // behind any out-of-band task announcement already in flight.

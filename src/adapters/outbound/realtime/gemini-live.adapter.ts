@@ -171,8 +171,9 @@ export class GeminiLiveSession implements LiveModelSession {
     throw new Error("Gemini Live session does not support realtime text input.");
   }
 
-  async sendAudioStreamEnd(): Promise<void> {
+  async sendAudioStreamEnd(): Promise<boolean> {
     await this.session.sendRealtimeInput({ audioStreamEnd: true });
+    return true;
   }
 
   async cancelResponse(): Promise<boolean> {

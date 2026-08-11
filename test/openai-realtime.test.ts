@@ -611,6 +611,33 @@ describe("OpenAI Realtime adapter helpers", () => {
     }
   });
 
+  it("commits an explicit audio end in VAD mode without scheduling a duplicate response", async () => {
+    const harness = await createOpenAITestHarness(undefined, { turnDetection: "semantic_vad" });
+
+    try {
+      await harness.session.sendRealtimeAudio({
+        data: Buffer.alloc(480).toString("base64"),
+        mimeType: "audio/pcm;rate=24000",
+      });
+      await expect(harness.session.sendAudioStreamEnd()).resolves.toBe(true);
+      await vi.waitFor(() => {
+        expect(harness.clientMessages).toContainEqual({ type: "input_audio_buffer.commit" });
+        expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+      });
+
+      harness.upstream.send(JSON.stringify({
+        type: "input_audio_buffer.speech_stopped",
+        item_id: "item_manually_committed",
+        audio_end_ms: 10,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(openAIResponseCreates(harness.clientMessages)).toHaveLength(1);
+      await expect(harness.session.sendAudioStreamEnd()).resolves.toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("serializes an interrupted out-of-band notice before VAD and drains later typed input", async () => {
     const lifecycleEvents: LiveModelEvent[] = [];
     const speechStarted = deferred<void>();
