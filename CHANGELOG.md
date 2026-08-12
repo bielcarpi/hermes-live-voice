@@ -4,7 +4,7 @@
 
 ## 0.9.5 - 2026-08-12
 
-- Refresh the pinned Node 22 image, WebSocket and Gemini SDKs, TypeScript runner, and CodeQL action. All compatibility, security, Linux, and Windows checks pass with the new dependency set.
+- Refresh the pinned Node 22 image, WebSocket and Gemini SDKs, TypeScript runner, and CodeQL action. The production image now installs dependencies once and prunes development tools for the runtime layer. All compatibility, security, Linux, and Windows checks pass with this dependency set.
 
 ## 0.9.4 - 2026-08-11
 
