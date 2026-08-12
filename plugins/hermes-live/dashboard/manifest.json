@@ -3,7 +3,7 @@
   "label": "Live Voice",
   "description": "Real-time voice control for Hermes Agent while background work runs and reports back.",
   "icon": "Zap",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "tab": {
     "path": "/live-voice",
     "position": "after:chat"

@@ -1,6 +1,6 @@
 {
   "name": "hermes-live-voice",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "Real-time voice control for Hermes Agent—keep talking while Hermes works in the background.",
   "type": "module",
   "main": "./dist/index.js",

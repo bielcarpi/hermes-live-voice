@@ -1,7 +1,7 @@
 FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts \
+RUN npm ci --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
 
 FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS build
@@ -18,7 +18,8 @@ ENV NODE_ENV=production \
     NPM_CONFIG_FUND=false \
     NPM_CONFIG_UPDATE_NOTIFIER=false
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --ignore-scripts \
+COPY --from=deps /app/node_modules ./node_modules
+RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
 COPY LICENSE ./LICENSE
 COPY --from=build /app/dist ./dist
