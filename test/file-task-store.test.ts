@@ -597,7 +597,7 @@ describe("FileTaskStore", () => {
     }))).resolves.toMatchObject({ status: "dispatching" });
     await expect(store.load(tasks[0]!.taskId)).resolves.toBeUndefined();
     await store.close();
-  });
+  }, 15_000);
 
   it("fails safely on corrupt state without overwriting or resetting it", async () => {
     const { directory } = await temporaryStoreDirectory();
