@@ -421,15 +421,22 @@ function extractToolCallCancellationIds(root: any): string[] | undefined {
 }
 
 function extractParts(root: any): any[] {
-  const parts = root?.serverContent?.modelTurn?.parts ??
-    root?.server_content?.model_turn?.parts ??
-    root?.modelTurn?.parts ??
-    root?.content?.parts ??
-    root?.parts;
-    
-  if (Array.isArray(parts)) {
-    return parts.filter(Boolean);
+  const candidates = [
+    root?.serverContent?.modelTurn?.parts,
+    root?.server_content?.model_turn?.parts,
+    root?.modelTurn?.parts,
+    root?.content?.parts,
+    root?.parts,
+  ];
+
+  for (const candidate of candidates) {
+    const parts = Array.isArray(candidate) ? candidate : candidate ? [candidate] : [];
+    const filteredParts = parts.filter(Boolean);
+    if (filteredParts.length > 0) {
+      return filteredParts;
+    }
   }
+
   return [];
 }
 

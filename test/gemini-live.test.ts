@@ -181,6 +181,19 @@ describe("Gemini Live adapter helpers", () => {
     ]);
   });
 
+  it("does not duplicate parts when Gemini exposes camelCase and snake_case aliases", () => {
+    const parts = [{ inlineData: { data: "YQ==", mimeType: "audio/pcm;rate=24000" } }];
+
+    const events = normalizeGeminiLiveMessage({
+      serverContent: { modelTurn: { parts } },
+      server_content: { model_turn: { parts } },
+    });
+
+    expect(events.filter((event) => event.type === "audio")).toEqual([
+      { type: "audio", audio: { data: "YQ==", mimeType: "audio/pcm;rate=24000" } },
+    ]);
+  });
+
   it("normalizes input and output transcriptions with speaker and final metadata", () => {
     const events = normalizeGeminiLiveMessage({
       serverContent: {
