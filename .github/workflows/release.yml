@@ -272,6 +272,91 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  container-publish:
+    needs: [verify-package, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Verify image source
+        run: |
+          package_version="$(node -p 'require("./package.json").version')"
+          test "$RELEASE_TAG" = "v$package_version"
+          release_json="$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable,isPrerelease)"
+          test "$(jq -r '.isDraft' <<< "$release_json")" = "false"
+          test "$(jq -r '.isImmutable' <<< "$release_json")" = "true"
+          expected_prerelease=false
+          case "$package_version" in
+            *-*) expected_prerelease=true ;;
+          esac
+          test "$(jq -r '.isPrerelease' <<< "$release_json")" = "$expected_prerelease"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Set image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}},value=${{ env.RELEASE_TAG }}
+            type=raw,value=latest,enable=${{ !contains(env.RELEASE_TAG, '-') }}
+          labels: |
+            org.opencontainers.image.title=Hermes Live Voice
+            org.opencontainers.image.description=Real-time voice control for Hermes Agent
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+      - name: Build and publish image
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=release-image
+          cache-to: type=gha,mode=max,scope=release-image
+          provenance: false
+      - name: Attest image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Verify published platforms and provenance
+        run: |
+          image_version="${RELEASE_TAG#v}"
+          image_ref="$IMAGE_NAME:$image_version"
+          manifest="$(mktemp)"
+          trap 'rm -f "$manifest"' EXIT
+          docker buildx imagetools inspect "$image_ref" --raw > "$manifest"
+          jq -e '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | index("amd64") != null' "$manifest" >/dev/null
+          jq -e '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | index("arm64") != null' "$manifest" >/dev/null
+          gh attestation verify "oci://$image_ref" --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   npm-publish:
     if: vars.PUBLISH_NPM == 'true'
     needs: [verify-package, github-release]
