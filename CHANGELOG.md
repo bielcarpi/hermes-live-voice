@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.6 - 2026-08-19
+
+- Publish multi-architecture release images to GitHub Container Registry with semver, major/minor, and `latest` tags, plus provenance attestation and manifest verification.
+- Stop Gemini Live audio/text parts from being duplicated when SDK messages expose the same payload through both camelCase and snake_case aliases. Add deterministic regression coverage for the alias shape.
+- Refresh the Gemini Live SDK to `@google/genai` 2.17.1, the `tsx` development runner to 4.23.12, and CodeQL analysis actions to 4.37.7. The refreshed release candidate passes Linux, Windows, Hermes compatibility, dependency review, and package verification.
+
 ## 0.9.5 - 2026-08-12
 
 - Refresh the pinned Node 22 image, WebSocket and Gemini SDKs, TypeScript runner, and CodeQL action. The production image now installs dependencies once and prunes development tools for the runtime layer. All compatibility, security, Linux, and Windows checks pass with this dependency set.
