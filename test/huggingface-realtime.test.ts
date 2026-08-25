@@ -183,7 +183,7 @@ describe("Hugging Face speech-to-speech adapter", () => {
     await session.close();
   });
 
-  it("coalesces completed transcript chunks from speech-to-speech 0.2.11 into one turn", async () => {
+  it("coalesces completed transcript chunks from speech-to-speech 0.2.12 into one turn", async () => {
     const harness = await createHarness();
     const events: LiveModelEvent[] = [];
     const session = await new HuggingFaceRealtimeAdapter(

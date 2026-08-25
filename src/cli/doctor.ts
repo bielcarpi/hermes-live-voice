@@ -11,6 +11,7 @@ import { pluginInstallStatus } from "./plugin-installer.js";
 import { findExecutable, runCommand, type CommandRunner } from "./process.js";
 import { serviceStatus, type ServiceStatus } from "./service-manager.js";
 import {
+  HUGGINGFACE_SPEECH_TO_SPEECH_VERSION,
   MIN_MANAGED_LOCAL_MEMORY_BYTES,
   probeLocalVoiceEndpoint,
 } from "./local-voice.js";
@@ -161,7 +162,11 @@ export async function runDoctor(
       const managedProfileSupported = (dependencies.platform ?? process.platform) === "darwin"
         && (dependencies.arch ?? process.arch) === "arm64";
       checks.push(uv
-        ? pass("local-launcher", "Local voice launcher", `${shortHome(uv, dependencies.home)} (speech-to-speech 0.2.11)`)
+        ? pass(
+          "local-launcher",
+          "Local voice launcher",
+          `${shortHome(uv, dependencies.home)} (speech-to-speech ${HUGGINGFACE_SPEECH_TO_SPEECH_VERSION})`,
+        )
         : managedProfileSupported
           ? fail("local-launcher", "Local voice launcher", "uv is not installed.", "Run `brew install uv`, then rerun `hermes-live setup`.")
           : pass("local-launcher", "Local voice launcher", "External speech-to-speech runtime expected on this platform."));

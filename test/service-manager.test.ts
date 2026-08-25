@@ -56,7 +56,7 @@ describe("service manager", () => {
       kind: "local-voice",
       command: {
         command: "/opt/homebrew/bin/uv",
-        args: ["tool", "run", "--from", "speech-to-speech==0.2.11", "speech-to-speech", "--mode", "realtime"],
+        args: ["tool", "run", "--from", "speech-to-speech==0.2.12", "speech-to-speech", "--mode", "realtime"],
         environment: { SSL_CERT_FILE: "/etc/ssl/cert.pem" },
       },
       home: "/Users/alice",
@@ -64,7 +64,7 @@ describe("service manager", () => {
 
     expect(definition).toContain(`<string>${LOCAL_VOICE_SERVICE_LABEL}</string>`);
     expect(definition).toContain("/opt/homebrew/bin/uv");
-    expect(definition).toContain("speech-to-speech==0.2.11");
+    expect(definition).toContain("speech-to-speech==0.2.12");
     expect(definition).toContain("local-voice.log");
     expect(definition).toContain("SSL_CERT_FILE");
     expect(definition).toContain("<integer>30</integer>");

@@ -30,7 +30,15 @@ hermes-live setup
 hermes dashboard
 ```
 
-Open **Live Voice**, choose a new or saved chat, and click **Connect**. The microphone starts automatically. Say “pause listening” or use the same screen to pause; resume from the microphone button.
+Open **Live Voice**, choose a new or saved chat, and click **Connect**. The microphone starts automatically. Say “pause listening” to pause. Use the microphone button to resume.
+
+Before a demo or production use, run:
+
+```sh
+hermes-live launch-check
+```
+
+This command rejects mock mode. It proves the voice provider, Dashboard plugin, gateway, and one bounded Hermes worker.
 
 On Apple Silicon, setup can install the tested [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) stack. It runs local voice and the gateway as private user services. Gemini Live and OpenAI Realtime are also available.
 
@@ -101,6 +109,7 @@ See [UI integration](docs/ui-integration.md) for authentication and the full cli
 ## Operations
 
 ```sh
+hermes-live launch-check
 hermes-live doctor --provider-smoke
 hermes-live diagnostics
 hermes-live service status
@@ -110,7 +119,7 @@ hermes-live local logs
 hermes-live print-config
 ```
 
-After updating the npm package, run `hermes-live upgrade`. It reinstalls the matching plugin and service definitions without replacing your provider settings. `hermes-live diagnostics` writes a private support bundle without logs, prompts, task results, audio, or secret values.
+After updating the npm package, run `hermes-live upgrade`. It reinstalls the matching plugin and service definitions without replacing your provider settings. Run `hermes-live launch-check` after the upgrade. `hermes-live diagnostics` writes a private support bundle without logs, prompts, task results, audio, or secret values.
 
 `hermes-live setup` writes an allow-listed config to `$HERMES_HOME/hermes-live/config.env` (normally `~/.hermes/hermes-live/config.env`) with private permissions. The gateway and Dashboard plugin read the same file. If the default port belongs to another app, setup picks a free local port automatically. Environment variables override the managed config; project `.env` files are never loaded or executed.
 

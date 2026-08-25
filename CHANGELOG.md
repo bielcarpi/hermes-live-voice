@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-08-25
+
+- Add `hermes-live launch-check` as the stable v1 launch proof. It rejects mock mode and proves the real voice provider, Dashboard plugin version, gateway readiness, and one bounded Hermes worker with an exact output token.
+- Refresh managed local voice to Hugging Face `speech-to-speech` 0.2.12. Keep the compatibility guard and the Hermes task-tool patch for the tested realtime path.
+- Refresh `@google/genai` to 2.18.0 and Vitest to 4.1.11. Package, CLI, and release smokes now require the shipped CLI to expose `launch-check`.
+- Keep setup and release docs focused on one user path: install, run setup, run launch-check, open Hermes Dashboard, and talk to Hermes in Live Voice.
+
 ## 0.9.6 - 2026-08-19
 
 - Publish multi-architecture release images to GitHub Container Registry with semver, major/minor, and `latest` tags, plus provenance attestation and manifest verification.

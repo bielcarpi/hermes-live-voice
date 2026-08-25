@@ -142,7 +142,7 @@ def main() -> None:
     try:
         entrypoint._install_create_response_patch()
     except RuntimeError as error:
-        assert "expected speech-to-speech 0.2.11" in str(error)
+        assert "expected speech-to-speech 0.2.12" in str(error)
     else:
         raise AssertionError("An unreviewed speech-to-speech version must fail closed")
 

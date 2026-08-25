@@ -7,9 +7,12 @@ CI proves the protocol, gateway, task store, plugin, package, and Docker image a
 ```sh
 hermes-live doctor
 hermes-live doctor --provider-smoke
+hermes-live launch-check
 ```
 
 The manual smoke opens the same adapter used by the gateway, waits for provider readiness, and closes it cleanly. It does not send audio or start a Hermes task. Managed Apple Silicon setup additionally runs an isolated task-tool and spoken-receipt check before declaring local voice ready.
+
+`hermes-live launch-check` is the v1 go/no-go check. It rejects mock mode and starts one bounded Hermes worker.
 
 For a source checkout:
 
@@ -46,7 +49,7 @@ Confirm:
 - one task tool call returns a receipt and the conversation continues;
 - a completion notice waits until the current turn is idle.
 
-`hermes-live local run` pins the upstream Python package version tested by the release. Normal installs use the managed service created by `hermes-live setup`. Other platforms should run the upstream `realtime` mode separately and point `HERMES_LIVE_LOCAL_URL` at it.
+`hermes-live local run` pins the upstream Python package version tested by the release. Normal installs use the managed service created by `hermes-live setup`. Other platforms can run the upstream `realtime` mode separately and point `HERMES_LIVE_LOCAL_URL` at it.
 
 ## Gemini
 
@@ -75,12 +78,12 @@ The default uses `gpt-realtime-2.1`, `marin`, PCM16, and push-to-talk semantics.
 3. Ask for a short direct answer and verify it remains in the selected Hermes chat.
 4. Delegate two read-only tasks and verify both receipts, progress, `/status`, and results.
 5. Disconnect voice while they run, reconnect, and verify the snapshot restores them.
-6. Let one finish while talking. Its notice should wait until the voice is idle and remain unread until acknowledged.
+6. Let one finish while talking. Its notice waits until the voice is idle and remains unread until acknowledged.
 7. Start a follow-up from the finished task and verify its parent/root lineage.
 8. Stop one exact task and verify the other continues.
 9. Restart only the gateway with the task volume preserved and verify reconciliation.
 
-Do not call a provider or model supported from a successful connection alone. Release evidence should include actual input, audio playback, interruption, task delegation, completion notification, and reconnect behavior.
+Do not call a provider or model supported from a successful connection alone. Release evidence must include actual input, audio playback, interruption, task delegation, completion notification, and reconnect behavior.
 
 ## References
 

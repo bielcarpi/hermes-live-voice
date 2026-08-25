@@ -758,7 +758,7 @@ class HuggingFaceRealtimeSession implements LiveModelSession {
       return [{ ...completed[0], speaker: "assistant", final: true }];
     }
 
-    // speech-to-speech 0.2.11 publishes each generated text chunk as its own
+    // speech-to-speech 0.2.12 publishes each generated text chunk as its own
     // `response.output_audio_transcript.done` event. Coalesce those chunks at
     // the compatibility boundary so clients still receive one assistant turn.
     // If a provider only sends deltas, terminalize the accumulated text here.
