@@ -140,6 +140,7 @@ For any non-loopback gateway bind, use a strong `HERMES_LIVE_AUTH_TOKEN`, an exa
 - [Architecture](docs/architecture.md)
 - [Protocol v6](docs/client-protocol.md)
 - [Security](docs/security.md)
+- [Community sharing](docs/launch-kit.md)
 - [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md)
 
 ## License
