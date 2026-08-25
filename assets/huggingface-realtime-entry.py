@@ -1,6 +1,6 @@
 """Hermes Live entrypoint for the pinned Hugging Face realtime server.
 
-speech-to-speech 0.2.11 publishes the OpenAI Realtime ``create_response``
+speech-to-speech 0.2.12 publishes the OpenAI Realtime ``create_response``
 turn-detection field but always starts an LLM response after final STT. Hermes
 Live needs the documented false setting so it can route explicit background
 commands without a second, conflicting model decision.
@@ -14,7 +14,7 @@ from importlib.metadata import version
 from typing import Any
 
 
-EXPECTED_VERSION = "0.2.11"
+EXPECTED_VERSION = "0.2.12"
 
 
 class _SilentContentConsole:
@@ -185,7 +185,7 @@ def _install_empty_response_tools_patch() -> None:
 def _install_transformers_tool_content_patch() -> None:
     """Keep MLX/Hugging Face chat templates compatible after tool calls.
 
-    speech-to-speech 0.2.11 serializes assistant function-call history without
+    speech-to-speech 0.2.12 serializes assistant function-call history without
     a ``content`` key. Qwen templates read that key even when ``tool_calls`` is
     present, so the follow-up response fails before generation. Normalize only
     that assistant history shape and leave every other message unchanged.

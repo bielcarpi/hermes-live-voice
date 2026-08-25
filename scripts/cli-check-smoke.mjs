@@ -141,6 +141,7 @@ for (const command of [
   "terminal",
   "client",
   "check",
+  "launch-check",
   "provider-smoke",
   "print-config",
   "serve",

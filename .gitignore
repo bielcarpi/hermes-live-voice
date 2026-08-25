@@ -28,6 +28,7 @@ tasks-v1.json.lock/
 .tasks-v1.json.*.tmp
 **/.tasks-v1.json.*.tmp
 coverage/
+.codegraph/
 release/
 .npm/
 .pnpm-store/

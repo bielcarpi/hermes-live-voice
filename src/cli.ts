@@ -22,6 +22,7 @@ import { applyManagedConfigToProcess } from "./cli/managed-config.js";
 import { runServiceAction, type ServiceAction } from "./cli/service-manager.js";
 import { runSetupCommand } from "./cli/setup.js";
 import { runDoctorCommand } from "./cli/doctor.js";
+import { launchCheckHelp, runLaunchCheckCommand } from "./cli/launch-check.js";
 import { diagnosticsHelp, runDiagnosticsCommand } from "./cli/diagnostics.js";
 import { runUpgradeCommand, upgradeHelp } from "./cli/upgrade.js";
 import { printLocalVoiceHelp, runLocalVoiceCommand } from "./cli/local-voice.js";
@@ -61,6 +62,11 @@ async function main(): Promise<void> {
 
   if (command === "doctor") {
     await runDoctorCommand(process.argv.slice(3));
+    return;
+  }
+
+  if (command === "launch-check") {
+    await runLaunchCheckCommand(process.argv.slice(3));
     return;
   }
 
@@ -242,6 +248,7 @@ function usesManagedRuntimeConfig(command: string): boolean {
     "terminal",
     "chat",
     "check",
+    "launch-check",
     "provider-smoke",
     "check-live-provider",
     "tasks",
@@ -270,6 +277,7 @@ function printRequestedCommandHelp(command: string, args: readonly string[]): bo
 
 function commandHelp(command: string): string | undefined {
   if (command === "diagnostics") return diagnosticsHelp();
+  if (command === "launch-check") return launchCheckHelp();
   if (command === "upgrade") return upgradeHelp();
   if (command === "service") {
     return `hermes-live service <action>
@@ -350,6 +358,7 @@ Quick start:
 
 Everyday commands:
   hermes-live setup         Configure, verify, and start everything
+  hermes-live launch-check  Prove the real v1 voice, plugin, gateway, and worker path
   hermes-live upgrade       Reconcile an updated npm package
   hermes-live doctor        Diagnose the installation and print exact fixes
   hermes-live diagnostics   Write a private, redacted support bundle
@@ -360,6 +369,7 @@ Operations:
   hermes-live service <status|restart|logs|stop|start|uninstall>
   hermes-live local <status|restart|logs|stop|start|uninstall>
   hermes-live check         Check Hermes and provider readiness
+  hermes-live launch-check  Run the real v1 launch proof
   hermes-live provider-smoke  Open and close a real provider session
   hermes-live print-config  Show resolved settings with secrets redacted
 

@@ -30,6 +30,7 @@ Release notes must distinguish:
    npm ci
    npm run verify
    npm run check:hermes-compatibility
+   node dist/cli.js launch-check
    npm audit --audit-level=moderate
    npm pack --dry-run
    docker build -t hermes-live-voice:release .
@@ -43,6 +44,7 @@ Release notes must distinguish:
 
 Before tagging a stable release, record evidence for:
 
+- `hermes-live launch-check` with a real provider and exact Hermes worker output.
 - real Hermes submission, SSE completion, retained result, and exact stop.
 - the pinned official Hermes v0.20.0 image, required capabilities, and plugin discovery.
 - immediate receipt and a second conversation turn while a task remains active.

@@ -14,7 +14,7 @@ import {
   type ServiceStatus,
 } from "./service-manager.js";
 
-export const HUGGINGFACE_SPEECH_TO_SPEECH_VERSION = "0.2.11";
+export const HUGGINGFACE_SPEECH_TO_SPEECH_VERSION = "0.2.12";
 export const MIN_MANAGED_LOCAL_MEMORY_BYTES = 12 * 1024 * 1024 * 1024;
 export const MANAGED_LOCAL_MIN_SILENCE_MS = 700;
 export const MANAGED_LOCAL_MAX_NEW_TOKENS = 96;

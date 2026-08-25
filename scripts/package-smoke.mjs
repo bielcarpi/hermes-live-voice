@@ -54,6 +54,7 @@ try {
     "dist/cli/task-operator.js",
     "dist/cli/terminal-session.js",
     "dist/cli/doctor.js",
+    "dist/cli/launch-check.js",
     "dist/cli/diagnostics.js",
     "dist/cli/gateway-probe.js",
     "dist/cli/managed-config.js",
@@ -187,6 +188,7 @@ try {
     !help.stdout.includes("upgrade") ||
     !help.stdout.includes("service") ||
     !help.stdout.includes("provider-smoke") ||
+    !help.stdout.includes("launch-check") ||
     !help.stdout.includes("hermes dashboard") ||
     !help.stdout.includes("setup --help") ||
     help.stdout.includes("Required environment:") ||

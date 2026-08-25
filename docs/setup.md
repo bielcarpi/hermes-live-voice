@@ -7,6 +7,7 @@ Run:
 ```sh
 npm install --global hermes-live-voice
 hermes-live setup
+hermes-live launch-check
 hermes dashboard
 ```
 
@@ -21,11 +22,18 @@ hermes-live doctor --provider-smoke
 
 Both commands suppress credentials and print the next concrete fix.
 
+Use `hermes-live launch-check` before a demo or production use. It rejects mock mode and starts one bounded Hermes worker.
+
 To create a support bundle, run `hermes-live diagnostics`. The private JSON file excludes logs, prompts, task results, audio, and secret values.
 
 ## Local voice
 
-On Apple Silicon, `hermes-live setup` uses `uv` to install and run `speech-to-speech==0.2.11` with local Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and the realtime WebSocket transport. It installs a private launchd service, waits for the models, proves a structured task tool call and spoken receipt, then starts the gateway. This also warms the first real inference path. No second terminal is needed.
+On Apple Silicon, `hermes-live setup` uses `uv` to install and run `speech-to-speech==0.2.12`.
+The managed voice stack uses Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and realtime WebSocket transport.
+It installs a private launchd service and waits for the models.
+Then it proves a structured task tool call and spoken receipt before it starts the gateway.
+This warms the first real inference path.
+No second terminal is needed.
 
 The managed profile requires at least 12 GB of physical memory; a 16 GB Apple Silicon Mac is recommended (7.6 GB observed warm, 9.0 GB peak on the tested 16 GB M1 Pro). Setup checks this before downloading models. It moves an implicit local endpoint to a nearby free port when needed; an explicit `HERMES_LIVE_LOCAL_URL` is never changed.
 

@@ -553,5 +553,6 @@ jobs:
           trap 'rm -rf "$install_dir"' EXIT
           npm install --prefix "$install_dir" --ignore-scripts --omit=dev --no-audit --no-fund "$package_spec"
           test "$("$install_dir/node_modules/.bin/hermes-live" --version)" = "$PACKAGE_VERSION"
+          "$install_dir/node_modules/.bin/hermes-live" --help | grep -q 'launch-check'
           "$install_dir/node_modules/.bin/hermes-live" --help | grep -q 'provider-smoke'
           npm audit signatures --prefix "$install_dir"
