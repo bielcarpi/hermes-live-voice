@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.0.1 - 2026-08-25
+
+- Add the community sharing guide with canonical descriptions, community posting guidance, and directory refresh text for the v1.0.1 distribution push.
+- Align npm metadata with the GitHub discovery language for Hermes, realtime voice, local AI, browser SDK, and voice-agent searches.
+
 ## 1.0.0 - 2026-08-25
 
 - Add `hermes-live launch-check` as the stable v1 launch proof. It rejects mock mode and proves the real voice provider, Dashboard plugin version, gateway readiness, and one bounded Hermes worker with an exact output token.
