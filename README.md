@@ -13,6 +13,7 @@
   <a href="https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://www.npmjs.com/package/hermes-live-voice"><img alt="npm version" src="https://img.shields.io/npm/v/hermes-live-voice"></a>
   <a href="https://github.com/bielcarpi/hermes-live-voice/releases"><img alt="release" src="https://img.shields.io/github/v/release/bielcarpi/hermes-live-voice?display_name=tag"></a>
+  <a href="https://github.com/bielcarpi/hermes-live-voice/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/bielcarpi/hermes-live-voice?style=flat"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
 </p>
 
@@ -26,11 +27,12 @@ Hermes remains the agent brain: model routing, tools, memory, skills, and execut
 
 ## Quick start
 
-You need Hermes Agent 0.18.2 or newer and Node.js 20+. Releases are tested against Hermes Agent 0.20.0 (`v2026.8.3`). Local voice on Apple Silicon also needs [uv](https://docs.astral.sh/uv/).
+You need Hermes Agent 0.18.2 or newer and Node.js 20+. Deterministic compatibility fixtures currently cover Hermes Agent 0.20.0 (`v2026.8.3`), and scheduled CI also checks the current Hermes image. Run `hermes-live launch-check` against your install before a demo. Local voice on Apple Silicon also needs [uv](https://docs.astral.sh/uv/).
 
 ```sh
 npm install --global hermes-live-voice
 hermes-live setup --provider openai
+hermes-live launch-check
 hermes dashboard
 ```
 
@@ -42,13 +44,7 @@ Open **Live Voice**, choose a new or saved chat, and click **Connect**. The micr
 | Gemini Live | Google or Vertex deployments | `hermes-live setup --provider gemini` |
 | Local Hugging Face | Private local voice on Apple Silicon | `hermes-live setup --provider local --service` |
 
-Before a demo or production use, run:
-
-```sh
-hermes-live launch-check
-```
-
-This command rejects mock mode. It proves the voice provider, Dashboard plugin, gateway, and one bounded Hermes worker.
+The launch-check step rejects mock mode. It proves the voice provider, Dashboard plugin, gateway, and one bounded Hermes worker.
 
 On Apple Silicon, setup can install the tested [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) stack. It runs local voice and the gateway as private user services. Gemini Live and OpenAI Realtime are also available.
 
@@ -118,6 +114,18 @@ await client.connect();
 
 See [UI integration](docs/ui-integration.md) for authentication and the full client lifecycle.
 
+Advanced plugin-only install for reviewers:
+
+```sh
+hermes plugins install bielcarpi/hermes-live-voice/plugins/hermes-live --ref <40-character-commit-sha> --enable
+```
+
+That installs only the Hermes status tool, slash command, Dashboard tab, and
+same-origin relay. Use the npm setup path above to install and manage the
+companion realtime gateway runtime. For updates, prefer `hermes-live upgrade`;
+Hermes subdirectory plugin installs are currently better treated as pinned
+review installs than as the normal managed update path.
+
 ## Operations
 
 ```sh
@@ -154,6 +162,12 @@ For any non-loopback gateway bind, use a strong `HERMES_LIVE_AUTH_TOKEN`, an exa
 - [Protocol v6](docs/client-protocol.md)
 - [Security](docs/security.md)
 - [Roadmap and contributor ideas](docs/roadmap.md)
+- [Live provider testing](docs/live-provider-testing.md)
+- [Maintainer review packet](docs/maintainer-review-packet.md)
+- [Upstream integration RFC](docs/upstream-integration-rfc.md)
+- [Maintainer readiness audit](docs/maintainer-readiness-audit.md)
+- [Community sharing](docs/launch-kit.md)
+- [Community issue drafts](docs/community-issue-drafts.md)
 - [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md)
 
 ## License

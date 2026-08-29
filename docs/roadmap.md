@@ -1,6 +1,13 @@
 # Roadmap And Contributor Ideas
 
 These are scoped improvements that would make Hermes Live Voice easier to adopt. Each item is narrow enough to become a GitHub issue when someone is ready to own it.
+Copy-ready first issues are in [Community Issue Drafts](community-issue-drafts.md).
+
+For the path toward an official Hermes integration, see the
+[upstream integration RFC](upstream-integration-rfc.md). The short version:
+keep provider SDKs and audio lifecycle in this companion repo, align with
+Hermes' realtime/session and Runs API contracts, and only use official wording
+after maintainer acceptance.
 
 ## Static Dashboard Screenshots
 
@@ -82,6 +89,8 @@ These are scoped improvements that would make Hermes Live Voice easier to adopt.
 - The release checklist links to the receipt template.
 - Receipts distinguish local, Gemini Live, and OpenAI Realtime.
 - Failed or blocked live checks are recorded as blocked, not passing.
+
+Template: [Provider Compatibility Receipt Template](provider-compatibility-receipt-template.md).
 
 ## Docker Production Readiness Example
 

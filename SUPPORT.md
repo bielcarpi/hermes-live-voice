@@ -6,6 +6,7 @@ Hermes Live Voice is community maintained.
 
 - Use [GitHub Discussions](https://github.com/bielcarpi/hermes-live-voice/discussions) for setup questions, client ideas, provider compatibility, and deployment patterns.
 - Use a [bug report](https://github.com/bielcarpi/hermes-live-voice/issues/new?template=bug_report.md) for a reproducible defect in this repository.
+- Use a [provider compatibility report](https://github.com/bielcarpi/hermes-live-voice/issues/new?template=provider_compatibility_report.md) for live OpenAI, Gemini, or local voice evidence.
 - Use a [feature request](https://github.com/bielcarpi/hermes-live-voice/issues/new?template=feature_request.md) for a focused product improvement backed by a use case.
 - Use [private vulnerability reporting](https://github.com/bielcarpi/hermes-live-voice/security/advisories/new) for security issues.
 

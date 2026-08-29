@@ -35,7 +35,7 @@ describe("launch-check", () => {
     const providerSmoke = vi.fn(async (_config: unknown, _options: unknown) => ({
       ok: true,
       provider: "openai",
-      model: "gpt-realtime-2.1",
+      model: "gpt-realtime-2",
       connected: true,
       openCallback: true,
       elapsedMs: 1,
@@ -185,7 +185,7 @@ describe("launch-check", () => {
       providerSmoke: async () => ({
         ok: true,
         provider: "openai",
-        model: "gpt-realtime-2.1",
+        model: "gpt-realtime-2",
         connected: true,
         openCallback: true,
         elapsedMs: 1,

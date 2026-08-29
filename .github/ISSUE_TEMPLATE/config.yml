@@ -3,6 +3,9 @@ contact_links:
   - name: Setup help and ideas
     url: https://github.com/bielcarpi/hermes-live-voice/discussions
     about: Ask questions, show a client, or discuss a deployment before filing a bug.
+  - name: Provider receipt template
+    url: https://github.com/bielcarpi/hermes-live-voice/blob/main/docs/provider-compatibility-receipt-template.md
+    about: Use this when sharing live OpenAI, Gemini, or local provider evidence.
   - name: Report a security vulnerability
     url: https://github.com/bielcarpi/hermes-live-voice/security/advisories/new
     about: Send vulnerability details privately. Never disclose secrets or exploits in a public issue.

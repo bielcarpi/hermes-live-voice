@@ -70,8 +70,10 @@ OPENAI_API_KEY=... hermes-live setup --provider openai
 hermes-live setup --provider mock
 ```
 
-OpenAI user transcripts use `gpt-4o-mini-transcribe` by default. Set
-`OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE` to a two-letter language code when a known language needs a hint. Set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL=disabled` to turn input transcription off.
+OpenAI Realtime uses `gpt-realtime-2` by default. Set
+`OPENAI_REALTIME_MODEL=gpt-realtime-1.5` when you want the faster
+non-reasoning Realtime path. OpenAI user transcripts use
+`gpt-4o-mini-transcribe` by default. Set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE` to a two-letter language code when a known language needs a hint. Set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL=disabled` to turn input transcription off.
 
 Provider secrets can come from the process environment, an existing managed config, or `~/.hermes/.env`. Setup prompts without echoing missing values. The normal local install generates its internal Hermes bridge key automatically. Secret command-line flags are deliberately unsupported.
 
@@ -93,6 +95,8 @@ Common settings:
 | `HERMES_MODEL` | Hermes profile default | Optional literal model override; normally leave unset |
 | `HERMES_LIVE_PROVIDER` | selected by setup | `local`, `gemini`, `openai`, or `mock` |
 | `HERMES_LIVE_LOCAL_URL` | `ws://127.0.0.1:8765/v1/realtime` | Hugging Face realtime endpoint |
+| `GEMINI_MODEL` | `gemini-3.1-flash-live-preview` | Gemini Live model |
+| `OPENAI_REALTIME_MODEL` | `gpt-realtime-2` | OpenAI Realtime model |
 | `HERMES_LIVE_HOST` / `HERMES_LIVE_PORT` | `127.0.0.1` / first free port from `8788` | Gateway listener |
 | `HERMES_LIVE_AUTH_TOKEN` | unset | Required for network-accessible gateway binds |
 | `HERMES_LIVE_MAX_SESSIONS` | `1` local / `8` hosted | Concurrent voice sessions; match the provider pool |

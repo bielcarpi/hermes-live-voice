@@ -13,6 +13,10 @@ hermes-live launch-check
 The manual smoke opens the same adapter used by the gateway, waits for provider readiness, and closes it cleanly. It does not send audio or start a Hermes task. Managed Apple Silicon setup additionally runs an isolated task-tool and spoken-receipt check before declaring local voice ready.
 
 `hermes-live launch-check` is the v1 go/no-go check. It rejects mock mode and starts one bounded Hermes worker.
+Record release-relevant live results with the
+[provider compatibility receipt template](provider-compatibility-receipt-template.md).
+Blocked or failing attempts can be kept under `docs/provider-receipts/` when
+they explain a real release blocker.
 
 For a source checkout:
 
@@ -61,6 +65,11 @@ hermes-live provider-smoke
 
 For Vertex/Enterprise auth, set `GOOGLE_GENAI_USE_ENTERPRISE=true`, `GOOGLE_CLOUD_PROJECT`, and optionally `GOOGLE_CLOUD_LOCATION`.
 
+Gemini 3.1 Flash Live function calling is synchronous. A long Hermes task must
+therefore return a fast gateway receipt first; the Hermes `/v1/runs` worker,
+task progress, and completion notification continue outside the blocking
+Gemini tool turn.
+
 ## OpenAI
 
 ```sh
@@ -69,7 +78,7 @@ OPENAI_API_KEY=... \
 hermes-live provider-smoke
 ```
 
-The default uses `gpt-realtime-2.1`, `marin`, PCM16, and push-to-talk semantics. Change model, voice, VAD, or G.711 settings only when the target account supports them.
+The default uses `gpt-realtime-2`, `marin`, PCM16, and push-to-talk semantics. `gpt-realtime-1.5` remains available through `OPENAI_REALTIME_MODEL` when you want the faster non-reasoning Realtime path. Some OpenAI transport examples can lag the model guide, so record the exact accepted model in the receipt. Change model, voice, VAD, or G.711 settings only when the target account supports them.
 
 ## End-to-end release check
 

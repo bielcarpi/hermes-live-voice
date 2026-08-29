@@ -50,7 +50,7 @@ On success, the server sends `session.ready` followed by one or more bounded ini
   "protocolVersion": 6,
   "requestId": "start_1",
   "sessionId": "live_...",
-  "model": "gpt-realtime-2.1",
+  "model": "gpt-realtime-2",
   "hermes": {
     "model": "hermes-agent",
     "capabilities": {
@@ -62,7 +62,7 @@ On success, the server sends `session.ready` followed by one or more bounded ini
   },
   "realtime": {
     "provider": "openai",
-    "model": "gpt-realtime-2.1",
+    "model": "gpt-realtime-2",
     "audio": {
       "input": { "enabled": true, "mimeType": "audio/pcm;rate=24000", "recommendedFrameMs": 50 },
       "output": { "enabled": true, "mimeType": "audio/pcm;rate=24000" },

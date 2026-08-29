@@ -112,7 +112,7 @@ const EnvSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_REALTIME_BASE_URL: OpenAIRealtimeBaseUrlSchema.default("wss://api.openai.com/v1/realtime"),
-  OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2.1"),
+  OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
   OPENAI_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("low"),
   OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),

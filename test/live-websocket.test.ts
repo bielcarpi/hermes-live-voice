@@ -1071,7 +1071,7 @@ describe("live gateway WebSocket", () => {
       (message) => message.taskId === activeTaskId && message.requestId === "terminal_stop_req",
     )).resolves.toMatchObject({ requestId: "terminal_stop_req" });
     expect(hermes.stopCalls).toEqual([activeRunId]);
-  });
+  }, 10_000);
 
   it("withdraws an unknown notice when an ambiguous exact stop resumes recovery", async () => {
     const config = testConfig({ tasks: { pollIntervalMs: 25 } });

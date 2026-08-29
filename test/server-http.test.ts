@@ -200,7 +200,7 @@ describe("HTTP server", () => {
       supportedProtocolVersions: [3, 4, 5, 6],
       realtime: {
         provider: "openai",
-        model: "gpt-realtime-2.1",
+        model: "gpt-realtime-2",
         audio: {
           input: { enabled: true, mimeType: "audio/pcm;rate=24000", recommendedFrameMs: 50 },
           output: { enabled: true, mimeType: "audio/pcm;rate=24000" },
@@ -717,7 +717,7 @@ describe("HTTP server", () => {
           configured: true,
           injected: true,
           provider: "openai",
-          model: "gpt-realtime-2.1",
+          model: "gpt-realtime-2",
           sessionChecked: false,
         },
       },
@@ -1021,7 +1021,7 @@ function testConfig(
       retentionMs: 7 * 24 * 60 * 60 * 1_000,
       pollIntervalMs: 25,
     },
-    realtime: { provider: "openai", model: "gpt-realtime-2.1", ...overrides.realtime },
+    realtime: { provider: "openai", model: "gpt-realtime-2", ...overrides.realtime },
     local: {
       url: "ws://127.0.0.1:8765/v1/realtime",
       voice: "Aiden",
@@ -1032,7 +1032,7 @@ function testConfig(
     openai: {
       apiKey: "test",
       baseUrl: "wss://api.openai.com/v1/realtime",
-      model: "gpt-realtime-2.1",
+      model: "gpt-realtime-2",
       voice: "marin",
       reasoningEffort: "low",
       turnDetection: "disabled",

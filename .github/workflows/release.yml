@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: hermes-live-release
-  queue: max
+  cancel-in-progress: false
 
 env:
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
@@ -126,7 +126,7 @@ jobs:
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
           package_file="$(realpath "$package_file")"
-          package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(`${packageJson.name}\t${packageJson.version}`); })')"
+          package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(packageJson.name + "\t" + packageJson.version); })')"
           IFS=$'\t' read -r package_name package_version <<< "$package_metadata"
           test "$package_name" = "hermes-live-voice"
           test "$RELEASE_TAG" = "v$package_version"
@@ -134,10 +134,12 @@ jobs:
             *-*) prerelease=true ;;
             *) prerelease=false ;;
           esac
-          echo "file=$package_file" >> "$GITHUB_OUTPUT"
-          echo "name=$package_name" >> "$GITHUB_OUTPUT"
-          echo "version=$package_version" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          {
+            echo "file=$package_file"
+            echo "name=$package_name"
+            echo "version=$package_version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
       - name: Create or verify GitHub release
         run: |
           package_file="${{ steps.package.outputs.file }}"
@@ -303,7 +305,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -410,7 +412,7 @@ jobs:
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
           package_file="$(realpath "$package_file")"
-          package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(`${packageJson.name}\t${packageJson.version}`); })')"
+          package_metadata="$(tar -xOf "$package_file" package/package.json | node -e 'let data=""; process.stdin.on("data", (chunk) => data += chunk).on("end", () => { const packageJson = JSON.parse(data); process.stdout.write(packageJson.name + "\t" + packageJson.version); })')"
           IFS=$'\t' read -r package_name package_version <<< "$package_metadata"
           test "$package_name" = "hermes-live-voice"
           test "$RELEASE_TAG" = "v$package_version"
@@ -418,16 +420,20 @@ jobs:
             *-*) npm_tag=next ;;
             *) npm_tag=latest ;;
           esac
-          integrity="$(node -e 'const crypto = require("node:crypto"); const fs = require("node:fs"); process.stdout.write(`sha512-${crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64")}`);' "$package_file")"
-          echo "PACKAGE_FILE=$package_file" >> "$GITHUB_ENV"
-          echo "PACKAGE_NAME=$package_name" >> "$GITHUB_ENV"
-          echo "PACKAGE_VERSION=$package_version" >> "$GITHUB_ENV"
-          echo "NPM_TAG=$npm_tag" >> "$GITHUB_ENV"
-          echo "EXPECTED_INTEGRITY=$integrity" >> "$GITHUB_ENV"
-          echo "name=$package_name" >> "$GITHUB_OUTPUT"
-          echo "version=$package_version" >> "$GITHUB_OUTPUT"
-          echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
-          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
+          integrity="$(node -e 'const crypto = require("node:crypto"); const fs = require("node:fs"); process.stdout.write("sha512-" + crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"));' "$package_file")"
+          {
+            echo "PACKAGE_FILE=$package_file"
+            echo "PACKAGE_NAME=$package_name"
+            echo "PACKAGE_VERSION=$package_version"
+            echo "NPM_TAG=$npm_tag"
+            echo "EXPECTED_INTEGRITY=$integrity"
+          } >> "$GITHUB_ENV"
+          {
+            echo "name=$package_name"
+            echo "version=$package_version"
+            echo "npm_tag=$npm_tag"
+            echo "integrity=$integrity"
+          } >> "$GITHUB_OUTPUT"
       - name: Publish verified package with OIDC
         run: |
           package_spec="$PACKAGE_NAME@$PACKAGE_VERSION"
@@ -513,7 +519,7 @@ jobs:
           package_file="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$package_file"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
-          artifact_integrity="$(node -e 'const crypto = require("node:crypto"); const fs = require("node:fs"); process.stdout.write(`sha512-${crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64")}`);' "$package_file")"
+          artifact_integrity="$(node -e 'const crypto = require("node:crypto"); const fs = require("node:fs"); process.stdout.write("sha512-" + crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"));' "$package_file")"
           test "$artifact_integrity" = "$EXPECTED_INTEGRITY"
 
           package_spec="$PACKAGE_NAME@$PACKAGE_VERSION"

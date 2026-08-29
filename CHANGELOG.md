@@ -2,8 +2,66 @@
 
 ## Unreleased
 
+## 1.0.2 - 2026-08-29
+
 - Tighten the README around the core workflow: keep talking while Hermes runs background work, with a provider quick path and a static Dashboard preview.
+- Align package discovery keywords with the stricter Hermes, voice-gateway, and Dashboard-plugin positioning.
 - Add a text-only workflow transcript and public roadmap items for adoption-focused contributor work.
+- Add an upstream integration RFC, upstream comment drafts, and provider compatibility receipt template for maintainer-facing review.
+- Declare the Hermes plugin's v2 review metadata, optional gateway environment variables, Python dependencies, plugin-local license/security pointers, review boundary, and local manifest smoke for scanner-friendly review.
+- Add a provider compatibility issue template so users can share live-provider evidence without leaking private audio, prompts, secrets, or task results.
+- Document the pinned Hermes plugin-only install path for reviewers while keeping npm setup as the normal gateway runtime install.
+- Clarify that direct Hermes subdirectory plugin installs are pinned review
+  installs, while npm setup and `hermes-live upgrade` remain the normal managed
+  gateway update path.
+- Document provider-doc alignment for the upstream integration path, including Gemini's synchronous function-calling constraint and the fast-receipt `/v1/runs` design.
+- Add a community sharing guide, Hermes plugin-index submission draft, current listing status, and refreshed launch sequence for an evidence-bounded Hermes-focused community launch without generic launch sites or broad cross-posting.
+- Add copy-ready community issue drafts for provider receipts, Dashboard screenshots, and Linux local-runtime research so first contributors have narrow, evidence-oriented entry points.
+- Add a maintainer readiness smoke check that keeps package counts, docs counts, version parity, and launch-boundary evidence synchronized with the current release candidate.
+- Add a checked plugin-index entry generator so bare-name install metadata is derived from the package and plugin manifest instead of hand-edited.
+- Add a positioning smoke check that fails false official claims, Saturday-specific public copy, and stale broad package keywords.
+- Add a maintainer readiness audit that separates proven local quality from live-provider evidence and upstream acceptance still required before any official claim.
+- Add a maintainer review packet with the exact review question, PR body, proven evidence, non-proven claims, and post-release sequence.
+- Add `npm run audit:public-launch` as an external go/no-go check for public
+  release state, GitHub description/topics/homepage, Issues, Discussions, npm
+  latest version, and required branch-protection checks before outreach.
+- Add `npm run audit:upstream-readiness` as a read-only external gate for
+  Hermes upstream issue state, `hermes-talk` coordination, plugin-index
+  availability, public release state, and maintainer-acceptance blockers.
+- Add `npm run check:scripts` to syntax-check JavaScript maintenance scripts,
+  including release and external audit helpers, as part of `npm run verify`.
+- Add `npm run check:external-audits` to fixture-check public launch and
+  upstream readiness audit behavior, including expected stale-metadata,
+  missing-branch-check, and absent-maintainer-acceptance failures.
+- Add a measured 100-star adoption plan grounded in peer Hermes/plugin/realtime
+  repo patterns, with launch gates, expected channels, and anti-manipulation
+  rules.
+- Document the exact required branch-protection checks for the v1.0.2 public
+  outreach gate.
+- Clarify the upstream relationship with existing realtime voice work,
+  especially `hermes-talk`, and separate core-hosted, surface-hosted, and
+  gateway-hosted realtime transport topologies.
+- Refresh `@google/genai` from 2.18.0 to 2.19.0 and keep the same-major Gemini SDK path under verification.
+- Refresh the OpenAI Realtime default model from an obsolete reasoning-preview
+  example to the current documented `gpt-realtime-2` default, while preserving
+  explicit `gpt-realtime-1.5` configuration support and documenting the provider
+  docs' model-name inconsistency in the release evidence.
+- Refresh CodeQL and Docker Buildx action pins to match the current green Dependabot maintenance PR.
+- Add a pinned OpenSSF Scorecard workflow for repository-level open-source security health reporting.
+- Add a pinned `workflow-lint` CI job that installs `rhysd/actionlint` v1.7.12 from a SHA256-verified release archive.
+- Add a workflow pin smoke check so external GitHub Actions must stay pinned to
+  full commit SHAs.
+- Replace the invalid release workflow `concurrency.queue` key with explicit non-cancelling release concurrency.
+- Give the Windows-heavy task-stop race test an explicit timeout after the public v1.0.1 CI run exceeded Vitest's default by a small margin.
+- Add a 1280x640 PNG social preview asset for GitHub repository settings.
+- Document `verify-windows` as a required branch-protection launch gate.
+- Add `actionlint` to the contributor and pull-request workflow-change checklist.
+- Add a blocked provider receipt for the current local environment and wire the plugin-local manifest contract smoke into `npm run verify`.
+- Strengthen Hugging Face realtime adapter close coverage around idempotent close, the normal provider close frame, and the local pipeline reuse grace window.
+- Make the upstream-Hermes evidence boundary explicit: pinned deterministic fixtures cover Hermes Agent 0.20.0, while current-upstream claims need a refreshed fixture or latest-image compatibility workflow.
+- Make explicit floating Hermes compatibility image checks pull before testing and give large image downloads enough time to finish.
+- Verify the current floating Hermes image after a forced pull; it reports Hermes Agent v0.20.6 and passes the existing capabilities plus plugin discovery smoke.
+- Tighten PR and CODEOWNERS review boundaries around realtime provider changes, the bundled plugin, package metadata, release workflow, and security docs.
 
 ## 1.0.1 - 2026-08-25
 
@@ -170,7 +228,7 @@
 - Add `hermes-live terminal` and its `chat` alias for persistent remote/headless text control with transcripts, task progress, approvals, `/interrupt`, `/stop`, and safe exit behavior.
 - Package the Dashboard frontend/backend assets and browser client in plugin, npm tarball, and Docker runtime outputs, with generated-asset parity and smoke checks.
 - Make the Hermes Dashboard integration the recommended UI, add the persistent terminal as a first-class headless surface, document the secure browser SDK/relay path for community UIs, clarify Hermes Voice Mode and generic OpenAI-compatible UI boundaries, and add a real Dashboard screenshot.
-- Align the Docker Compose OpenAI Realtime default with `gpt-realtime-2.1`.
+- Align the Docker Compose OpenAI Realtime default with the then-current reasoning model.
 - Make tagged release jobs fail when the Git tag does not match `package.json` or point at the exact protected `main` commit.
 
 ## 0.2.1 - 2026-07-13
@@ -183,7 +241,7 @@
 ## 0.2.0 - 2026-07-12
 
 - Reposition the project as the realtime custom-client bridge for Hermes Agent, with a marketing-first README, honest Voice Mode comparison, provider compatibility roadmap, support guide, and release runbook.
-- Default OpenAI Realtime sessions to the currently documented `gpt-realtime-2.1` model.
+- Default OpenAI Realtime sessions to the then-current documented reasoning model.
 - Add a documented `gpt-live-1` compatibility watchlist without claiming current API availability.
 - Make Hermes memory identity server-owned by default; client-selected `profileId` and `userLabel` now require `HERMES_LIVE_TRUST_CLIENT_IDENTITY=true`.
 - Default Hermes run events to an allowlisted summary, with explicit `summary`, `none`, and trusted-development `raw` policies.

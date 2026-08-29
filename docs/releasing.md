@@ -24,11 +24,19 @@ Release notes must distinguish:
    - `plugins/hermes-live/plugin.yaml`
    - `plugins/hermes-live/dashboard/manifest.json`
 3. Confirm provider defaults against current official documentation.
-4. From a clean checkout, run:
+4. Check the current upstream Hermes Agent release. If it differs from the
+   pinned fixture, either refresh the fixture or record a successful
+   latest-image compatibility workflow before making current-upstream claims.
+5. From a clean checkout, run:
 
    ```sh
    npm ci
    npm run verify
+   npm run check:scripts
+   npm run check:external-audits
+   npm run check:workflow-pins
+   npm run check:positioning
+   npm run check:maintainer-readiness
    npm run check:hermes-compatibility
    node dist/cli.js launch-check
    npm audit --audit-level=moderate
@@ -36,17 +44,47 @@ Release notes must distinguish:
    docker build -t hermes-live-voice:release .
    ```
 
-5. Run `npm run check:live-provider` for each changed provider handshake/default model and record provider, model, region when relevant, date, and outcome. For event-only adapter changes, record the official contract and deterministic fixture instead.
-6. Install the packed tarball in a clean temporary directory and run CLI/plugin/mock smokes.
-7. Confirm `git status --short` is empty and every required GitHub check is green.
+6. Run `npm run check:live-provider` for each changed provider handshake/default model and record provider, model, region when relevant, date, and outcome with the [provider compatibility receipt template](provider-compatibility-receipt-template.md). For event-only adapter changes, record the official contract and deterministic fixture instead.
+7. Install the packed tarball in a clean temporary directory and run CLI/plugin/mock smokes.
+8. Generate the pinned plugin-index entry from the verified commit. Submit it
+   only after checking whether the canonical Hermes index is published or a
+   temporary index is still the maintainer-accepted path:
+
+   ```sh
+   PLUGIN_INDEX_REF="$(git rev-parse HEAD)" node scripts/plugin-index-entry.mjs
+   ```
+
+9. After release publication and GitHub metadata updates, run the external
+   launch gate:
+
+   ```sh
+   npm run audit:public-launch
+   ```
+
+   This command reads GitHub and npm state. It is intentionally not part of
+   `npm run verify`, and it should fail until the reviewed release, launch
+   topics, and required branch-protection checks are public.
+10. Before upstream or official-facing outreach, run the read-only upstream
+    gate:
+
+   ```sh
+   npm run audit:upstream-readiness -- --report-only
+   ```
+
+   This command reads live Hermes upstream issues, the `hermes-talk` docs PR,
+   plugin-index availability, and public project release state. It is expected
+   to report blockers until maintainers accept an external gateway/docs path.
+11. Confirm `git status --short` is empty and every required GitHub check is green.
 
 ## Release Proof Gate
 
 Before tagging a stable release, record evidence for:
 
+- branch protection that requires workflow lint, Linux verify, Windows verify,
+  CodeQL, and dependency review for `main`.
 - `hermes-live launch-check` with a real provider and exact Hermes worker output.
 - real Hermes submission, SSE completion, retained result, and exact stop.
-- the pinned official Hermes v0.20.0 image, required capabilities, and plugin discovery.
+- the pinned official Hermes v0.20.0 image, required capabilities, plugin discovery, and a current latest-image check when upstream has moved beyond the pinned baseline.
 - immediate receipt and a second conversation turn while a task remains active.
 - default exclusive serialization plus opt-in disjoint read-only concurrency.
 - client detach/reconnect with snapshot and notification deduplication.
@@ -56,6 +94,20 @@ Before tagging a stable release, record evidence for:
 - a persistent Docker state volume with non-root/read-only hardening.
 - live session smoke for each changed provider handshake/default, plus official event fixtures and deterministic adapter coverage for event-only normalization changes.
 - browser/Dashboard/terminal and clean-package installation smokes.
+- pinned Hermes plugin-index entry generation for `plugins/hermes-live`.
+- script syntax smoke for JavaScript maintenance scripts, including release and
+  external audit helpers.
+- external audit fixture smoke for the public launch and upstream readiness
+  scripts, including expected pass and failure states.
+- positioning smoke for community, non-official, non-Saturday public copy.
+- workflow pin smoke for immutable external GitHub Action references.
+- public launch audit for release, GitHub metadata, topics, npm latest version,
+  and required branch-protection checks.
+- upstream readiness audit for maintainer acceptance, canonical plugin-index
+  availability, and non-competitive coordination with existing realtime voice
+  work.
+- maintainer readiness smoke so package counts, docs counts, version parity,
+  and launch-boundary evidence stay synchronized.
 
 Repeat the gate on the final commit and complete an appropriate soak window. Keep recent live evidence for every advertised provider, and record any account, quota, region, or model-access blocker without relabeling it as a pass. Document manual audio/device coverage; tests cannot prove microphones, autoplay, perceived latency, or provider speech quality on untested hardware.
 
