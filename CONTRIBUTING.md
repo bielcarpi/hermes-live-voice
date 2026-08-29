@@ -94,6 +94,11 @@ If a change touches Gemini Live or OpenAI Realtime, include normalized event fix
 - a successful `npm run check:live-provider`; or
 - why a credentialed test was not possible and which deterministic fixtures cover the change.
 
+Use the [provider compatibility receipt template](docs/provider-compatibility-receipt-template.md)
+or the provider compatibility issue template when sharing live evidence.
+Blocked or failing receipts belong in `docs/provider-receipts/` only when they
+document a release-relevant environment or provider change.
+
 Never include credentials, session tokens, private prompts, user audio, or sensitive Hermes tool output in fixtures or pull-request logs.
 
 ## Public API and documentation
@@ -103,6 +108,11 @@ Never include credentials, session tokens, private prompts, user audio, or sensi
 - Add user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 - Do not claim model support until the compatibility gates in [live provider testing](docs/live-provider-testing.md) pass.
 - Keep product claims specific and consistent with the documented recovery and security boundaries.
+- `npm run check:positioning` must pass. Public copy must not claim official
+  NousResearch/Hermes status before explicit maintainer approval.
+- `npm run check:maintainer-readiness` must pass when release-readiness,
+  launch, package, or maintainer-facing documentation changes.
+- Run `actionlint` when changing GitHub Actions workflows.
 
 ## Dependency updates
 
@@ -117,6 +127,7 @@ Major updates to `@google/genai`, `zod`, TypeScript, Vitest, or a realtime model
 - [ ] `npm audit --audit-level=moderate` passes.
 - [ ] Tests cover the changed behavior.
 - [ ] Public protocol/config changes are documented.
+- [ ] Workflow changes pass `actionlint`.
 - [ ] `CHANGELOG.md` is updated when users are affected.
 - [ ] No credentials or sensitive Hermes data are present.
 - [ ] No unrelated generated or vendored code is included.

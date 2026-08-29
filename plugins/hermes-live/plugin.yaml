@@ -1,8 +1,36 @@
 name: hermes-live
-version: 1.0.1
-description: "Continuous realtime voice for Hermes Agent while background work runs and reports back."
+version: 1.0.2
+manifest_version: 2
+api_version: 1
+label: Hermes Live Voice
+description: "Continuous realtime voice for Hermes Agent. Talk while Hermes runs background tasks."
 author: Biel Carpi and Hermes Live contributors
+license: MIT
+homepage: https://github.com/bielcarpi/hermes-live-voice
 kind: standalone
+tags:
+  - realtime-voice
+  - voice-gateway
+  - hermes-dashboard
+  - background-tasks
+  - self-hosted
+python_dependencies:
+  - "fastapi>=0.100,<1"
+  - "httpx>=0.27,<1"
+  - "websockets>=15,<16"
+optional_env:
+  - name: HERMES_LIVE_URL
+    description: "Companion gateway HTTP origin override. Must not include credentials, path, query, or fragment."
+    secret: false
+  - name: HERMES_LIVE_AUTH_TOKEN
+    description: "Bearer token for the companion gateway. Normal setup stores this in the managed config file."
+    secret: true
+  - name: HERMES_LIVE_CONFIG_FILE
+    description: "Path to a managed Hermes Live config.env file. Usually omitted."
+    secret: false
+  - name: HERMES_HOME
+    description: "Hermes home directory used to locate the managed Hermes Live config file."
+    secret: false
 provides_tools:
   - hermes_live_status
 provides_commands:

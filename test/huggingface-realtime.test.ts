@@ -365,7 +365,7 @@ describe("Hugging Face speech-to-speech adapter", () => {
     expect(String(onError.mock.calls[0]?.[0])).toContain("exceeded 30ms");
   });
 
-  it("waits briefly after socket close so the single upstream pipeline can be reused", async () => {
+  it("closes local sessions idempotently and waits for pipeline reuse", async () => {
     const harness = await createHarness();
     const session = await new HuggingFaceRealtimeAdapter(
       { ...localConfig(), url: harness.url },
@@ -380,8 +380,12 @@ describe("Hugging Face speech-to-speech adapter", () => {
     });
 
     const startedAt = Date.now();
-    await session.close();
+    const firstClose = session.close();
+    expect(session.close()).toBe(firstClose);
+    const [providerClose] = await Promise.all([harness.waitForClose(), firstClose]);
 
+    expect(providerClose).toEqual({ code: 1000, reason: "session closed" });
+    expect(harness.closeEvents).toHaveLength(1);
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30);
   });
 
@@ -1104,6 +1108,8 @@ async function createHarness(): Promise<{
   messages: any[];
   requestUrl?: string;
   authorization?: string;
+  closeEvents: Array<{ code: number; reason: string }>;
+  waitForClose(): Promise<{ code: number; reason: string }>;
   send(value: unknown): void;
 }> {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -1117,20 +1123,33 @@ async function createHarness(): Promise<{
     messages: any[];
     requestUrl?: string;
     authorization?: string;
+    closeEvents: Array<{ code: number; reason: string }>;
+    waitForClose(): Promise<{ code: number; reason: string }>;
     send(value: unknown): void;
   } = {
     url: `ws://127.0.0.1:${address.port}/v1/realtime`,
     messages: [],
+    closeEvents: [],
+    waitForClose: () => closed,
     send(value) {
       if (!socket) throw new Error("Test client is not connected.");
       socket.send(JSON.stringify(value));
     },
   };
+  let resolveClosed!: (event: { code: number; reason: string }) => void;
+  const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+    resolveClosed = resolve;
+  });
   server.on("connection", (client, request) => {
     socket = client;
     state.requestUrl = request.url;
     state.authorization = request.headers.authorization;
     client.on("message", (raw) => state.messages.push(JSON.parse(raw.toString("utf8"))));
+    client.on("close", (code, reason) => {
+      const event = { code, reason: reason.toString("utf8") };
+      state.closeEvents.push(event);
+      resolveClosed(event);
+    });
     client.send(JSON.stringify({ type: "session.created", session: { id: "local_test", type: "realtime" } }));
   });
   return state;

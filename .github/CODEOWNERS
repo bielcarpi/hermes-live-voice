@@ -6,5 +6,14 @@
 /src/application/live-gateway/ @bielcarpi
 /src/application/task-supervisor/ @bielcarpi
 /src/domain/tasks/ @bielcarpi
+/plugins/hermes-live/ @bielcarpi
+/scripts/hermes-compatibility-smoke.mjs @bielcarpi
+/scripts/maintainer-readiness-smoke.mjs @bielcarpi
+/scripts/plugin-index-entry.mjs @bielcarpi
+/scripts/positioning-smoke.mjs @bielcarpi
+/package.json @bielcarpi
+/package-lock.json @bielcarpi
 /.github/workflows/ @bielcarpi
 /SECURITY.md @bielcarpi
+/docs/security.md @bielcarpi
+/docs/releasing.md @bielcarpi

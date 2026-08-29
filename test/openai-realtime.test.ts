@@ -276,7 +276,7 @@ describe("OpenAI Realtime adapter helpers", () => {
     });
     expect(semanticVad.session).toMatchObject({
       type: "realtime",
-      model: "gpt-realtime-2.1",
+      model: "gpt-realtime-2",
       reasoning: { effort: "low" },
       parallel_tool_calls: false,
       tool_choice: "auto",
@@ -2204,7 +2204,7 @@ function testOpenAIConfig(
 ): Parameters<typeof buildOpenAISessionUpdate>[0] {
   return {
     baseUrl: "wss://api.openai.com/v1/realtime",
-    model: "gpt-realtime-2.1",
+  model: "gpt-realtime-2",
     voice: "marin",
     reasoningEffort: "low",
     turnDetection: "disabled",

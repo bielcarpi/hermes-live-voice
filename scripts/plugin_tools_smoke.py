@@ -146,7 +146,7 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
                 "websocket": {"path": "/v1/live", "protocol": "json-base64-audio", "secret": reflected_secret},
                 "realtime": {
                     "provider": "openai",
-                    "model": "gpt-realtime-2.1",
+                    "model": "gpt-realtime-2",
                     "audio": {
                         "input": {"enabled": True, "mimeType": "audio/pcm;rate=24000", "secret": reflected_secret},
                         "output": {"enabled": True, "mimeType": "audio/pcm;rate=24000"},
@@ -217,7 +217,7 @@ def _check_probe_sanitization_and_auth(tools: Any) -> None:
                         "ok": True,
                         "configured": True,
                         "provider": "openai",
-                        "model": "gpt-realtime-2.1",
+                        "model": "gpt-realtime-2",
                         "baseUrl": f"https://{reflected_secret}@api.example",
                     },
                     "tasks": {

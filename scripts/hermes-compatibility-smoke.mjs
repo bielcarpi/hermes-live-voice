@@ -8,16 +8,21 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
-const image = process.env.HERMES_COMPATIBILITY_IMAGE
+const configuredImage = process.env.HERMES_COMPATIBILITY_IMAGE;
+const image = configuredImage
   ?? "nousresearch/hermes-agent:v2026.8.3@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e";
 const expectedVersion = process.env.HERMES_COMPATIBILITY_EXPECTED_VERSION ?? "0.20.0";
 const suffix = `${process.pid}-${Date.now()}`;
 const container = `hermes-live-compat-${suffix}`;
 const volume = `hermes-live-compat-${suffix}`;
 const apiKey = "hermes-live-compatibility-test-key";
+let containerStarted = false;
 
 try {
   await docker(["version", "--format", "{{.Server.Version}}"]);
+  if (configuredImage && !configuredImage.includes("@sha256:")) {
+    await docker(["pull", configuredImage], { timeout: 600_000 });
+  }
   await docker(["volume", "create", volume]);
   await docker([
     "run",
@@ -32,6 +37,7 @@ try {
     image,
     "hermes", "gateway", "run", "--no-supervise",
   ]);
+  containerStarted = true;
 
   const capabilities = await waitForCapabilities();
   assertCapabilities(capabilities);
@@ -76,8 +82,10 @@ try {
     `Hermes compatibility smoke ok: Agent v${version}, current capabilities, and agent/Dashboard plugin v${plugin.version}.`,
   );
 } catch (error) {
-  const logs = await docker(["logs", "--tail", "160", container], { allowFailure: true });
-  if (logs.trim()) process.stderr.write(`\nHermes container logs:\n${logs.trim()}\n`);
+  if (containerStarted) {
+    const logs = await docker(["logs", "--tail", "160", container], { allowFailure: true });
+    if (logs.trim()) process.stderr.write(`\nHermes container logs:\n${logs.trim()}\n`);
+  }
   throw error;
 } finally {
   await docker(["rm", "--force", container], { allowFailure: true });
@@ -147,7 +155,7 @@ async function docker(args, options = {}) {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
-      timeout: 120_000,
+      timeout: options.timeout ?? 120_000,
     });
     const normalized = { code: 0, stdout: result.stdout, stderr: result.stderr };
     return options.result ? normalized : `${result.stdout}${result.stderr}`;
