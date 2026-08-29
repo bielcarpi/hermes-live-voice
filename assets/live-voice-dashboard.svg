@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes Live Voice Dashboard preview</title>
+  <desc id="desc">A static preview of the Hermes Dashboard Live Voice tab with a connected voice session, a task inbox, and realtime provider status.</desc>
+  <defs>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1016"/>
+      <stop offset="1" stop-color="#121923"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="680" rx="0" fill="#080b10"/>
+  <rect x="56" y="44" width="1088" height="592" rx="18" fill="url(#screen)" stroke="#273340" filter="url(#shadow)"/>
+
+  <rect x="56" y="44" width="1088" height="54" rx="18" fill="#0d131a"/>
+  <path d="M56 80h1088" stroke="#273340"/>
+  <circle cx="86" cy="71" r="6" fill="#f87171"/>
+  <circle cx="110" cy="71" r="6" fill="#fbbf24"/>
+  <circle cx="134" cy="71" r="6" fill="#34d399"/>
+  <text x="172" y="77" fill="#d8e1ec" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="700">Hermes Dashboard</text>
+  <text x="970" y="77" fill="#93a4b8" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">protocol v6</text>
+
+  <rect x="86" y="126" width="218" height="482" rx="10" fill="#0c1219" stroke="#24313f"/>
+  <text x="112" y="162" fill="#7dd3fc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="700" letter-spacing="1">HERMES</text>
+  <text x="112" y="203" fill="#d8e1ec" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="700">Live Voice</text>
+  <text x="112" y="236" fill="#93a4b8" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">Saved chats</text>
+  <text x="112" y="270" fill="#93a4b8" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">Task inbox</text>
+  <text x="112" y="304" fill="#93a4b8" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">Settings</text>
+  <rect x="112" y="510" width="166" height="42" rx="8" fill="#13202b" stroke="#2f4050"/>
+  <circle cx="135" cy="531" r="7" fill="#34d399"/>
+  <text x="152" y="536" fill="#d8e1ec" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="700">Gateway ready</text>
+
+  <rect x="332" y="126" width="500" height="482" rx="10" fill="#0c1219" stroke="#24313f"/>
+  <text x="362" y="164" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="26" font-weight="800">Live Voice</text>
+  <rect x="662" y="140" width="130" height="32" rx="16" fill="#103523" stroke="#1d6b45"/>
+  <circle cx="683" cy="156" r="6" fill="#34d399"/>
+  <text x="700" y="161" fill="#a7f3d0" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="700">Connected</text>
+
+  <rect x="362" y="204" width="190" height="36" rx="8" fill="#182330" stroke="#344456"/>
+  <text x="382" y="227" fill="#d8e1ec" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">Saved chat: release</text>
+  <rect x="562" y="204" width="230" height="36" rx="8" fill="#141b24" stroke="#2b3847"/>
+  <text x="582" y="227" fill="#9fb0c2" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">Provider: OpenAI Realtime</text>
+
+  <rect x="362" y="270" width="400" height="74" rx="10" fill="#121a23" stroke="#283545"/>
+  <text x="386" y="300" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">You</text>
+  <text x="386" y="326" fill="#b8c4d2" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">Audit this repo in the background.</text>
+
+  <rect x="404" y="362" width="358" height="96" rx="10" fill="#172232" stroke="#31465f"/>
+  <text x="428" y="392" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">Hermes Live</text>
+  <text x="428" y="418" fill="#b8c4d2" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">Started task_8f3a... You can keep talking.</text>
+  <text x="428" y="444" fill="#7dd3fc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">Hermes run is active</text>
+
+  <rect x="362" y="498" width="430" height="58" rx="29" fill="#0f1720" stroke="#344456"/>
+  <rect x="380" y="516" width="22" height="22" rx="11" fill="#22c55e"/>
+  <rect x="414" y="523" width="248" height="8" rx="4" fill="#223244"/>
+  <rect x="414" y="523" width="168" height="8" rx="4" fill="#7dd3fc"/>
+  <text x="686" y="534" fill="#9fb0c2" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Listening</text>
+
+  <rect x="860" y="126" width="254" height="482" rx="10" fill="#0c1219" stroke="#24313f"/>
+  <text x="888" y="164" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="800">Task Inbox</text>
+  <rect x="888" y="202" width="198" height="108" rx="10" fill="#13202b" stroke="#315067"/>
+  <text x="910" y="232" fill="#d8e1ec" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">Repository audit</text>
+  <text x="910" y="260" fill="#7dd3fc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">running</text>
+  <text x="910" y="286" fill="#93a4b8" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">tool activity sanitized</text>
+
+  <rect x="888" y="330" width="198" height="98" rx="10" fill="#101821" stroke="#283545"/>
+  <text x="910" y="360" fill="#d8e1ec" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">Release plan</text>
+  <text x="910" y="388" fill="#34d399" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">completed</text>
+  <text x="910" y="414" fill="#93a4b8" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">result retained</text>
+
+  <rect x="888" y="466" width="198" height="58" rx="10" fill="#171f2a" stroke="#344456"/>
+  <text x="910" y="500" fill="#d8e1ec" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">Reconnect-safe notices</text>
+</svg>

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Tighten the README around the core workflow: keep talking while Hermes runs background work, with a provider quick path and a static Dashboard preview.
+- Add a text-only workflow transcript and public roadmap items for adoption-focused contributor work.
+
 ## 1.0.1 - 2026-08-25
 
 - Add the community sharing guide with canonical descriptions, community posting guidance, and directory refresh text for the v1.0.1 distribution push.
