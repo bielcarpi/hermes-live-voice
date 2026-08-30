@@ -34,30 +34,6 @@ const requiredSnippets = [
       "Hermes keeps its memory, tools, skills, MCP servers, and execution environment.",
     ],
   },
-  {
-    file: "docs/launch-kit.md",
-    snippets: [
-      "Keep outreach copy evidence-bounded and focused on Hermes builders.",
-      "Avoid claiming official NousResearch status. This is a community MIT project.",
-      "Generic launch and social communities that are not Hermes-specific.",
-    ],
-  },
-  {
-    file: "docs/maintainer-readiness-audit.md",
-    snippets: [
-      "not yet as an official Hermes integration",
-      "Do not use stronger wording unless maintainers approve it in writing.",
-      "Live-provider evidence is complete. | Not proven",
-    ],
-  },
-  {
-    file: "docs/upstream-integration-rfc.md",
-    snippets: [
-      "not a fork of Hermes Agent and not a provider SDK bundle inside Hermes core",
-      "Do not use stronger wording such as \"official NousResearch distribution\"",
-      "Avoid asking for official status in the first comment.",
-    ],
-  },
 ];
 
 for (const requirement of requiredSnippets) {
@@ -88,7 +64,6 @@ const forbiddenPublicClaims = [
   /\bofficially\s+recommended\b/iu,
   /\brecommended\s+realtime\s+voice\s+plugin\b/iu,
   /\bproduction[- ]ready\s+for\s+every\s+provider\b/iu,
-  /\bSaturday\b/u,
 ];
 
 for (const file of publicPositioningFiles) {
@@ -115,12 +90,27 @@ for (const expected of [
   }
 }
 
+const socialPreview = readFileSync(resolve(root, "assets/social-preview.png"));
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+if (!socialPreview.subarray(0, pngSignature.length).equals(pngSignature)) {
+  failures.push("assets/social-preview.png must be a PNG file");
+} else {
+  const width = socialPreview.readUInt32BE(16);
+  const height = socialPreview.readUInt32BE(20);
+  if (width !== 1280 || height !== 640) {
+    failures.push(`assets/social-preview.png must be 1280x640, got ${width}x${height}`);
+  }
+}
+if (socialPreview.byteLength >= 1_000_000) {
+  failures.push("assets/social-preview.png must stay under GitHub's 1 MB limit");
+}
+
 if (failures.length > 0) {
   console.error(`Positioning smoke failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);
   process.exit(1);
 }
 
-console.log("Positioning smoke ok: public claims, plugin metadata, and launch boundaries verified.");
+console.log("Positioning smoke ok: public claims, plugin metadata, and social preview verified.");
 
 function read(relativePath) {
   return readFileSync(resolve(root, relativePath), "utf8");

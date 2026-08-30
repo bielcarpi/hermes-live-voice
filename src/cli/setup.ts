@@ -184,9 +184,6 @@ export async function runSetup(
     HERMES_LIVE_PROVIDER: provider,
     HERMES_LIVE_HOST: inherited.HERMES_LIVE_HOST ?? "127.0.0.1",
     HERMES_LIVE_PORT: env.PORT ?? inherited.HERMES_LIVE_PORT ?? String(DEFAULT_GATEWAY_PORT),
-    // Everyday installs use the authenticated Dashboard plugin. Keep the
-    // separate browser demo closed unless an operator deliberately enabled it.
-    HERMES_LIVE_DEMO_ENABLED: inherited.HERMES_LIVE_DEMO_ENABLED ?? "false",
   };
   delete values.HERMES_API_KEY;
 
@@ -791,7 +788,6 @@ function parseLegacyEnvironment(source: string): Record<string, string | undefin
     "HERMES_AGENT_API_SERVER_KEY",
     "HERMES_API_KEY",
     "HERMES_BASE_URL",
-    "HERMES_LIVE_DEMO_ENABLED",
     "HERMES_LIVE_HOST",
     "HERMES_LIVE_LOCAL_ALLOW_REMOTE",
     "HERMES_LIVE_LOCAL_URL",

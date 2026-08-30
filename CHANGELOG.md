@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remove the standalone browser demo, demo flag, static-file serving path, and `browser_demo` capability.
+- Keep old managed configs compatible with the removed `HERMES_LIVE_DEMO_ENABLED` key.
+- Remove public launch plans, outreach drafts, historical readiness audits, and their prose-enforcement scripts.
+- Limit the npm package to runtime files and operator documentation. Contributor, release, roadmap, and transcript files remain in the source repository.
+- Replace the illustrative Dashboard preview with a real, sanitized capture from the bundled plugin running in Hermes Agent v0.20.6.
+
 ## 1.0.2 - 2026-08-29
 
 - Tighten the README around the core workflow: keep talking while Hermes runs background work, with a provider quick path and a static Dashboard preview.
@@ -19,7 +25,7 @@
 - Add copy-ready community issue drafts for provider receipts, Dashboard screenshots, and Linux local-runtime research so first contributors have narrow, evidence-oriented entry points.
 - Add a maintainer readiness smoke check that keeps package counts, docs counts, version parity, and launch-boundary evidence synchronized with the current release candidate.
 - Add a checked plugin-index entry generator so bare-name install metadata is derived from the package and plugin manifest instead of hand-edited.
-- Add a positioning smoke check that fails false official claims, Saturday-specific public copy, and stale broad package keywords.
+- Add a positioning smoke check that fails false official claims, unrelated product copy, and stale broad package keywords.
 - Add a maintainer readiness audit that separates proven local quality from live-provider evidence and upstream acceptance still required before any official claim.
 - Add a maintainer review packet with the exact review question, PR body, proven evidence, non-proven claims, and post-release sequence.
 - Add `npm run audit:public-launch` as an external go/no-go check for public

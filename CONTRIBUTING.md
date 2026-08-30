@@ -36,7 +36,7 @@ npm ci
 npm run verify
 ```
 
-`npm run verify` covers TypeScript, web-demo syntax, plugin syntax, unit tests, build output, CLI/gateway smokes, fake Hermes HTTP/SSE integration, and packed-package installation.
+`npm run verify` covers TypeScript, browser-client syntax, plugin syntax, unit tests, build output, CLI/gateway smokes, fake Hermes HTTP/SSE integration, and packed-package installation.
 
 Use `HERMES_LIVE_PROVIDER=mock` for deterministic gateway work. Real provider credentials are never required by default CI.
 
@@ -110,8 +110,6 @@ Never include credentials, session tokens, private prompts, user audio, or sensi
 - Keep product claims specific and consistent with the documented recovery and security boundaries.
 - `npm run check:positioning` must pass. Public copy must not claim official
   NousResearch/Hermes status before explicit maintainer approval.
-- `npm run check:maintainer-readiness` must pass when release-readiness,
-  launch, package, or maintainer-facing documentation changes.
 - Run `actionlint` when changing GitHub Actions workflows.
 
 ## Dependency updates

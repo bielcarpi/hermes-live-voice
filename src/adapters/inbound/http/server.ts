@@ -1,9 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 import type { Duplex } from "node:stream";
-import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import {
   assertGatewayExposureConfig,
@@ -22,7 +21,6 @@ import { createLiveModelAdapter } from "../../outbound/realtime/factory.js";
 import { FileTaskStore } from "../../outbound/task-store/file-task-store.js";
 import type { Logger } from "../../../logger.js";
 import { buildReadinessReport } from "../../../readiness.js";
-import { serveStatic } from "./static.js";
 import { WebSocketClientConnection } from "./websocket-client-connection.js";
 import { errorToMessage } from "../../../domain/error-message.js";
 import {
@@ -132,8 +130,6 @@ export async function startServer({
     if (signal?.aborted) throw startupAbortError(signal);
     throw error;
   }
-  const demoRoot = resolveDemoRoot();
-  const browserClientRoot = resolveBrowserClientRoot();
   const sessions = new Set<LiveGatewaySession>();
 
   const server = createServer(async (req, res) => {
@@ -142,8 +138,6 @@ export async function startServer({
         config,
         hermes,
         taskSupervisor,
-        demoRoot,
-        browserClientRoot,
         requireHermesApiKey: !providedHermes,
         requireRealtimeProviderConfig: !providedLiveModel,
       });
@@ -384,8 +378,6 @@ async function handleHttp(
     config: AppConfig;
     hermes: HermesRunsPort;
     taskSupervisor: TaskSupervisorRuntime;
-    demoRoot: string;
-    browserClientRoot: string;
     requireHermesApiKey: boolean;
     requireRealtimeProviderConfig: boolean;
   },
@@ -488,7 +480,6 @@ async function handleHttp(
         hermes_approval_fallback_deny_all: approvals.fallback === "deny_all_then_stop",
         hermes_approval_fallback_stops_run: true,
         hermes_approval_requires_targeted_response: true,
-        browser_demo: options.config.server.demoEnabled,
         optional_hermes_plugin: true,
       },
     });
@@ -545,16 +536,6 @@ async function handleHttp(
       return;
     }
     methodNotAllowed(req, res, "GET, HEAD, POST");
-    return;
-  }
-  if (options.config.server.demoEnabled && serveStatic(req, res, { root: options.demoRoot })) {
-    return;
-  }
-  if (
-    options.config.server.demoEnabled &&
-    (url.pathname === "/hermes-live-client.js" || url.pathname === "/mic-worklet.js") &&
-    serveStatic(req, res, { root: options.browserClientRoot })
-  ) {
     return;
   }
   json(req, res, 404, { status: "not_found" });
@@ -773,16 +754,6 @@ function clientWebSocketMaxPayload(config: AppConfig): number {
   const base64AudioBytes = Math.ceil((config.server.maxAudioBytes * 4) / 3);
   const textBytes = config.server.maxTextChars * 6;
   return Math.max(base64AudioBytes, textBytes) + 4096;
-}
-
-function resolveDemoRoot(): string {
-  const current = dirname(fileURLToPath(import.meta.url));
-  return join(current, "..", "..", "..", "..", "apps", "web-demo");
-}
-
-function resolveBrowserClientRoot(): string {
-  const current = dirname(fileURLToPath(import.meta.url));
-  return join(current, "..", "..", "..", "..", "clients", "browser");
 }
 
 function listenHttpServer(server: ReturnType<typeof createServer>, port: number, host: string): Promise<void> {

@@ -49,6 +49,8 @@ try {
     ".env.example",
     "assets/architecture.svg",
     "assets/banner.svg",
+    "assets/huggingface-realtime-entry.py",
+    "assets/live-voice-dashboard.jpg",
     "dist/index.js",
     "dist/cli.js",
     "dist/cli/task-operator.js",
@@ -69,7 +71,6 @@ try {
     "dist/live-provider-smoke.js",
     "dist/service-identity.js",
     "dist/adapters/inbound/http/server.js",
-    "dist/adapters/inbound/http/static.js",
     "dist/adapters/inbound/http/websocket-client-connection.js",
     "dist/adapters/outbound/hermes/hermes-runs.client.js",
     "dist/adapters/outbound/hermes/sse.js",
@@ -97,13 +98,16 @@ try {
     "clients/browser/hermes-live-client.js",
     "clients/browser/hermes-live-client.d.ts",
     "clients/browser/mic-worklet.js",
-    "apps/web-demo/index.html",
-    "apps/web-demo/app.js",
+    "docs/architecture.md",
     "docs/background-tasks.md",
     "docs/client-protocol.md",
     "docs/live-provider-testing.md",
+    "docs/provider-compatibility-receipt-template.md",
+    "docs/security.md",
     "docs/setup.md",
+    "docs/ui-integration.md",
     "examples/docker-compose.yml",
+    "examples/nginx.conf",
     "plugins/hermes-live/plugin.yaml",
     "plugins/hermes-live/__init__.py",
     "plugins/hermes-live/schemas.py",
@@ -120,6 +124,22 @@ try {
   const missing = required.filter((file) => !files.has(file));
   if (missing.length > 0) {
     throw new Error(`Package is missing required files:\n${missing.join("\n")}`);
+  }
+
+  const sourceOnly = [
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "assets/social-preview.png",
+    "assets/social-preview.svg",
+    "docs/releasing.md",
+    "docs/roadmap.md",
+    "examples/live-workflow-transcript.md",
+  ].filter((file) => files.has(file));
+
+  if (sourceOnly.length > 0) {
+    throw new Error(`Package includes source-only project files:\n${sourceOnly.join("\n")}`);
   }
 
   const forbidden = pack.files

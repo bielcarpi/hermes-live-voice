@@ -9,11 +9,10 @@ This documents compatibility with Hermes Agent and community projects, not endor
 | Surface | Support | Purpose |
 | --- | --- | --- |
 | Hermes Dashboard + Live Voice plugin | First-class | New/resumed chats, browser audio/text, transcript, durable task inbox, follow-ups, reconnect, notifications, interruption, and exact stop. |
-| Bundled browser client | Development tool | Local provider/audio/protocol troubleshooting. |
 | `hermes-live-voice/browser` | First-class integration API | Vanilla, React, Vue, Svelte, Electron, or mobile-web clients. |
 | `hermes-live terminal` | First-class text control | SSH/headless task supervision, retained results, interruption, and exact stop. |
-| Hermes Voice Mode/Desktop voice | Official Hermes features | First-party local voice experiences; not replaced by this project. |
-| Generic OpenAI-compatible chat UI | Hermes chat only | Does not implement protocol v6 realtime audio, durable tasks, or notifications. |
+
+Other UIs need an explicit protocol v6 integration and a server-side credential relay. An OpenAI-compatible chat connection is not sufficient.
 
 ## Hermes Dashboard
 
@@ -154,24 +153,6 @@ When a task requires approval, the gateway attempts deny-all and stops the exact
 - Browser audio currently expects PCM16 and rejects G.711 output.
 - Bound playback while waiting for autoplay permission and clear it on interruption/disconnect.
 - Test permission denial, keyboard focus, screen readers, reduced motion, and narrow layouts.
-
-## Community UI Compatibility
-
-### Hermes WebUI
-
-The community [Hermes WebUI](https://github.com/nesquena/hermes-webui) is a natural adapter candidate because it already has voice input and administrator-controlled extension injection. A production integration should add a separate protocol-v6 panel and a backend WebSocket relay. A frontend-only extension would expose the shared bearer.
-
-Keep Hermes WebUI's existing microphone flow available. Hermes Live is a persistent realtime conversation plus a durable task inbox; presenting it as an ordinary chat turn would hide reconnect and cancellation semantics.
-
-### Open WebUI
-
-[Open WebUI can connect to Hermes Agent](https://github.com/open-webui/docs/blob/main/docs/getting-started/quick-start/connect-an-agent/hermes-agent.mdx) through Hermes' OpenAI-compatible API for ordinary chat and turn-based voice.
-
-It does not currently implement Hermes Live protocol v6. An integration needs an explicit realtime extension and authenticated server-side relay; do not advertise it as plug-and-play.
-
-### Hermes Desktop And Native Apps
-
-Hermes Desktop has its own voice surface and does not automatically consume Dashboard tabs. A future native integration can reuse the JSON task contract but needs platform-specific audio transport, credential relay, background lifecycle, and UI work. “Protocol-ready” is not “already integrated.”
 
 ## Terminal
 

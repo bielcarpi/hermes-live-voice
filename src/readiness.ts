@@ -75,7 +75,6 @@ function checkGatewayConfig(config: AppConfig): ReadinessSection {
     host: config.server.host,
     port: config.server.port,
     authRequired: Boolean(config.server.authToken),
-    demoEnabled: config.server.demoEnabled,
     serverManagedIdentity: !config.server.trustClientIdentity,
     maxSessions: config.server.maxSessions,
     tasks: {

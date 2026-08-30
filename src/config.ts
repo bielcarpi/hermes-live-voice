@@ -73,7 +73,6 @@ const EnvSchema = z.object({
     .max(MAX_COMPATIBLE_TEXT_CHARS)
     .default(20_000),
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
-  HERMES_LIVE_DEMO_ENABLED: z.string().optional(),
   HERMES_LIVE_TASK_STATE_FILE: TaskStateFileSchema.default(
     join(homedir(), ".hermes", "hermes-live", "tasks-v1.json"),
   ),
@@ -139,7 +138,6 @@ export interface AppConfig {
     maxAudioBytes: number;
     maxTextChars: number;
     providerReadyTimeoutMs: number;
-    demoEnabled: boolean;
   };
   hermes: {
     baseUrl: string;
@@ -213,10 +211,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       maxAudioBytes: parsed.HERMES_LIVE_MAX_AUDIO_BYTES,
       maxTextChars: parsed.HERMES_LIVE_MAX_TEXT_CHARS,
       providerReadyTimeoutMs: parsed.HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS,
-      demoEnabled:
-        parsed.HERMES_LIVE_DEMO_ENABLED === undefined
-          ? parsed.NODE_ENV !== "production"
-          : parseBool(parsed.HERMES_LIVE_DEMO_ENABLED),
     },
     hermes: {
       baseUrl: withoutTrailingSlash(parsed.HERMES_BASE_URL),

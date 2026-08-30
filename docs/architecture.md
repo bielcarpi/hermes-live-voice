@@ -167,7 +167,7 @@ The gateway favors a visible unknown state over a fabricated result:
 | --- | --- | --- |
 | Domain | `src/domain/protocol`, `src/domain/tasks` | Wire schemas, task records, and pure transitions. |
 | Application | `src/application/live-gateway`, `src/application/task-supervisor` | Conversation orchestration, task policy, scheduling, recovery, and ports. |
-| Inbound adapters | `src/adapters/inbound/http` | HTTP, WebSocket auth/origin policy, and demo serving. |
+| Inbound adapters | `src/adapters/inbound/http` | HTTP endpoints, WebSocket auth/origin policy, and live protocol upgrades. |
 | Hermes adapter | `src/adapters/outbound/hermes` | Bounded JSON/SSE calls to Hermes Runs API. |
 | Task store | `src/adapters/outbound/task-store` | Private atomic local-file persistence. |
 | Provider adapters | `src/adapters/outbound/realtime` | Hugging Face local, Gemini Live, OpenAI Realtime, and mock implementations. |
