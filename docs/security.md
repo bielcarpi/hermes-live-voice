@@ -116,9 +116,9 @@ PCM sample rates and output codecs are validated. The browser helper rejects uns
 
 OpenAI receives a hashed `OpenAI-Safety-Identifier` derived from the server-owned session key for provider-side abuse monitoring without sending the raw identity.
 
-## Demo And Static Content
+## Browser Assets
 
-The bundled demo is enabled by default in development and disabled by default when `NODE_ENV=production`. Leave `HERMES_LIVE_DEMO_ENABLED=false` unless it is intentionally exposed. Static responses use no-store, nosniff, no-referrer, frame denial, and a restrictive content security policy.
+The gateway does not serve a standalone browser UI. Browser assets ship either inside the Hermes Dashboard plugin or inside the host application that integrates `hermes-live-voice/browser`. That host must keep its own static delivery and authentication boundary tight; the gateway remains an API and WebSocket service.
 
 ## Deployment Checklist
 
@@ -132,7 +132,7 @@ The bundled demo is enabled by default in development and disabled by default wh
 - Put `HERMES_LIVE_TASK_STATE_FILE` in a private, backed-up, persistent location.
 - Persist `/var/lib/hermes-live` when using Docker.
 - Set session, task concurrency, queue, retention, and request-size limits intentionally.
-- Disable the demo unless it is a deliberate production surface.
+- Serve browser assets only from the Hermes Dashboard plugin or a host application with its own authentication.
 - Treat unknown task outcomes as potentially partially executed.
 - Inspect logs and state backups for sensitive task content before sharing them.
 

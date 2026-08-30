@@ -22,7 +22,7 @@ hermes-live doctor --provider-smoke
 
 Both commands suppress credentials and print the next concrete fix.
 
-Use `hermes-live launch-check` before a demo or production use. It rejects mock mode and starts one bounded Hermes worker.
+Use `hermes-live launch-check` before production use or a public walkthrough. It rejects mock mode and starts one bounded Hermes worker.
 
 To create a support bundle, run `hermes-live diagnostics`. The private JSON file excludes logs, prompts, task results, audio, and secret values.
 

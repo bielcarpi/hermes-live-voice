@@ -446,7 +446,6 @@ _BOOLEAN_FEATURES = {
     "parallel_read_only_tasks",
     "exact_task_stop",
     "task_notifications",
-    "browser_demo",
     "optional_hermes_plugin",
 }
 
@@ -467,7 +466,7 @@ def _sanitize_readiness(value: dict[str, Any]) -> dict[str, Any]:
 
     gateway = _mapping(checks.get("gateway"))
     safe_gateway: dict[str, Any] = {}
-    for name in ("ok", "authRequired", "demoEnabled", "serverManagedIdentity"):
+    for name in ("ok", "authRequired", "serverManagedIdentity"):
         _copy_boolean(gateway, safe_gateway, name)
     for name in ("port", "maxSessions"):
         _copy_integer(gateway, safe_gateway, name)

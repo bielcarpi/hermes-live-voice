@@ -762,7 +762,7 @@ export class TerminalGatewaySession {
     const transcript = sanitizeTerminalText(this.assistantTranscript.trim(), MAX_RENDERED_TEXT_CHARS);
     if (transcript) this.line(prefixMultiline("[voice] ", transcript));
     else if (this.responseHadAudio) {
-      this.line("[voice] Audio response received. Use the Hermes Dashboard or browser demo to hear gateway audio.");
+      this.line("[voice] Audio response received. Use the Hermes Dashboard Live Voice tab or a browser SDK integration to hear gateway audio.");
     }
     this.resetResponseOutput();
   }

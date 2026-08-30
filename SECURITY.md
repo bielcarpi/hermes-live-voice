@@ -28,7 +28,7 @@ Reports are especially useful when they involve:
 - exact task-stop correlation;
 - fail-closed approval denial and containment;
 - provider tool-call validation, prompt/result injection boundaries, or secret reflection;
-- static file serving, audio/payload limits, or redirect handling.
+- browser SDK delivery, Dashboard relay behavior, audio/payload limits, or redirect handling.
 
 ## Deployment Baseline
 
@@ -40,7 +40,7 @@ Reports are especially useful when they involve:
 - Keep `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=false` unless you accept model-declared concurrency scopes as policy input.
 - Store `HERMES_LIVE_TASK_STATE_FILE` in a private persistent directory; persist `/var/lib/hermes-live` in Docker.
 - Run the container as its bundled non-root user with the read-only filesystem and dropped capabilities from the Compose example.
-- Disable the public demo unless it is intentionally deployed.
+- Serve browser assets only from the Hermes Dashboard plugin or a host application with its own authentication.
 - Treat `unknown` task outcomes as potentially partially executed; audit before retrying.
 
 The full threat model and operator guidance are in [docs/security.md](docs/security.md) and [docs/background-tasks.md](docs/background-tasks.md).

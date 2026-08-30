@@ -2081,7 +2081,6 @@ function testConfig(overrides: {
       maxAudioBytes: 2_000_000,
       maxTextChars: 20_000,
       providerReadyTimeoutMs: 250,
-      demoEnabled: false,
       ...overrides.server,
     },
     hermes: {

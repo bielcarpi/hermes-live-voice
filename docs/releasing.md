@@ -33,10 +33,8 @@ Release notes must distinguish:
    npm ci
    npm run verify
    npm run check:scripts
-   npm run check:external-audits
    npm run check:workflow-pins
    npm run check:positioning
-   npm run check:maintainer-readiness
    npm run check:hermes-compatibility
    node dist/cli.js launch-check
    npm audit --audit-level=moderate
@@ -54,27 +52,7 @@ Release notes must distinguish:
    PLUGIN_INDEX_REF="$(git rev-parse HEAD)" node scripts/plugin-index-entry.mjs
    ```
 
-9. After release publication and GitHub metadata updates, run the external
-   launch gate:
-
-   ```sh
-   npm run audit:public-launch
-   ```
-
-   This command reads GitHub and npm state. It is intentionally not part of
-   `npm run verify`, and it should fail until the reviewed release, launch
-   topics, and required branch-protection checks are public.
-10. Before upstream or official-facing outreach, run the read-only upstream
-    gate:
-
-   ```sh
-   npm run audit:upstream-readiness -- --report-only
-   ```
-
-   This command reads live Hermes upstream issues, the `hermes-talk` docs PR,
-   plugin-index availability, and public project release state. It is expected
-   to report blockers until maintainers accept an external gateway/docs path.
-11. Confirm `git status --short` is empty and every required GitHub check is green.
+9. Confirm `git status --short` is empty and every required GitHub check is green.
 
 ## Release Proof Gate
 
@@ -95,19 +73,9 @@ Before tagging a stable release, record evidence for:
 - live session smoke for each changed provider handshake/default, plus official event fixtures and deterministic adapter coverage for event-only normalization changes.
 - browser/Dashboard/terminal and clean-package installation smokes.
 - pinned Hermes plugin-index entry generation for `plugins/hermes-live`.
-- script syntax smoke for JavaScript maintenance scripts, including release and
-  external audit helpers.
-- external audit fixture smoke for the public launch and upstream readiness
-  scripts, including expected pass and failure states.
-- positioning smoke for community, non-official, non-Saturday public copy.
+- script syntax smoke for JavaScript maintenance scripts and release helpers.
+- positioning smoke for community, non-official public copy.
 - workflow pin smoke for immutable external GitHub Action references.
-- public launch audit for release, GitHub metadata, topics, npm latest version,
-  and required branch-protection checks.
-- upstream readiness audit for maintainer acceptance, canonical plugin-index
-  availability, and non-competitive coordination with existing realtime voice
-  work.
-- maintainer readiness smoke so package counts, docs counts, version parity,
-  and launch-boundary evidence stay synchronized.
 
 Repeat the gate on the final commit and complete an appropriate soak window. Keep recent live evidence for every advertised provider, and record any account, quota, region, or model-access blocker without relabeling it as a pass. Document manual audio/device coverage; tests cannot prove microphones, autoplay, perceived latency, or provider speech quality on untested hardware.
 

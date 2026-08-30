@@ -336,7 +336,7 @@ An ordinary WebSocket close has the same task-lifetime rule: background work rem
 
 ## Browser Client
 
-`hermes-live-voice/browser` is the framework-independent client used by the demo and Dashboard integration:
+`hermes-live-voice/browser` is the framework-independent client used by the Dashboard integration and by host applications that implement their own authenticated browser surface:
 
 ```js
 import { HermesLiveAudio, HermesLiveClient } from "hermes-live-voice/browser";

@@ -53,7 +53,6 @@ const gatewayEnvironment = {
   HERMES_LIVE_ALLOW_UNAUTHENTICATED: dockerImage ? "true" : "false",
   HERMES_LIVE_ALLOW_ORIGIN: "",
   HERMES_LIVE_AUTH_TOKEN: "",
-  HERMES_LIVE_DEMO_ENABLED: "false",
   HERMES_LIVE_HERMES_TIMEOUT_MS: "5000",
   HERMES_LIVE_HOST: dockerImage ? "0.0.0.0" : "127.0.0.1",
   HERMES_LIVE_MAX_TEXT_CHARS: "20000",

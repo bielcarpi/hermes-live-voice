@@ -335,9 +335,9 @@ describe("HTTP server", () => {
     });
   });
 
-  it("can disable the built-in browser demo", async () => {
+  it("does not serve standalone browser UI assets from the gateway", async () => {
     const server = await startServer({
-      config: testConfig({ server: { demoEnabled: false } }),
+      config: testConfig(),
       hermes: fakeHermes(),
       liveModel: new MockLiveAdapter(),
       logger: fakeLogger(),
@@ -345,53 +345,10 @@ describe("HTTP server", () => {
     openServers.push(server);
 
     expect(await fetch(`${server.url}/`).then((res) => res.status)).toBe(404);
-    await expect(fetch(`${server.url}/v1/capabilities`).then((res) => res.json())).resolves.toMatchObject({
-      features: { browser_demo: false },
-    });
-  });
-
-  it("serves the browser demo with defensive security headers", async () => {
-    const server = await startServer({
-      config: testConfig(),
-      hermes: fakeHermes(),
-      liveModel: new MockLiveAdapter(),
-      logger: fakeLogger(),
-    });
-    openServers.push(server);
-
-    const response = await fetch(`${server.url}/`);
-    const body = await response.text();
-
-    expect(response.status).toBe(200);
-    expect(body).toContain("hermes-live");
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
-    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(response.headers.get("x-frame-options")).toBe("DENY");
-  });
-
-  it("serves the canonical browser client imported by the demo", async () => {
-    const server = await startServer({
-      config: testConfig(),
-      hermes: fakeHermes(),
-      liveModel: new MockLiveAdapter(),
-      logger: fakeLogger(),
-    });
-    openServers.push(server);
-
-    const response = await fetch(`${server.url}/hermes-live-client.js`);
-    const body = await response.text();
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-    expect(body).toContain("export class HermesLiveClient");
-    expect(body).toContain("export class HermesLiveAudio");
-
-    const worklet = await fetch(`${server.url}/mic-worklet.js`);
-    expect(worklet.status).toBe(200);
-    expect(worklet.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-    await expect(worklet.text()).resolves.toContain('registerProcessor("pcm-capture"');
+    expect(await fetch(`${server.url}/hermes-live-client.js`).then((res) => res.status)).toBe(404);
+    expect(await fetch(`${server.url}/mic-worklet.js`).then((res) => res.status)).toBe(404);
+    const capabilities = await fetch(`${server.url}/v1/capabilities`).then((res) => res.json());
+    expect(capabilities.features).not.toHaveProperty("browser_demo");
   });
 
   it("returns not_ready when Hermes capabilities fail", async () => {
@@ -1001,7 +958,6 @@ function testConfig(
       maxAudioBytes: 2_000_000,
       maxTextChars: 20_000,
       providerReadyTimeoutMs: 15_000,
-      demoEnabled: true,
       ...overrides.server,
       allowUnauthenticated: overrides.server?.allowUnauthenticated ?? false,
     },

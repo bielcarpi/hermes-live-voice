@@ -100,9 +100,9 @@ describe("setup", () => {
       const managed = await readManagedConfig({ home });
       expect(managed.values).toMatchObject({
         HERMES_AGENT_API_SERVER_KEY: "hermes-private",
-        HERMES_LIVE_DEMO_ENABLED: "false",
         HERMES_LIVE_PROVIDER: "mock",
       });
+      expect(managed.values).not.toHaveProperty("HERMES_LIVE_DEMO_ENABLED");
       expect(JSON.stringify(report)).not.toContain("hermes-private");
     } finally {
       await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));

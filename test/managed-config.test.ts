@@ -73,6 +73,13 @@ describe("managed config", () => {
     expect(() => parseManagedConfig("HERMES_LIVE_PORT=8788")).toThrow(/must be a string/u);
   });
 
+  it("ignores the removed standalone-demo flag in older managed configs", () => {
+    expect(parseManagedConfig([
+      'HERMES_LIVE_DEMO_ENABLED="false"',
+      'HERMES_LIVE_PROVIDER="mock"',
+    ].join("\n"))).toEqual({ HERMES_LIVE_PROVIDER: "mock" });
+  });
+
   it("serializes keys in a stable allowlist order", () => {
     const serialized = serializeManagedConfig({
       OPENAI_API_KEY: "openai-secret",

@@ -512,7 +512,7 @@ describe("TerminalGatewaySession protocol v4", () => {
     peer?.send(JSON.stringify({ type: "audio.output", data: "AAA=", mimeType: "audio/pcm;rate=24000" }));
     peer?.send(JSON.stringify({ type: "response.completed" }));
     await vi.waitFor(() =>
-      expect(lines).toContain("[voice] Audio response received. Use the Hermes Dashboard or browser demo to hear gateway audio."),
+      expect(lines).toContain("[voice] Audio response received. Use the Hermes Dashboard Live Voice tab or a browser SDK integration to hear gateway audio."),
     );
     await session.close();
   });

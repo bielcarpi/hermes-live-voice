@@ -23,7 +23,6 @@ export const MANAGED_CONFIG_KEYS = [
   "HERMES_LIVE_ALLOW_ORIGIN",
   "HERMES_LIVE_ALLOW_UNAUTHENTICATED",
   "HERMES_LIVE_AUTH_TOKEN",
-  "HERMES_LIVE_DEMO_ENABLED",
   "HERMES_LIVE_HERMES_STREAM_IDLE_TIMEOUT_MS",
   "HERMES_LIVE_HERMES_TIMEOUT_MS",
   "HERMES_LIVE_HOST",
@@ -64,6 +63,10 @@ export const MANAGED_CONFIG_KEYS = [
 
 export type ManagedConfigKey = (typeof MANAGED_CONFIG_KEYS)[number];
 export type ManagedConfigValues = Partial<Record<ManagedConfigKey, string>>;
+
+const LEGACY_MANAGED_CONFIG_KEYS = new Set<string>([
+  "HERMES_LIVE_DEMO_ENABLED",
+]);
 
 export interface ManagedConfigReadResult {
   path: string;
@@ -189,6 +192,7 @@ export function parseManagedConfig(source: string, sourceLabel = "managed config
     }
     const key = line.slice(0, separator).trim();
     if (!managedKeySet.has(key)) {
+      if (LEGACY_MANAGED_CONFIG_KEYS.has(key)) continue;
       throw new Error(`${sourceLabel}:${index + 1}: ${key || "empty key"} is not a supported Hermes Live setting.`);
     }
     if (seen.has(key)) {

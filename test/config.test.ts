@@ -16,7 +16,6 @@ describe("config", () => {
 
     expect(config.server.host).toBe("127.0.0.1");
     expect(config.server.port).toBe(8788);
-    expect(config.server.demoEnabled).toBe(true);
     expect(config.server.allowUnauthenticated).toBe(false);
     expect(config.server.defaultProfileId).toBe("default");
     expect(config.server.defaultUserLabel).toBe("voice");
@@ -287,24 +286,6 @@ describe("config", () => {
     expect(() => loadConfig({ HERMES_LIVE_TASK_HISTORY_LIMIT: "9" })).toThrow();
     expect(() => loadConfig({ HERMES_LIVE_TASK_RETENTION_HOURS: "0" })).toThrow();
     expect(() => loadConfig({ HERMES_LIVE_TASK_POLL_INTERVAL_MS: "249" })).toThrow();
-  });
-
-  it("can disable the built-in browser demo", () => {
-    const config = loadConfig({ HERMES_LIVE_DEMO_ENABLED: "false" });
-
-    expect(config.server.demoEnabled).toBe(false);
-  });
-
-  it("disables the built-in browser demo by default in production", () => {
-    const config = loadConfig({ NODE_ENV: "production" });
-
-    expect(config.server.demoEnabled).toBe(false);
-  });
-
-  it("can explicitly enable the built-in browser demo in production", () => {
-    const config = loadConfig({ NODE_ENV: "production", HERMES_LIVE_DEMO_ENABLED: "true" });
-
-    expect(config.server.demoEnabled).toBe(true);
   });
 
   it("redacts unsafe session pieces into stable session keys", () => {
