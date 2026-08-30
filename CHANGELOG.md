@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 - 2026-08-31
+
 - Remove the standalone browser demo, demo flag, static-file serving path, and `browser_demo` capability.
 - Keep old managed configs compatible with the removed `HERMES_LIVE_DEMO_ENABLED` key.
 - Remove public launch plans, outreach drafts, historical readiness audits, and their prose-enforcement scripts.
