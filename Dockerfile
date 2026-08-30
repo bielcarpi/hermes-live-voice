@@ -23,7 +23,6 @@ RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
 COPY LICENSE ./LICENSE
 COPY --from=build /app/dist ./dist
-COPY apps ./apps
 COPY clients ./clients
 COPY docs ./docs
 COPY plugins ./plugins
