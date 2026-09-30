@@ -247,6 +247,12 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.supportsBrowserMicrophone({ enabled: true, mimeType: "audio/pcm;rate=16000" })).toBe(true);
   });
 
+  it("labels the active microphone as push-to-talk only when the provider owns no turn detection", () => {
+    const source = dashboardSource();
+
+    expect(source).toContain('audioCapabilities.turnDetection === "disabled" ? "Stop & send turn" : "Stop microphone"');
+  });
+
   it("starts a compatible microphone automatically after one Connect click", async () => {
     const utilities = loadDashboardUtilities();
     const source = dashboardSource();
