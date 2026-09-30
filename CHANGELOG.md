@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Default OpenAI Realtime to continuous voice turns with `semantic_vad`, so you can talk normally and the provider ends each turn on its own instead of pressing Stop to submit every turn. `OPENAI_REALTIME_TURN_DETECTION=disabled` restores the previous push-to-talk behavior. The Dashboard microphone button now mutes without ending the turn. Because the microphone stays open while Hermes speaks, use headphones on machines with open speakers if the model interrupts itself.
+
 ## 1.1.3 - 2026-09-07
 
 - Merge the pending Node 22 Docker image refresh and CodeQL action updates from dependency PRs #78 and #75.
