@@ -116,7 +116,7 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
   OPENAI_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("low"),
-  OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),
+  OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("semantic_vad"),
   OPENAI_REALTIME_INPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: OpenAITranscriptionModelSchema.default("gpt-4o-mini-transcribe"),

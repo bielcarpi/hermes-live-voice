@@ -394,6 +394,18 @@ describe("config", () => {
     expect(config.openai.turnDetection).toBe("semantic_vad");
   });
 
+  it("defaults OpenAI turn detection to continuous listening", () => {
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai" });
+
+    expect(config.openai.turnDetection).toBe("semantic_vad");
+  });
+
+  it("still honors an explicit push-to-talk opt-out", () => {
+    const config = loadConfig({ HERMES_LIVE_PROVIDER: "openai", OPENAI_REALTIME_TURN_DETECTION: "disabled" });
+
+    expect(config.openai.turnDetection).toBe("disabled");
+  });
+
   it("configures OpenAI input transcription without assuming a language", () => {
     const russian = loadConfig({
       OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: "whisper-1",
