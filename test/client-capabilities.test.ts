@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/config.js";
 import { realtimeClientCapabilities } from "../src/application/live-gateway/client-capabilities.js";
+import { loadConfig } from "../src/config.js";
 
 describe("realtime client capabilities", () => {
   it("advertises Gemini PCM negotiation", () => {
@@ -28,6 +29,15 @@ describe("realtime client capabilities", () => {
         output: { mimeType: "audio/pcma;rate=8000" },
         turnDetection: "semantic_vad",
       },
+    });
+  });
+
+  it("advertises continuous turn detection to the client from the resolved default", () => {
+    const resolved = loadConfig({ HERMES_LIVE_PROVIDER: "openai" });
+
+    expect(realtimeClientCapabilities(resolved)).toMatchObject({
+      provider: "openai",
+      audio: { turnDetection: "semantic_vad" },
     });
   });
 
