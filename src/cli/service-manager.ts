@@ -196,7 +196,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=${[resolved.program.command, ...resolved.program.args].map(systemdEscape).join(" ")}
 ${environment}
-WorkingDirectory=${systemdEscape(resolved.home)}
+WorkingDirectory=${systemdPathValue(resolved.home)}
 Restart=on-failure
 RestartSec=${resolved.restartDelaySeconds}
 
@@ -418,6 +418,16 @@ function stoppedServiceDetail(options: ResolvedServiceOptions, result: CommandRe
 
 function systemdEscape(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
+}
+
+/**
+ * `WorkingDirectory=` takes a bare absolute path: systemd rejects a quoted
+ * value ("path is not absolute: \"/root\""), and it keeps everything after the
+ * first space as part of the path, so no quoting or escaping is needed beyond
+ * doubling `%` to escape specifier expansion.
+ */
+function systemdPathValue(value: string): string {
+  return value.replaceAll("%", "%%");
 }
 
 function xmlEscape(value: string): string {

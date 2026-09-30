@@ -1,4 +1,7 @@
 import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
@@ -49,6 +52,21 @@ describe("service manager", () => {
     expect(definition).toContain('Environment="HERMES_LIVE_CONFIG_FILE=/home/a user/.hermes/hermes-live/config.env"');
     expect(definition).toContain("Restart=on-failure");
     expect(definition).not.toContain("API_KEY=");
+  });
+
+  it("writes a bare unquoted systemd WorkingDirectory that systemd accepts", () => {
+    const definition = systemdServiceDefinition({ home: "/root" });
+
+    expect(definition).toContain("\nWorkingDirectory=/root\n");
+    expect(definition).not.toMatch(/WorkingDirectory="/u);
+    expect(systemdAcceptsWorkingDirectory(definition)).toBe(true);
+  });
+
+  it("keeps spaces in the systemd WorkingDirectory unquoted", () => {
+    const definition = systemdServiceDefinition({ home: "/home/a user" });
+
+    expect(definition).toContain("\nWorkingDirectory=/home/a user\n");
+    expect(systemdAcceptsWorkingDirectory(definition)).toBe(true);
   });
 
   it("generates an isolated local voice service without gateway secrets", () => {
@@ -314,6 +332,22 @@ describe("service manager", () => {
     })).rejects.toThrow(/service is not installed/u);
   });
 });
+
+/**
+ * `systemd-analyze verify` is the real arbiter of unit validity, but it is not
+ * available everywhere, so skip rather than fail when it is missing.
+ */
+function systemdAcceptsWorkingDirectory(definition: string): boolean {
+  const path = join(tmpdir(), `hermes-live-unit-${process.pid}-${randomBytes(4).toString("hex")}.service`);
+  writeFileSync(path, definition, "utf8");
+  try {
+    const result = spawnSync("systemd-analyze", ["verify", path], { encoding: "utf8" });
+    if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    return !`${result.stdout ?? ""}${result.stderr ?? ""}`.includes("WorkingDirectory=");
+  } finally {
+    rmSync(path, { force: true });
+  }
+}
 
 function fakeRunner(
   calls: Array<[string, string[]]>,

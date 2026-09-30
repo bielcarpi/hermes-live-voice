@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix the Linux systemd unit so `WorkingDirectory=` is written as a bare absolute path instead of a quoted one. The quoted value made systemd reject the unit with `WorkingDirectory= path is not absolute`, so `hermes-live setup` installed a gateway service that never started and `hermes-live doctor` reported a failed gateway with no clear cause. ExecStart and Environment values remain quoted and escaped.
+
 ## 1.1.3 - 2026-09-07
 
 - Merge the pending Node 22 Docker image refresh and CodeQL action updates from dependency PRs #78 and #75.
