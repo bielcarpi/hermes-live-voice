@@ -127,13 +127,13 @@ PCM audio frame:
 }
 ```
 
-End a push-to-talk stream:
+End a push-to-talk stream. Send this whenever the transport stops producing microphone packets in `turnDetection: "disabled"` mode; in provider-owned turn modes the client sends nothing and the VAD boundary ends the turn:
 
 ```json
 { "type": "audio.end", "id": "audio_end_1" }
 ```
 
-Send `audio.end` whenever the transport stops producing microphone packets. The gateway commits buffered OpenAI audio in both client-owned and provider-VAD modes. It also prevents a late VAD event from starting a second response. Clients should still send `response.cancel` when the user interrupts playback.
+The gateway commits buffered OpenAI audio in both client-owned and provider-VAD modes. It also prevents a late VAD event from starting a second response. Clients should still send `response.cancel` when the user interrupts playback.
 
 For a bound session, the realtime provider calls `continue_hermes_conversation` for canonical chat turns so Hermes owns memory and history. Long or independent work uses `start_background_task`, which returns a fast receipt so voice can continue. There is deliberately no client `task.start`.
 

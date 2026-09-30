@@ -102,6 +102,8 @@ non-reasoning Realtime path. OpenAI user transcripts use
 
 Provider secrets can come from the process environment, an existing managed config, or `~/.hermes/.env`. Setup prompts without echoing missing values. The normal local install generates its internal Hermes bridge key automatically. Secret command-line flags are deliberately unsupported.
 
+OpenAI Realtime listens continuously by default: the microphone stays open and the provider ends each turn on its own, so you can talk normally without pressing anything. Set `OPENAI_REALTIME_TURN_DETECTION=disabled` for the previous push-to-talk behavior, where you press Stop to submit every turn. Because the microphone stays open while Hermes speaks, use headphones if the model interrupts itself on a machine with open speakers.
+
 ## Configuration
 
 Managed settings live at:
@@ -123,6 +125,7 @@ Common settings:
 | `HERMES_LIVE_LOCAL_URL` | `ws://127.0.0.1:8765/v1/realtime` | Hugging Face realtime endpoint |
 | `GEMINI_MODEL` | `gemini-3.1-flash-live-preview` | Gemini Live model |
 | `OPENAI_REALTIME_MODEL` | `gpt-realtime-2` | OpenAI Realtime model |
+| `OPENAI_REALTIME_TURN_DETECTION` | `semantic_vad` | Voice turn taking; `disabled` restores push-to-talk |
 | `HERMES_LIVE_HOST` / `HERMES_LIVE_PORT` | `127.0.0.1` / first free port from `8788` | Gateway listener |
 | `HERMES_LIVE_AUTH_TOKEN` | unset | Required for network-accessible gateway binds |
 | `HERMES_LIVE_MAX_SESSIONS` | `1` local / `8` hosted | Concurrent voice sessions; match the provider pool |
