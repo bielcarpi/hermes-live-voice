@@ -253,6 +253,12 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).toContain('audioCapabilities.turnDetection === "disabled" ? "Stop & send turn" : "Stop microphone"');
   });
 
+  it("mutes without ending the provider-owned turn when continuous listening is active", () => {
+    const source = dashboardSource();
+
+    expect(source).toContain('var endTurn = !audioCapabilities.turnDetection || audioCapabilities.turnDetection === "disabled"');
+  });
+
   it("starts a compatible microphone automatically after one Connect click", async () => {
     const utilities = loadDashboardUtilities();
     const source = dashboardSource();

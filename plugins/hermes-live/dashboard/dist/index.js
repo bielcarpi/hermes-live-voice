@@ -737,7 +737,11 @@
     function stopMicrophone() {
       const audio = audioRef.current;
       if (!audio) return;
-      runAction("microphone", function () { return audio.stopMicrophone({ endTurn: true }); });
+      // The provider ends each turn in continuous mode, so stopping the
+      // microphone is a mute, not a turn submit. Sending audio.end there
+      // would race the VAD boundary.
+      var endTurn = !audioCapabilities.turnDetection || audioCapabilities.turnDetection === "disabled";
+      runAction("microphone", function () { return audio.stopMicrophone({ endTurn: endTurn }); });
     }
 
     function interruptSpeech() {
