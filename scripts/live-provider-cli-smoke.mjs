@@ -11,6 +11,8 @@ let observedModel = "";
 
 server.on("connection", (socket, request) => {
   let responseCount = 0;
+  let taskMessage = "Reply with exactly PROVIDER SMOKE OK.";
+  let pendingDone;
   const url = new URL(request.url ?? "/", "ws://127.0.0.1");
   observedAuthorization = String(request.headers.authorization ?? "");
   observedSafetyIdentifier = String(request.headers["openai-safety-identifier"] ?? "");
@@ -21,21 +23,33 @@ server.on("connection", (socket, request) => {
       observedSessionUpdate = message;
       socket.send(JSON.stringify({ type: "session.updated", session: { type: "realtime", model: observedModel } }));
     }
+    if (message.type === "conversation.item.create" && JSON.stringify(message.item).includes("gateway integration check")) {
+      taskMessage = "gateway integration check";
+    }
+    if (message.type === "response.cancel") {
+      clearTimeout(pendingDone);
+      socket.send(JSON.stringify({ type: "response.done", response: {
+        id: `response_${responseCount}`, status: "cancelled", output: [],
+      } }));
+    }
     if (message.type === "response.create") {
       responseCount += 1;
       const id = `response_${responseCount}`;
       const send = (event) => socket.send(JSON.stringify(event));
       send({ type: "response.created", response: { id, status: "in_progress" } });
-      if (responseCount === 1) {
+      if (responseCount === 1 && message.response?.conversation !== "none") {
         send({ type: "response.function_call_arguments.done", response_id: id,
           call_id: "call_smoke", name: "start_background_task",
-          arguments: JSON.stringify({ message: "Reply with exactly PROVIDER SMOKE OK." }) });
+          arguments: JSON.stringify({ message: taskMessage }) });
       } else {
         send({ type: "response.output_audio.delta", response_id: id, delta: "AAAAAA==" });
       }
-      send({ type: "response.done", response: { id, status: "completed", output: [] } });
+      pendingDone = setTimeout(() => {
+        send({ type: "response.done", response: { id, status: "completed", output: [] } });
+      }, 100);
     }
   });
+  socket.on("close", () => clearTimeout(pendingDone));
 });
 
 await once(server, "listening");
@@ -46,8 +60,12 @@ if (!port) {
 }
 
 try {
-  for (const functional of [false, true]) {
-    const child = spawn(process.execPath, ["dist/cli.js", "provider-smoke", ...(functional ? ["--functional"] : [])], {
+  for (const mode of ["connection", "functional", "gateway"]) {
+    const functional = mode === "functional";
+    const args = mode === "gateway"
+      ? ["scripts/gateway-smoke.mjs", "--live-provider", "openai"]
+      : ["dist/cli.js", "provider-smoke", ...(functional ? ["--functional"] : [])];
+    const child = spawn(process.execPath, args, {
       env: {
         ...process.env,
         HERMES_LIVE_PROVIDER: "openai",
@@ -68,12 +86,16 @@ try {
       stderr += chunk.toString("utf8");
     });
 
-    const timeout = setTimeout(() => child.kill("SIGKILL"), 8_000);
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 15_000);
     const [code, signal] = await once(child, "exit");
     clearTimeout(timeout);
 
     if (code !== 0 || signal) {
       throw new Error(`CLI provider smoke failed with code ${code ?? "null"} signal ${signal ?? "null"}\n${stdout}\n${stderr}`);
+    }
+    if (mode === "gateway") {
+      if (!stdout.includes("Gateway smoke ok")) throw new Error("Gateway lifecycle smoke did not finish.");
+      continue;
     }
     const report = JSON.parse(stdout);
     if (report.ok !== true || report.provider !== "openai" || report.model !== "gpt-realtime-2" || report.connected !== true) {
@@ -106,7 +128,7 @@ try {
       throw new Error("CLI functional smoke did not verify the tool call and audio receipt.");
     }
   }
-  console.log("CLI provider smoke ok (connection and functional checks)");
+  console.log("CLI provider smoke ok (connection, functional check, and gateway lifecycle)");
 } finally {
   await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve(undefined))));
 }
