@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.1.4 - 2026-10-07
+
+- Update Gemini SDK to 2.27.0 and WebSocket support to ws 8.22.0. Refresh compatible dependencies, the Node 22 container image, and pinned workflow actions. Integrate dependency PRs #83, #84, #90, #92, #94, and #97.
+- Fix the development dependency advisory GHSA-68fv-2mgg-jv7q by updating source-map-js to 1.2.2.
+- Upgrade to Vitest 5.0.3 with Node 22.12+ development tooling. Preserve the published Node 20 runtime requirement and verify CLI, gateway, and packed installation behavior on Node 20 in CI. Full test suites run on Node 22 and 24.
+- Wait for the supervisor's completed notification commit in the Windows retry test, avoiding repeated file reads during atomic replacement.
+- Limit CodeQL write permissions to its analysis job and declare no default permissions for the Scorecard workflow.
+- Provider defaults and protocol contracts are unchanged. Fresh live audio remains unverified; see the [maintenance validation receipt](https://github.com/bielcarpi/hermes-live-voice/blob/v1.1.4/docs/provider-receipts/2026-10-07-maintenance-v1.1.4.md).
+
 ## 1.1.3 - 2026-09-07
 
 - Merge the pending Node 22 Docker image refresh and CodeQL action updates from dependency PRs #78 and #75.

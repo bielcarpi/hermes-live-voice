@@ -31,7 +31,7 @@ Hermes remains the agent brain: model routing, tools, memory, skills, and execut
 
 ## Quick start
 
-You need Hermes Agent 0.18.2 or newer and Node.js 20+. Local voice on Apple Silicon also needs [uv](https://docs.astral.sh/uv/).
+You need Hermes Agent 0.18.2 or newer and Node.js 20+. Use Node 22 or Node 24 LTS for new installations. Local voice on Apple Silicon also needs [uv](https://docs.astral.sh/uv/).
 
 ```sh
 npm install --global hermes-live-voice

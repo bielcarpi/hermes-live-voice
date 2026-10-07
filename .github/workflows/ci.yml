@@ -54,10 +54,29 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node-version }}
+          # Vitest 5 needs Node >=22.12. Build with supported tooling, then
+          # qualify the shipped package separately on the Node 20 runtime.
+          node-version: ${{ matrix.node-version == 20 && 22 || matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run verify
+        if: matrix.node-version != 20
+      - run: npm run build
+        if: matrix.node-version == 20
+      - name: Select legacy runtime for package compatibility checks
+        if: matrix.node-version == 20
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          package-manager-cache: false
+      - name: Verify Node 20 runtime and packed installation
+        if: matrix.node-version == 20
+        run: >-
+          npm run check:live-provider-cli &&
+          npm run check:cli-check &&
+          npm run check:cli-client &&
+          npm run check:gateway &&
+          npm run check:package
       - run: npm audit --audit-level=moderate
       - run: npm pack --dry-run
       - name: Build Docker image

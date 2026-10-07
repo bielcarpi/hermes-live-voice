@@ -777,7 +777,10 @@ describe("live gateway WebSocket", () => {
     await readyClient(server.url, { expectedSnapshotReason: "reconnect" });
 
     await waitUntil(() => provider.latest.notificationCalls.length === 2);
-    await waitUntil(() => storedTask(config.tasks.stateFile, record.taskId)?.notification?.announcedAt !== undefined);
+    // Wait for the supervisor's completed commit. Repeatedly opening the
+    // destination file can interfere with its atomic replacement on Windows.
+    await waitUntil(async () =>
+      (await supervisor.get(record.ownerId, record.taskId))?.notification.announcedAt !== undefined);
     expect(provider.latest.notifications.items).toHaveLength(2);
   });
 

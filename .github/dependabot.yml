@@ -11,8 +11,8 @@ updates:
           - minor
           - patch
     ignore:
-      # This project intentionally verifies its public Node >=20 floor against
-      # Node 20 types. Moving the type baseline is separate compatibility work.
+      # Keep development types on the Node 22 toolchain baseline. Node 20
+      # runtime compatibility is qualified through packed-package CI checks.
       - dependency-name: "@types/node"
         update-types:
           - "version-update:semver-major"
