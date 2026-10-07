@@ -114,7 +114,7 @@ describe("provider error formatting", () => {
     },
   );
 
-  it("verifies a real local task tool call and deterministic spoken receipt", async () => {
+  it.each(["local", "openai", "gemini"] as const)("verifies a %s task tool call and spoken receipt", async (provider) => {
     vi.mocked(createLiveModelAdapter).mockReturnValue({
       connect: vi.fn(async (params) => {
         params.callbacks.onOpen?.();
@@ -141,7 +141,7 @@ describe("provider error formatting", () => {
         } as any;
       }),
     });
-    const config = loadConfig({ HERMES_LIVE_PROVIDER: "local" });
+    const config = provider === "local" ? loadConfig({ HERMES_LIVE_PROVIDER: "local" }) : providerConfig(provider).config;
 
     const report = await runLiveProviderSmoke(config, { timeoutMs: 100, verifyToolCall: true });
 

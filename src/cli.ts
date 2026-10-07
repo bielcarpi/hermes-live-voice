@@ -8,7 +8,7 @@ import { createLogger } from "./logger.js";
 import { HERMES_LIVE_PROTOCOL_VERSION } from "./protocol.js";
 import { buildReadinessReport } from "./readiness.js";
 import { startServer } from "./adapters/inbound/http/server.js";
-import { runLiveProviderSmoke } from "./live-provider-smoke.js";
+import { LOCAL_FUNCTIONAL_PROVIDER_SMOKE_TIMEOUT_MS, runLiveProviderSmoke } from "./live-provider-smoke.js";
 import { errorToMessage } from "./domain/error-message.js";
 import { normalizeGatewayWebSocketUrl, runInteractiveTerminal, sanitizeTerminalText } from "./cli/terminal-session.js";
 import { runOfflineTaskCommand, taskCommandHelp } from "./cli/task-operator.js";
@@ -196,9 +196,12 @@ async function main(): Promise<void> {
 
   if (command === "provider-smoke" || command === "check-live-provider") {
     const config = loadConfig();
+    const functional = commandArgs.includes("--functional");
     try {
       const report = await runLiveProviderSmoke(config, {
-        timeoutMs: positiveInt(process.env.HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS, config.server.providerReadyTimeoutMs),
+        verifyToolCall: functional,
+        timeoutMs: positiveInt(process.env.HERMES_LIVE_PROVIDER_SMOKE_TIMEOUT_MS,
+          functional ? LOCAL_FUNCTIONAL_PROVIDER_SMOKE_TIMEOUT_MS : config.server.providerReadyTimeoutMs),
       });
       console.log(JSON.stringify(report, null, 2));
     } catch (error) {
@@ -322,9 +325,11 @@ work, wait for that exact background task while unrelated tasks keep running.`;
 Print machine-readable gateway, Hermes, task-store, and provider readiness.`;
   }
   if (command === "provider-smoke" || command === "check-live-provider") {
-    return `hermes-live provider-smoke
+    return `hermes-live provider-smoke [--functional]
 
-Open and cleanly close a real session with the configured voice provider.`;
+Open and cleanly close a real session with the configured voice provider.
+--functional also verifies task delegation and a spoken receipt. It uses a
+synthetic task result and does not start a Hermes worker.`;
   }
   if (command === "print-config") {
     return `hermes-live print-config

@@ -1957,6 +1957,50 @@ describe("transport, tool-call, and notification safety", () => {
 });
 
 describe("WebSocket exposure controls", () => {
+  it("rejects seeded malformed commands without reaching Hermes and recovers for valid clients", async () => {
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const logger = fakeLogger();
+    const server = await startTestServer({ config: testConfig(), hermes, provider, logger });
+    const client = await readyClient(server.url);
+    // Fixed seed keeps failures reproducible. Mutate actual command envelopes,
+    // including ownership injection and prototype-shaped JSON from the wire.
+    let seed = 0x4845524d;
+    const pick = (length: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return (seed >>> 8) % length;
+    };
+    const types = ["task.stop", "task.follow_up", "task.notification.ack", "task.get", "task.list", "text.input"];
+    const values = [null, [], {}, -1, true, "\u0000", "../other-owner", "x".repeat(300)];
+    const injections = ["ownerId", "sessionKey", "runId", "approval", "__proto__", "constructor", "FUZZ_PRIVATE_MARKER"];
+    for (let index = 0; index < 192; index += 1) {
+      const type = types[pick(types.length)]!;
+      const payload = JSON.stringify({
+        type,
+        id: `fuzz_${index}`,
+        taskId: values[pick(values.length)],
+        message: "FUZZ_PRIVATE_MARKER",
+        [injections[pick(injections.length)]!]: { polluted: true, value: "FUZZ_PRIVATE_MARKER" },
+      });
+      // Include malformed JSON as well as structurally valid but invalid commands.
+      client.socket.send(index % 4 === 0 ? '"FUZZ_PRIVATE_MARKER' : payload);
+      const failure = await client.messages.wait("session.error");
+      expect(failure.code).toBe("client_message_failed");
+      expect(String(failure.message).length).toBeLessThanOrEqual(2_000);
+      expect(JSON.stringify(failure)).not.toContain("FUZZ_PRIVATE_MARKER");
+      // A valid operation must still work and must not expose injected ownership.
+      send(client.socket, { type: "task.list", id: `list_${index}` });
+      const snapshot = await client.messages.wait("task.snapshot", (message) => message.requestId === `list_${index}`);
+      expect(snapshot.tasks).toEqual([]);
+    }
+    expect(hermes.startCalls).toEqual([]);
+    expect(hermes.stopCalls).toEqual([]);
+    expect(hermes.approvalCalls).toEqual([]);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(provider.latest.textInputs).toEqual([]);
+    expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain("FUZZ_PRIVATE_MARKER");
+  });
+
   it("requires configured auth while allowing the browser query-token path", async () => {
     const config = testConfig({ server: { authToken: "gateway-secret", allowUnauthenticated: false } });
     const server = await startTestServer({ config, hermes: new HermesHarness(), provider: new RecordingLiveAdapter() });

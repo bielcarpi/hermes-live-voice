@@ -439,8 +439,10 @@ export class LiveGatewaySession {
       const parsed = JSON.parse(text) as unknown;
       requestId = requestIdFromUnknown(parsed);
       message = parseClientMessage(parsed);
-    } catch (error) {
-      this.handleClientMessageFailure(error, requestId);
+    } catch {
+      // JSON and schema errors can quote raw payloads (including arbitrary key
+      // names). Keep malformed frames out of both public errors and service logs.
+      this.handleClientMessageFailure(new Error("Invalid client message. Check its type and fields."), requestId);
       return;
     }
 

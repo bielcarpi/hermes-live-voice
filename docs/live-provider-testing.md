@@ -7,10 +7,11 @@ CI proves the protocol, gateway, task store, plugin, package, and Docker image a
 ```sh
 hermes-live doctor
 hermes-live doctor --provider-smoke
+hermes-live provider-smoke --functional
 hermes-live launch-check
 ```
 
-The manual smoke opens the same adapter used by the gateway, waits for provider readiness, and closes it cleanly. It does not send audio or start a Hermes task. Managed Apple Silicon setup additionally runs an isolated task-tool and spoken-receipt check before declaring local voice ready.
+The default smoke opens the gateway's provider adapter and closes it cleanly. With `--functional`, it also checks task delegation and receipt audio using a synthetic task result. This works with local, OpenAI, and Gemini providers. It does not start a Hermes worker. Managed Apple Silicon setup runs this functional check before declaring local voice ready.
 
 `hermes-live launch-check` is the v1 go/no-go check. It rejects mock mode and starts one bounded Hermes worker.
 Record release-relevant live results with the
@@ -25,11 +26,15 @@ npm run verify
 npm audit --audit-level=moderate
 ```
 
-With the managed local provider already running, the full local gateway gate also proves model-selected delegation, a fake Hermes run, SSE completion, and delivery back to the browser protocol:
+With the local provider running, the gateway check verifies delegation, receipt audio, response cancellation, reconnect during a running task, and spoken completion. It uses a fake Hermes worker:
 
 ```sh
 npm run check:gateway:local
 ```
+
+For hosted providers, build once, then run `node scripts/gateway-smoke.mjs --live-provider openai` or `--live-provider gemini` with your normal provider credentials. Gemini cancellation requires live audio barge-in and remains part of the browser checklist below.
+
+To test speech input, add `--audio-pcm /path/to/fixture.pcm`. Use 24 kHz mono signed PCM16 little-endian audio, between 0.1 and 30 seconds. The fixture must say: “Delegate in the background: gateway integration check.” Use synthetic speech, without personal data. The check streams audio in real time. It does not test physical microphone or speaker quality.
 
 ## Local Hugging Face
 
@@ -40,8 +45,12 @@ Start the upstream server, then run the smoke:
 hermes-live local run
 
 # Terminal 2
-HERMES_LIVE_PROVIDER=local hermes-live provider-smoke
+HERMES_LIVE_PROVIDER=local \
+HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING=true \
+hermes-live provider-smoke --functional
 ```
+
+The routing setting matches the managed runtime launched by `hermes-live local run`. Setup saves it automatically. An external upstream server without the Hermes wrapper uses its own model-selected routing and needs separate qualification.
 
 Confirm:
 
@@ -53,7 +62,7 @@ Confirm:
 - one task tool call returns a receipt and the conversation continues;
 - a completion notice waits until the current turn is idle.
 
-`hermes-live local run` pins the upstream Python package version tested by the release. Normal installs use the managed service created by `hermes-live setup`. Other platforms can run the upstream `realtime` mode separately and point `HERMES_LIVE_LOCAL_URL` at it.
+`hermes-live local run` pins the upstream Python package version tested by the release. Normal installs use the managed service created by `hermes-live setup`. Other platforms can run upstream `speech-to-speech serve` separately and point `HERMES_LIVE_LOCAL_URL` at it.
 
 ## Gemini
 
