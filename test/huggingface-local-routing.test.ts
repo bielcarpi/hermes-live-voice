@@ -289,12 +289,32 @@ describe("managed local voice routing", () => {
     for (const formatted of [
       "Read [the release](https://example.com/release).",
       "Run `npm test` and inspect the output.",
-      "Use **production** only after verification.",
+      "A | B\n--- | ---\n1 | 2",
+      "Do not read this\u0000control character.",
     ]) {
       const response = buildLocalConversationResponse({ ok: true, message: formatted });
       expect(response.metadata).toEqual({ hermes_live_purpose: "conversation_summary" });
       expect(response).not.toHaveProperty("metadata.hermes_live_exact_speech");
       expect(response).toMatchObject({ tools: [], tool_choice: "none" });
     }
+  });
+
+  it("speaks short formatted prose directly without changing its words", () => {
+    for (const [message, spoken] of [
+      ["**The check passed.**\n\n- The gateway is ready.", "The check passed. The gateway is ready."],
+      ["Use **production** only after verification.", "Use production only after verification."],
+      ["- Primer paso.\r\n* 第二步。", "Primer paso. 第二步。"],
+    ]) {
+      expect(buildLocalConversationResponse({ ok: true, message })).toMatchObject({
+        tools: [],
+        tool_choice: "none",
+        metadata: {
+          hermes_live_purpose: "conversation_answer",
+          hermes_live_exact_speech: spoken,
+        },
+      });
+    }
+    expect(buildLocalConversationResponse({ ok: false, message: "**Failed.**" }).metadata)
+      .toEqual({ hermes_live_purpose: "conversation_summary" });
   });
 });

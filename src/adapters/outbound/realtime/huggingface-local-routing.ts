@@ -314,21 +314,27 @@ export function buildLocalConversationResponse(
   toolResponse: Record<string, unknown>,
 ): Record<string, unknown> {
   const message = typeof toolResponse.message === "string" ? toolResponse.message.trim() : "";
+  // Simple prose formatting does not need another model pass before speech.
+  // Keep links, code, tables, long answers, and failures on the summary path.
+  const spoken = message.length <= MAX_EXACT_CONVERSATION_CHARS
+    ? message.replace(/\*\*([^*\r\n]+)\*\*/gu, "$1")
+      .replace(/^ *[-*] +/gmu, "")
+      .replace(/\r?\n+/gu, " ").trim()
+    : "";
   if (
     toolResponse.ok === true
-    && message.length > 0
-    && message.length <= MAX_EXACT_CONVERSATION_CHARS
-    && isExactLocalSpeech(message)
+    && spoken.length > 0
+    && isExactLocalSpeech(spoken)
   ) {
     return {
       conversation: "none",
-      instructions: `Say this saved Hermes answer exactly and nothing else: ${JSON.stringify(message)}`,
+      instructions: `Say this saved Hermes answer exactly and nothing else: ${JSON.stringify(spoken)}`,
       output_modalities: ["audio"],
       tools: [],
       tool_choice: "none",
       metadata: {
         hermes_live_purpose: "conversation_answer",
-        hermes_live_exact_speech: message,
+        hermes_live_exact_speech: spoken,
       },
     };
   }

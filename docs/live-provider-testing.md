@@ -45,8 +45,12 @@ Start the upstream server, then run the smoke:
 hermes-live local run
 
 # Terminal 2
-HERMES_LIVE_PROVIDER=local hermes-live provider-smoke
+HERMES_LIVE_PROVIDER=local \
+HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING=true \
+hermes-live provider-smoke --functional
 ```
+
+The routing setting matches the managed runtime launched by `hermes-live local run`. Setup saves it automatically. An external upstream server without the Hermes wrapper uses its own model-selected routing and needs separate qualification.
 
 Confirm:
 

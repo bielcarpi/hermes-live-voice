@@ -5,9 +5,12 @@
 ## 1.2.0 - 2026-10-07
 
 - Upgrade managed local voice to speech-to-speech 1.0.0 and its `serve` command. Remove two compatibility patches now handled upstream. Preserve controlled responses, exact speech, stale-turn suppression, and private service logs.
+- Disable partial local transcription so it does not delay completed voice commands on the shared Apple GPU.
+- Speak short answers with bold text, bullets, or line breaks directly, avoiding an unnecessary local model pass. Keep code, links, tables, long answers, and failures on the summary path.
 - Add `hermes-live provider-smoke --functional` for local, OpenAI, and Gemini task-tool and audio-receipt checks. Extend the existing gateway smoke with synthetic speech input, cancellation, task completion, and reconnect checks.
 - Add reproducible malformed-command testing through the real WebSocket gateway. Keep rejected message content out of parser errors and service logs.
 - Wait for the npm tarball and verify its checksum before declaring a release available, including when registry metadata arrives first.
+- Real managed local audio passed delegation, cancellation, reconnect, and spoken completion checks. See the [validation receipt](https://github.com/bielcarpi/hermes-live-voice/blob/v1.2.0/docs/provider-receipts/2026-10-07-local-runtime-v1.2.0.md) for hardware, latency observations, and remaining hosted-provider and device limits.
 
 ## 1.1.4 - 2026-10-07
 

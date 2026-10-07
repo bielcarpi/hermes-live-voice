@@ -11,10 +11,12 @@ import { loadConfig } from "../dist/config.js";
 const options = parseOptions(process.argv.slice(2));
 const liveProvider = options.liveProvider;
 const realProvider = liveProvider !== "mock";
-const prompt = realProvider
+const prompt = liveProvider === "local"
+  ? "Delegate in the background: gateway integration check."
+  : realProvider
   ? 'Use start_background_task now. Set its message exactly to "gateway integration check" and do not answer directly.'
   : "hello from gateway smoke";
-const expectedTaskInput = realProvider ? "gateway integration check" : prompt;
+const expectedTaskInput = liveProvider === "local" ? prompt : realProvider ? "gateway integration check" : prompt;
 const expectedOutput = "gateway smoke ok";
 const runId = "run_gateway_smoke";
 const dockerImage = options.dockerImage;
@@ -65,6 +67,7 @@ const gatewayEnvironment = {
   HERMES_LIVE_PORT: dockerImage ? "8788" : String(gatewayPort),
   HERMES_LIVE_PROVIDER: liveProvider,
   HERMES_LIVE_LOCAL_URL: process.env.HERMES_LIVE_LOCAL_URL ?? "ws://127.0.0.1:8765/v1/realtime",
+  HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING: liveProvider === "local" ? "true" : "false",
   HERMES_LIVE_PROVIDER_READY_TIMEOUT_MS: realProvider ? "30000" : "5000",
   HERMES_LIVE_SESSION_PREFIX: "agent:main:hermes-live",
   HERMES_LIVE_TASK_POLL_INTERVAL_MS: "250",
@@ -151,11 +154,7 @@ try {
     throw new Error(`Gateway health response mismatch: HTTP ${healthResponse.status} ${JSON.stringify(health)}.`);
   }
 
-  let socket = new WebSocket(`ws://127.0.0.1:${gatewayPort}/v1/live`, {
-    headers: { origin: `http://127.0.0.1:${gatewayPort}` },
-  });
-  let inbox = createInbox(socket);
-  await waitForOpen(socket, 5_000);
+  let { socket, inbox } = await connectGatewaySocket(gatewayPort);
 
   socket.send(JSON.stringify({
     type: "session.start",
@@ -206,15 +205,6 @@ try {
     if (!audio.data || !audio.mimeType?.startsWith("audio/")) {
       throw new Error("Voice provider did not synthesize receipt audio.");
     }
-    if (liveProvider === "local") {
-      let spoken;
-      do {
-        spoken = await inbox.next("transcript.delta", providerTimeoutMs);
-      } while (spoken.speaker !== "assistant");
-      if (!spoken.final || spoken.text?.trim() !== "I've started that in the background. You can keep talking.") {
-        throw new Error("Local voice did not emit the exact, final task receipt.");
-      }
-    }
     if (liveProvider !== "gemini") {
       socket.send(JSON.stringify({ type: "response.cancel", reason: "integration check" }));
       await inbox.next("response.cancelled", providerTimeoutMs);
@@ -224,13 +214,9 @@ try {
     }
     // Reconnect while the worker is still running. The durable snapshot must
     // restore the same task without submitting a duplicate Hermes run.
-    socket.close(1000, "reconnect check");
-    await waitForSocketClose(socket, 2_000);
-    socket = new WebSocket(`ws://127.0.0.1:${gatewayPort}/v1/live`, {
-      headers: { origin: `http://127.0.0.1:${gatewayPort}` },
-    });
-    inbox = createInbox(socket);
-    await waitForOpen(socket, 5_000);
+    socket.send(JSON.stringify({ type: "session.close", detach: true }));
+    await waitForSocketClose(socket, 5_000);
+    ({ socket, inbox } = await connectGatewaySocket(gatewayPort));
     socket.send(JSON.stringify({ type: "session.start", protocolVersion: 6,
       conversation: { mode: "resume", sessionId: "session_gateway_smoke" } }));
     await inbox.next("session.ready", providerTimeoutMs);
@@ -249,6 +235,15 @@ try {
     await inbox.next("task.notification", providerTimeoutMs);
     await inbox.next("audio.output", providerTimeoutMs);
     await inbox.next("response.completed", providerTimeoutMs);
+    if (liveProvider === "local") {
+      let spoken;
+      do {
+        spoken = await inbox.next("transcript.delta", providerTimeoutMs);
+      } while (spoken.speaker !== "assistant");
+      if (!spoken.final || spoken.text?.trim() !== "Your background task is finished. The result is ready in the task inbox.") {
+        throw new Error("Local voice did not emit the exact, final completion notice.");
+      }
+    }
   }
 
   socket.close(1000, "gateway smoke complete");
@@ -387,7 +382,7 @@ async function handleHermesRequest(req, res) {
       throw new Error(`Hermes should choose the configured task model: ${JSON.stringify(body.model)}.`);
     }
     const inputMatches = options.audioPcm
-      ? typeof body.input === "string" && body.input.toLowerCase().includes(expectedTaskInput)
+      ? typeof body.input === "string" && body.input.toLowerCase().includes("gateway integration check")
       : body.input === expectedTaskInput;
     if (!inputMatches) {
       throw new Error(`Unexpected Hermes input: ${JSON.stringify(body.input)}.`);
@@ -570,6 +565,15 @@ async function waitForOpen(socket, timeoutMs) {
     return;
   }
   await promiseWithTimeout(once(socket, "open"), timeoutMs, "Timed out waiting for gateway WebSocket open.");
+}
+
+async function connectGatewaySocket(port) {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/live`, {
+    headers: { origin: `http://127.0.0.1:${port}` },
+  });
+  const inbox = createInbox(socket);
+  await waitForOpen(socket, 5_000);
+  return { socket, inbox };
 }
 
 async function waitForSocketClose(socket, timeoutMs) {

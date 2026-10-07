@@ -175,7 +175,7 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
       toolResponseSent = true;
       functionalSettled = false;
       await session.sendToolResponse(toolResult.call, {
-        spoken_response: "Voice provider is ready.",
+        spoken_response: "Voice is ready.",
         ok: true,
         task_id: "task_provider_smoke",
         status: "accepted",

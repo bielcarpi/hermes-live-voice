@@ -14,7 +14,6 @@ Keep this focused. Call out protocol, provider, security, plugin, or deployment 
 - [ ] Docs and changelog updated when user-visible
 - [ ] Package, plugin, and Dashboard versions stay aligned when release metadata changes
 - [ ] Public positioning still passes `npm run check:positioning`
-- [ ] Maintainer-facing release evidence still passes `npm run check:maintainer-readiness` when relevant
 - [ ] GitHub Actions workflow changes pass `actionlint`
 - [ ] External GitHub Actions stay pinned to full commit SHAs with `npm run check:workflow-pins`
 - [ ] No secrets, private audio, prompts, or sensitive Hermes output included

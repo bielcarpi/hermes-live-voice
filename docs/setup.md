@@ -35,7 +35,7 @@ Then it proves a structured task tool call and spoken receipt before it starts t
 This warms the first real inference path.
 No second terminal is needed.
 
-The managed profile requires at least 12 GB of physical memory; a 16 GB Apple Silicon Mac is recommended (7.6 GB observed warm, 9.0 GB peak on the tested 16 GB M1 Pro). Setup checks this before downloading models. It moves an implicit local endpoint to a nearby free port when needed; an explicit `HERMES_LIVE_LOCAL_URL` is never changed.
+The managed profile requires at least 12 GB of physical memory; use 16 GB or more when possible. Setup checks this before downloading models. Other applications and available memory can strongly affect speech latency. Setup moves an implicit local endpoint to a nearby free port when needed; an explicit `HERMES_LIVE_LOCAL_URL` is never changed.
 
 The `hermes-live local` commands are for diagnostics and development:
 

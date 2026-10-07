@@ -277,6 +277,9 @@ export function buildLocalVoiceCommand(input: {
       runtimeEntrypoint,
       "serve",
       "--mac-optimal-settings",
+      // Partial STT competes with final transcription on the shared Apple GPU.
+      // Managed routing only needs the completed transcript.
+      "--no_enable_live_transcription",
       "--model_name",
       "mlx-community/Qwen3.5-2B-4bit",
       // Voice turns must stay short. Upstream holds one shared MLX lock for
