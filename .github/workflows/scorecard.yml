@@ -6,6 +6,8 @@ on:
   schedule:
     - cron: "29 5 * * 2"
 
+permissions: {}
+
 jobs:
   scorecard:
     runs-on: ubuntu-latest
