@@ -132,11 +132,11 @@
     "ws": "8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^20.19.0",
+    "@types/node": "^22.20.3",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.11",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.3"
   },
   "overrides": {
     "esbuild": "^0.28.1"
