@@ -14,7 +14,7 @@ import {
   type ServiceStatus,
 } from "./service-manager.js";
 
-export const HUGGINGFACE_SPEECH_TO_SPEECH_VERSION = "0.2.12";
+export const HUGGINGFACE_SPEECH_TO_SPEECH_VERSION = "1.0.0";
 export const MIN_MANAGED_LOCAL_MEMORY_BYTES = 12 * 1024 * 1024 * 1024;
 export const MANAGED_LOCAL_MIN_SILENCE_MS = 700;
 export const MANAGED_LOCAL_MAX_NEW_TOKENS = 96;
@@ -275,17 +275,8 @@ export function buildLocalVoiceCommand(input: {
       `speech-to-speech==${HUGGINGFACE_SPEECH_TO_SPEECH_VERSION}`,
       "python",
       runtimeEntrypoint,
-      // Do not use --local_mac_optimal_settings here. Upstream deliberately
-      // forces that preset back to direct `local` microphone mode after
-      // parsing, even when --mode realtime is also present. These are its
-      // equivalent Apple Silicon model settings with the realtime transport
-      // kept explicit for Hermes Live.
-      "--device",
-      "mps",
-      "--stt",
-      "parakeet-tdt",
-      "--llm_backend",
-      "mlx-lm",
+      "serve",
+      "--mac-optimal-settings",
       "--model_name",
       "mlx-community/Qwen3.5-2B-4bit",
       // Voice turns must stay short. Upstream holds one shared MLX lock for
@@ -293,16 +284,10 @@ export function buildLocalVoiceCommand(input: {
       // and interruption for far longer than a live conversation can tolerate.
       "--llm_gen_max_new_tokens",
       String(MANAGED_LOCAL_MAX_NEW_TOKENS),
-      "--tts",
-      "qwen3",
-      "--mode",
-      "realtime",
-      "--ws_host",
+      "--host",
       host,
-      "--ws_port",
+      "--port",
       String(port),
-      "--language",
-      "auto",
       // The upstream 64ms default starts speculative LLM work during normal
       // sentence pauses. On a shared Apple GPU that generation can delay VAD
       // revision and interruption for tens of seconds. Wait through ordinary

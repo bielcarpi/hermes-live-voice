@@ -106,6 +106,8 @@ document a release-relevant environment or provider change.
 
 Never include credentials, session tokens, private prompts, user audio, or sensitive Hermes tool output in fixtures or pull-request logs.
 
+The WebSocket tests include a fixed-seed malformed-command check. Keep it bounded and reproducible, and add any discovered failure as a regression case. Changes to authentication, owner isolation, approvals, or task execution should receive a second maintainer's review when one is available. CI does not replace that review.
+
 ## Public API and documentation
 
 - Document protocol changes in [docs/client-protocol.md](docs/client-protocol.md).

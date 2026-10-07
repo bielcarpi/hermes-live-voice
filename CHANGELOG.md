@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.2.0 - 2026-10-07
+
+- Upgrade managed local voice to speech-to-speech 1.0.0 and its `serve` command. Remove two compatibility patches now handled upstream. Preserve controlled responses, exact speech, stale-turn suppression, and private service logs.
+- Add `hermes-live provider-smoke --functional` for local, OpenAI, and Gemini task-tool and audio-receipt checks. Extend the existing gateway smoke with synthetic speech input, cancellation, task completion, and reconnect checks.
+- Add reproducible malformed-command testing through the real WebSocket gateway. Keep rejected message content out of parser errors and service logs.
+- Wait for the npm tarball and verify its checksum before declaring a release available, including when registry metadata arrives first.
+
 ## 1.1.4 - 2026-10-07
 
 - Update Gemini SDK to 2.27.0 and WebSocket support to ws 8.22.0. Refresh compatible dependencies, the Node 22 container image, and pinned workflow actions. Integrate dependency PRs #83, #84, #90, #92, #94, and #97.

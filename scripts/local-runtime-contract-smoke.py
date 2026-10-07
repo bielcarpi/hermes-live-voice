@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import logging
 import sys
 import types
 from pathlib import Path
@@ -29,14 +28,20 @@ class GenerateResponseRequest:
         self.turn_id = "turn_1"
         self.turn_revision = 1
         self.speech_stopped_at_s = 0.5
+        self.response_key = "response_1"
 
 
 class BaseLanguageModelHandler:
     def __init__(self) -> None:
         self.cancel_scope = SimpleNamespace(generation=7)
+        self.latest = True
+
+    def _turn_is_latest(self, _turn_id: str, _revision: int) -> bool:
+        return self.latest
 
     def process(self, request: Any) -> Any:
-        yield ("original", list(request.runtime_config.session.tools))
+        tools = getattr(request.response, "tools", None)
+        yield ("original", list(tools if tools is not None else request.runtime_config.session.tools))
 
 
 class RealtimeService:
@@ -53,16 +58,6 @@ class RealtimeService:
         return "completed"
 
 
-class Chat:
-    def to_transformers_chat(self) -> list[dict[str, Any]]:
-        return [
-            {"role": "user", "content": "Check the task."},
-            {"role": "assistant", "tool_calls": [{"id": "call_1"}]},
-            {"role": "tool", "content": "done"},
-            {"role": "assistant", "content": "Already complete"},
-        ]
-
-
 def install_fake_upstream() -> None:
     modules = {
         "speech_to_speech": types.ModuleType("speech_to_speech"),
@@ -77,18 +72,9 @@ def install_fake_upstream() -> None:
         "speech_to_speech.LLM.language_model": types.ModuleType(
             "speech_to_speech.LLM.language_model"
         ),
-        "speech_to_speech.LLM.chat": types.ModuleType(
-            "speech_to_speech.LLM.chat"
-        ),
-        "speech_to_speech.LLM.lm_output_processor": types.ModuleType(
-            "speech_to_speech.LLM.lm_output_processor"
-        ),
         "speech_to_speech.STT": types.ModuleType("speech_to_speech.STT"),
         "speech_to_speech.STT.parakeet_tdt_handler": types.ModuleType(
             "speech_to_speech.STT.parakeet_tdt_handler"
-        ),
-        "speech_to_speech.STT.transcription_notifier": types.ModuleType(
-            "speech_to_speech.STT.transcription_notifier"
         ),
         "speech_to_speech.TTS": types.ModuleType("speech_to_speech.TTS"),
         "speech_to_speech.TTS.qwen3_tts_handler": types.ModuleType(
@@ -103,7 +89,6 @@ def install_fake_upstream() -> None:
     modules["speech_to_speech.LLM.language_model"].BaseLanguageModelHandler = (
         BaseLanguageModelHandler
     )
-    modules["speech_to_speech.LLM.chat"].Chat = Chat
     modules["speech_to_speech.STT.parakeet_tdt_handler"].console = object()
     modules["speech_to_speech.TTS.qwen3_tts_handler"].console = object()
     messages = modules["speech_to_speech.pipeline.messages"]
@@ -143,15 +128,13 @@ def main() -> None:
     try:
         entrypoint._install_create_response_patch()
     except RuntimeError as error:
-        assert "expected speech-to-speech 0.2.12" in str(error)
+        assert "expected speech-to-speech 1.0.0" in str(error)
     else:
         raise AssertionError("An unreviewed speech-to-speech version must fail closed")
 
     entrypoint.version = lambda _name: entrypoint.EXPECTED_VERSION
     entrypoint._install_create_response_patch()
     entrypoint._install_exact_speech_patch()
-    entrypoint._install_empty_response_tools_patch()
-    entrypoint._install_transformers_tool_content_patch()
     entrypoint._install_private_runtime_logging_patch()
     entrypoint._install_private_runtime_logging_patch()
 
@@ -196,6 +179,13 @@ def main() -> None:
         "EndOfResponse",
     ]
     assert exact_output[0].text == "The task is running."
+    assert all(item.response_key == "response_1" for item in exact_output)
+
+    handler.latest = False
+    stale_output = list(handler.process(GenerateResponseRequest(exact_response, runtime_config(False))))
+    assert [type(item).__name__ for item in stale_output] == ["EndOfResponse"]
+    assert stale_output[0].response_key == "response_1"
+    handler.latest = True
 
     for invalid in ("", "x" * 501, "bad\nmetadata"):
         response = SimpleNamespace(
@@ -221,44 +211,18 @@ def main() -> None:
     assert no_tools_output == [("original", [])]
     assert no_tools_runtime.session.tools == ["private_session_tool"]
 
-    inherited_response = SimpleNamespace(metadata={}, model_fields_set=set(), tools=[])
+    inherited_response = SimpleNamespace(metadata={}, model_fields_set=set(), tools=None)
     inherited_runtime = runtime_config(False, ["session_tool"])
     inherited_output = list(
         handler.process(GenerateResponseRequest(inherited_response, inherited_runtime))
     )
     assert inherited_output == [("original", ["session_tool"])]
 
-    transformed = Chat().to_transformers_chat()
-    assert transformed[1] == {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [{"id": "call_1"}],
-    }
-    assert transformed[3] == {
-        "role": "assistant",
-        "content": "Already complete",
-    }
-
     for module_name in (
         "speech_to_speech.STT.parakeet_tdt_handler",
         "speech_to_speech.TTS.qwen3_tts_handler",
     ):
         assert sys.modules[module_name].console.print("private transcript") is None
-
-    for logger_name in (
-        "speech_to_speech.STT.transcription_notifier",
-        "speech_to_speech.LLM.lm_output_processor",
-    ):
-        filters = [
-            active
-            for active in logging.getLogger(logger_name).filters
-            if getattr(active, "_hermes_live_private_content_filter", False)
-        ]
-        assert len(filters) == 1
-        info = logging.LogRecord(logger_name, logging.INFO, __file__, 1, "private", (), None)
-        warning = logging.LogRecord(logger_name, logging.WARNING, __file__, 1, "warning", (), None)
-        assert filters[0].filter(info) is False
-        assert filters[0].filter(warning) is True
 
     print("Managed local runtime contract smoke passed.")
 

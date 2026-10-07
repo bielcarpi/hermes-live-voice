@@ -38,10 +38,6 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
   }
 
   assertRealtimeProviderConfig(config);
-  if (options.verifyToolCall && config.realtime.provider !== "local") {
-    throw new Error("Functional provider smoke is currently supported only for managed local voice.");
-  }
-
   const timeoutMs = options.timeoutMs ?? config.server.providerReadyTimeoutMs;
   const adapter = createLiveModelAdapter(config);
   const sessionId = `live_provider_smoke_${Date.now()}`;
@@ -105,12 +101,12 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
         },
         onClose: (event) => {
           closeEvent = summarizeCloseEvent(event);
-          if (!closing) failFunctionalCheck("Local voice closed before the functional check completed.");
+          if (!closing) failFunctionalCheck("Voice provider closed before the functional check completed.");
         },
         onError: (_error) => {
           if (!closing) {
             providerError = true;
-            failFunctionalCheck("Local voice reported an error during the functional check.");
+            failFunctionalCheck("Voice provider reported an error during the functional check.");
           }
         },
         onEvent: (event) => {
@@ -127,14 +123,14 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
           }
           if (event.type === "response" && event.status === "failed") {
             failFunctionalCheck(toolResponseSent
-              ? "Local voice could not produce the functional-check receipt."
-              : "Local voice did not produce a valid task tool call.");
+              ? "Voice provider could not produce the functional-check receipt."
+              : "Voice provider did not produce a valid task tool call.");
           } else if (event.type === "response" && event.status === "completed") {
             if (toolResponseSent && receiptAudioObserved) {
               functionalSettled = true;
               resolveReceipt({ ok: true });
             } else if (!toolResponseSent) {
-              failFunctionalCheck("Local voice answered directly instead of emitting the required task tool call.");
+              failFunctionalCheck("Voice provider answered directly instead of emitting the required task tool call.");
             }
           }
         },
@@ -162,10 +158,10 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
       const toolResult = await withFunctionalTimeout(
         toolCallSignal,
         timeoutMs,
-        "Local voice did not emit the required task tool call before the functional-check deadline.",
+        "Voice provider did not emit the required task tool call before the functional-check deadline.",
       );
       if (!toolResult.call || toolResult.error) {
-        throw new ProviderFunctionalSmokeError(toolResult.error ?? "Local voice did not emit a task tool call.");
+        throw new ProviderFunctionalSmokeError(toolResult.error ?? "Voice provider did not emit a task tool call.");
       }
       if (
         toolResult.call.name !== "start_background_task"
@@ -173,13 +169,13 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
         || !toolResult.call.args.message.toUpperCase().includes("PROVIDER SMOKE OK")
       ) {
         throw new ProviderFunctionalSmokeError(
-          "Local voice did not preserve the requested work in its task tool call during setup.",
+          "Voice provider did not preserve the requested work in its task tool call during the functional check.",
         );
       }
       toolResponseSent = true;
       functionalSettled = false;
       await session.sendToolResponse(toolResult.call, {
-        spoken_response: "Local voice is ready.",
+        spoken_response: "Voice provider is ready.",
         ok: true,
         task_id: "task_provider_smoke",
         status: "accepted",
@@ -187,10 +183,10 @@ export async function runLiveProviderSmoke(config: AppConfig, options: LiveProvi
       const receiptResult = await withFunctionalTimeout(
         receiptSignal,
         timeoutMs,
-        "Local voice did not produce the spoken task receipt before the functional-check deadline.",
+        "Voice provider did not produce the spoken task receipt before the functional-check deadline.",
       );
       if (!receiptResult.ok || receiptResult.error) {
-        throw new ProviderFunctionalSmokeError(receiptResult.error ?? "Local voice did not produce the task receipt.");
+        throw new ProviderFunctionalSmokeError(receiptResult.error ?? "Voice provider did not produce the task receipt.");
       }
       functional = {
         checked: true,

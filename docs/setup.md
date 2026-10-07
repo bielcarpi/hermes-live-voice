@@ -28,7 +28,7 @@ To create a support bundle, run `hermes-live diagnostics`. The private JSON file
 
 ## Local voice
 
-On Apple Silicon, `hermes-live setup` uses `uv` to install and run `speech-to-speech==0.2.12`.
+On Apple Silicon, `hermes-live setup` uses `uv` to install and run `speech-to-speech==1.0.0`.
 The managed voice stack uses Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and realtime WebSocket transport.
 It installs a private launchd service and waits for the models.
 Then it proves a structured task tool call and spoken receipt before it starts the gateway.
