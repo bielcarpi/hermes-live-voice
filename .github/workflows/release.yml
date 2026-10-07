@@ -526,21 +526,34 @@ jobs:
           registry_integrity=""
           registry_tag=""
           provenance_type=""
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
+          tarball_ready=false
+          registry_package="$(mktemp)"
+          trap 'rm -f "$registry_package"' EXIT
+          # Registry metadata and tarballs can reach CDN edges at different
+          # times. Verify the bytes before attempting a clean installation.
+          for attempt in $(seq 1 60); do
             registry_integrity="$(npm view "$package_spec" dist.integrity --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
             registry_tag="$(npm view "$PACKAGE_NAME" "dist-tags.$NPM_TAG" --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
             provenance_type="$(npm view "$package_spec" dist.attestations.provenance.predicateType --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
             if [ "$registry_integrity" = "$EXPECTED_INTEGRITY" ] && \
                [ "$provenance_type" = "https://slsa.dev/provenance/v1" ] && \
                [ "$registry_tag" = "$PACKAGE_VERSION" ]; then
-              break
+              if curl --fail --silent --show-error --location --max-time 20 \
+                --output "$registry_package" \
+                "https://registry.npmjs.org/$PACKAGE_NAME/-/$PACKAGE_NAME-$PACKAGE_VERSION.tgz"; then
+                downloaded_integrity="$(node -e 'const crypto = require("node:crypto"); const fs = require("node:fs"); process.stdout.write("sha512-" + crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"));' "$registry_package")"
+                test "$downloaded_integrity" = "$EXPECTED_INTEGRITY"
+                tarball_ready=true
+                break
+              fi
             fi
-            if [ "$attempt" -lt 24 ]; then
+            if [ "$attempt" -lt 60 ]; then
               sleep 5
             fi
           done
           if [ "$registry_integrity" != "$EXPECTED_INTEGRITY" ] || \
              [ "$provenance_type" != "https://slsa.dev/provenance/v1" ] || \
+             [ "$tarball_ready" != "true" ] || \
              [ "$registry_tag" != "$PACKAGE_VERSION" ]; then
             echo "Registry verification timed out." >&2
             echo "Expected integrity: $EXPECTED_INTEGRITY" >&2
@@ -548,6 +561,7 @@ jobs:
             echo "Expected $NPM_TAG: $PACKAGE_VERSION" >&2
             echo "Observed $NPM_TAG: $registry_tag" >&2
             echo "Observed provenance predicate: $provenance_type" >&2
+            echo "Registry tarball verified: $tarball_ready" >&2
             npm view "$package_spec" dist.integrity dist.attestations --json --registry=https://registry.npmjs.org/ >&2 || true
             npm view "$PACKAGE_NAME" dist-tags --json --registry=https://registry.npmjs.org/ >&2 || true
             exit 1
@@ -556,7 +570,7 @@ jobs:
           test "$provenance_type" = "https://slsa.dev/provenance/v1"
 
           install_dir="$(mktemp -d)"
-          trap 'rm -rf "$install_dir"' EXIT
+          trap 'rm -f "$registry_package"; rm -rf "$install_dir"' EXIT
           npm install --prefix "$install_dir" --ignore-scripts --omit=dev --no-audit --no-fund "$package_spec"
           test "$("$install_dir/node_modules/.bin/hermes-live" --version)" = "$PACKAGE_VERSION"
           "$install_dir/node_modules/.bin/hermes-live" --help | grep -q 'launch-check'
