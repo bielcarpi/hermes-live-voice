@@ -553,8 +553,8 @@ jobs:
           done
           if [ "$registry_integrity" != "$EXPECTED_INTEGRITY" ] || \
              [ "$provenance_type" != "https://slsa.dev/provenance/v1" ] || \
-             [ "$registry_tag" != "$PACKAGE_VERSION" ] || \
-             [ "$tarball_ready" != "true" ]; then
+             [ "$tarball_ready" != "true" ] || \
+             [ "$registry_tag" != "$PACKAGE_VERSION" ]; then
             echo "Registry verification timed out." >&2
             echo "Expected integrity: $EXPECTED_INTEGRITY" >&2
             echo "Observed integrity: $registry_integrity" >&2
