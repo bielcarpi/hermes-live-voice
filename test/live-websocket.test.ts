@@ -291,7 +291,10 @@ describe("live gateway WebSocket", () => {
     provider.emit({ type: "tool_call", call: backgroundTaskCall("blocked_dispatch", "Dispatch slowly") });
     const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.id === "blocked_dispatch");
     const taskId = String(receipt.response.task_id);
-    await waitForStoredTask(config.tasks.stateFile, taskId, "dispatching");
+    // Dispatch starts only after its durable commit. Polling the file while
+    // Windows replaces it can make the test itself block that replacement.
+    await waitUntil(() => hermes.startCalls.length === 1);
+    expect(storedTask(config.tasks.stateFile, taskId)?.status).toBe("dispatching");
 
     send(first.socket, { type: "task.stop", id: "stop_blocked_dispatch", taskId });
     await expect(first.messages.wait(
@@ -342,7 +345,8 @@ describe("live gateway WebSocket", () => {
     start.resolve({ runId: "run_blocked_dispatch", status: "started" });
     await waitUntil(() => hermes.stopCalls.includes("run_blocked_dispatch"));
     expect(hermes.stopCalls).toEqual(["run_blocked_dispatch"]);
-    await waitForStoredTask(config.tasks.stateFile, taskId, "stopping");
+    // The stop request also follows its durable state transition.
+    expect(storedTask(config.tasks.stateFile, taskId)?.status).toBe("stopping");
   });
 
   it("never exposes a private task-store path when persistence rejects a provider task", async () => {
