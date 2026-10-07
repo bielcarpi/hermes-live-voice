@@ -18,7 +18,7 @@ Small fixes and documentation corrections can go directly to a pull request.
 
 ## Prerequisites
 
-- Node.js 20 or newer and the bundled npm CLI.
+- Node.js 22.12 or newer on a supported even-numbered release and the bundled npm CLI. Node 24 LTS is recommended.
 - Python 3 for the Hermes and Dashboard plugin smoke tests run by `npm run verify`.
 - Docker only when changing the image or Compose example.
 - A Hermes API server and provider credentials only for manual integration tests; mock mode and default CI do not need them.
@@ -37,6 +37,11 @@ npm run verify
 ```
 
 `npm run verify` covers TypeScript, browser-client syntax, plugin syntax, unit tests, build output, CLI/gateway smokes, fake Hermes HTTP/SSE integration, and packed-package installation.
+
+Vitest 5 requires Node 22.12 or newer for development. The published package
+keeps its Node 20 runtime compatibility. CI builds with Node 22, then runs the
+CLI, gateway, and packed installation checks on Node 20. Full test suites run
+on Node 22 and Node 24.
 
 Use `HERMES_LIVE_PROVIDER=mock` for deterministic gateway work. Real provider credentials are never required by default CI.
 
