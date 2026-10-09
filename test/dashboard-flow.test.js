@@ -20,85 +20,82 @@ afterEach(async () => {
 });
 
 describe("Dashboard conversation and task flow", () => {
-  it("connects a selected saved chat through the visible control", async () => {
-    const page = await mountDashboard({ conversations: [{ id: "saved_chat", title: "Saved chat" }] });
-    await act(async () => {
-      page.select.value = "saved_chat";
-      page.select.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-    });
-    await page.click("Connect");
+  it("attaches to Hermes's selected chat without a separate picker or composer", async () => {
+    const page = await mountDashboard({ chatId: "saved_chat" });
+    await page.click("Start voice");
     await page.waitFor(() => expect(page.requests[0]?.type).toBe("session.start"));
     expect(page.requests[0].conversation).toEqual({ mode: "resume", sessionId: "saved_chat" });
+    expect(page.document.querySelector("select, textarea, form")).toBeNull();
+  });
+
+  it("requires selecting the conversation in Hermes before starting voice", async () => {
+    const page = await mountDashboard({ chatId: null });
+    expect(page.button("Start voice").disabled).toBe(true);
+    expect(page.document.body.textContent).toContain("Select a saved chat in Hermes");
+    expect(page.requests).toHaveLength(0);
   });
 
   it("keeps speech interruption separate from exact task stop", async () => {
     const running = { ...completedTask, state: "running", result: undefined };
     const page = await mountDashboard({ tasks: [running] });
-    await page.click("Connect");
+    await page.click("Start voice");
     await page.waitFor(() => expect(page.button("Interrupt speech")).toBeDefined());
     await page.click("Interrupt speech");
     await page.waitFor(() => expect(page.requests.some((request) => request.type === "response.cancel")).toBe(true));
     expect(page.requests.some((request) => request.type === "task.stop")).toBe(false);
     await page.click("Stop task");
     await page.waitFor(() => expect(page.requests.find((request) => request.type === "task.stop")?.taskId).toBe(taskId));
-    expect(page.document.querySelector(".hlv-details").open).toBe(false);
+    expect(page.document.querySelector("[data-voice-tasks]").open).toBe(false);
   });
 
-  it("keeps the attached chat selected after disconnect, even before the chat index refreshes", async () => {
+  it("reconnects to the same native chat after ending voice", async () => {
     const page = await mountDashboard();
-    await page.click("Connect");
-    await page.waitFor(() => expect(page.button("Disconnect")).toBeDefined());
-    expect(page.select.value).toBe("chat_1");
-    await page.click("Disconnect");
-    await page.waitFor(() => expect(page.button("Connect")).toBeDefined());
-    expect(page.select.value).toBe("chat_1");
-    await page.click("Connect");
+    await page.click("Start voice");
+    await page.waitFor(() => expect(page.button("End voice")).toBeDefined());
+    await page.click("End voice");
+    await page.waitFor(() => expect(page.button("Start voice")).toBeDefined());
+    await page.click("Start voice");
     await page.waitFor(() => expect(page.requests.filter((request) => request.type === "session.start")).toHaveLength(2));
     expect(page.requests.filter((request) => request.type === "session.start")[1].conversation)
       .toEqual({ mode: "resume", sessionId: "chat_1" });
   });
 
-  it("clears the previous chat's transcript only after a different chat connects", async () => {
+  it("detaches voice on native chat navigation before allowing reconnection", async () => {
     const page = await mountDashboard();
-    await page.click("Connect");
-    await page.waitFor(() => expect(page.document.body.textContent).toContain("Reply for chat_1"));
-    await page.click("Disconnect");
-    await page.waitFor(() => expect(page.button("Connect")).toBeDefined());
-    await act(async () => {
-      page.select.value = "new";
-      page.select.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-    });
-    expect(page.document.body.textContent).toContain("Reply for chat_1");
-    page.failNextConnection();
-    await page.click("Connect");
-    await page.waitFor(() => expect(page.document.body.textContent).toContain("Fixture startup failed"));
-    expect(page.document.body.textContent).toContain("Reply for chat_1");
-    await page.click("Connect");
-    await page.waitFor(() => expect(page.document.body.textContent).toContain("Reply for chat_2"));
-    expect(page.document.body.textContent).not.toContain("Reply for chat_1");
+    await page.click("Start voice");
+    await page.waitFor(() => expect(page.button("End voice")).toBeDefined());
+    await page.navigate("/chat?resume=chat_2");
+    await page.waitFor(() => expect(page.requests.some((request) => request.type === "session.close")).toBe(true));
+    await page.waitFor(() => expect(page.button("Start voice")).toBeDefined());
+    await page.click("Start voice");
+    await page.waitFor(() => expect(page.requests.filter((request) => request.type === "session.start")).toHaveLength(2));
+    expect(page.requests.filter((request) => request.type === "session.start")[1].conversation)
+      .toEqual({ mode: "resume", sessionId: "chat_2" });
+    await page.navigate("/sessions");
+    await page.waitFor(() => expect(page.button("Start voice")?.disabled).toBe(true));
   });
 
   it("keeps another result read pending when one request fails", async () => {
     const second = { ...completedTask, taskId: "task_abcdef0123456789abcdef0123456789", rootTaskId: "task_abcdef0123456789abcdef0123456789", title: "Second audit" };
     const page = await mountDashboard({ tasks: [completedTask, second], deferResults: true });
-    await page.click("Connect");
-    await page.waitFor(() => expect(page.document.querySelectorAll(".hlv-result")).toHaveLength(2));
+    await page.click("Start voice");
+    await page.waitFor(() => expect(page.document.querySelectorAll("[data-voice-result]")).toHaveLength(2));
     await act(async () => {
-      for (const result of page.document.querySelectorAll(".hlv-result")) result.open = true;
+      for (const result of page.document.querySelectorAll("[data-voice-result]")) result.open = true;
       await new Promise((resolve) => setTimeout(resolve, 5));
     });
     await page.waitFor(() => expect(page.requests.filter((request) => request.type === "task.get")).toHaveLength(2));
     const read = page.requests.find((request) => request.type === "task.get" && request.taskId === taskId);
     await page.send({ type: "session.error", code: "task_read_failed", message: "Fixture read failed", recoverable: true, requestId: read.id });
-    const secondCard = [...page.document.querySelectorAll(".hlv-task")].find((card) => card.textContent.includes("Second audit"));
+    const secondCard = [...page.document.querySelectorAll("[data-voice-task]")].find((card) => card.textContent.includes("Second audit"));
     expect(secondCard.textContent).toContain("Loading result");
-    expect(secondCard.querySelector(".hlv-result button").disabled).toBe(true);
+    expect(secondCard.querySelector("[data-voice-result] button").disabled).toBe(true);
   });
 
   it("requests full results once while a read is pending and lets a failed read be retried", async () => {
     const page = await mountDashboard({ tasks: [completedTask], deferResults: true });
-    await page.click("Connect");
-    await page.waitFor(() => expect(page.document.querySelector(".hlv-result")).not.toBeNull());
+    await page.click("Start voice");
+    await page.waitFor(() => expect(page.document.querySelector("[data-voice-result]")).not.toBeNull());
     await page.openResult();
     await page.waitFor(() => expect(page.requests.filter((request) => request.type === "task.get")).toHaveLength(1));
     await page.openResult(false);
@@ -113,12 +110,12 @@ describe("Dashboard conversation and task flow", () => {
     const output = "Full output. ".repeat(1_500) + "END OF RETAINED RESULT";
     await page.send({ type: "task.snapshot", reason: "get", requestId: retry.id,
       tasks: [{ ...completedTask, result: { summary: "Audit summary", output, truncated: false } }], truncated: false });
-    await page.waitFor(() => expect(page.document.querySelector(".hlv-result pre").textContent).toBe(output));
+    await page.waitFor(() => expect(page.document.querySelector("[data-voice-result] pre").textContent).toBe(output));
   });
 });
 
-async function mountDashboard({ tasks = [], conversations = [], deferResults = false } = {}) {
-  const window = new Window({ url: "http://127.0.0.1:9119/live-voice", settings: {
+async function mountDashboard({ tasks = [], chatId = "chat_1", deferResults = false } = {}) {
+  const window = new Window({ url: "http://127.0.0.1:9119/chat" + (chatId ? "?resume=" + chatId : ""), settings: {
     disableJavaScriptEvaluation: true, disableJavaScriptFileLoading: true,
   } });
   for (const [name, value] of Object.entries({
@@ -158,10 +155,16 @@ async function mountDashboard({ tasks = [], conversations = [], deferResults = f
   window.document.body.appendChild(container);
   const root = createRoot(container);
   let Component;
-  window.__HERMES_PLUGINS__ = { register: (_name, page) => { Component = page; } };
+  window.__HERMES_PLUGINS__ = { register: () => {}, registerSlot: (_name, slot, page) => { expect(slot).toBe("chat:top"); Component = page; } };
   window.__HERMES_PLUGIN_SDK__ = {
     React, hooks: React,
-    fetchJSON: async (path) => path.endsWith("conversations") ? { conversations } : { configured: true, reachable: true, ready: true },
+    components: {
+      Button: ({ outlined, size, ...props }) => React.createElement("button", props),
+      Card: (props) => React.createElement("section", props),
+      CardContent: (props) => React.createElement("div", props),
+      Badge: ({ variant, ...props }) => React.createElement("span", props),
+    },
+    fetchJSON: async () => ({ configured: true, reachable: true, ready: true }),
     buildWsUrl: () => `ws://127.0.0.1:${server.address().port}/live`,
   };
   const script = window.document.createElement("script");
@@ -181,17 +184,20 @@ async function mountDashboard({ tasks = [], conversations = [], deferResults = f
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
     assertion();
   });
-  await waitFor(() => expect(button("Connect")?.disabled).toBe(false));
+  await waitFor(() => expect(button("Start voice")).toBeDefined());
   return {
     window, document: window.document, requests, button, waitFor,
     failNextConnection() { failNextConnection = true; },
-    get select() { return window.document.querySelector("select"); },
+    async navigate(path) { await act(async () => {
+      window.history.pushState({}, "", path);
+      await new Promise((resolve) => setTimeout(resolve, 280));
+    }); },
     async click(label) { await act(async () => {
       button(label).click();
       await new Promise((resolve) => setTimeout(resolve, 20));
     }); },
     async openResult(open = true) { await act(async () => {
-      const result = window.document.querySelector(".hlv-result");
+      const result = window.document.querySelector("[data-voice-result]");
       result.open = open;
       await new Promise((resolve) => setTimeout(resolve, 5));
     }); },

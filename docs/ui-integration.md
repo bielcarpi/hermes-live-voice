@@ -1,6 +1,6 @@
 # UI Integration
 
-Hermes Live Voice is a gateway and protocol, not one fixed application. The bundled Hermes Dashboard tab is the recommended browser surface; `hermes-live-voice/browser` is the integration API for community/custom UIs; `hermes-live terminal` is the remote/headless text surface.
+Hermes Live Voice is a gateway and protocol, not one fixed application. The bundled controls inside Hermes Dashboard Chat are the supported browser surface; `hermes-live-voice/browser` is the integration API for community/custom UIs; `hermes-live terminal` is the remote/headless text surface.
 
 This documents compatibility with Hermes Agent and community projects, not endorsement by their maintainers.
 
@@ -8,7 +8,7 @@ This documents compatibility with Hermes Agent and community projects, not endor
 
 | Surface | Support | Purpose |
 | --- | --- | --- |
-| Hermes Dashboard + Live Voice plugin | First-class | New/resumed chats, browser audio/text, transcript, durable task inbox, follow-ups, reconnect, notifications, interruption, and exact stop. |
+| Hermes Dashboard + Live Voice plugin | First-class | Voice for the conversation selected in native Chat, browser audio, durable task inbox, reconnect, notifications, interruption, and exact stop. |
 | `hermes-live-voice/browser` | First-class integration API | Vanilla, React, Vue, Svelte, Electron, or mobile-web clients. |
 | `hermes-live terminal` | First-class text control | SSH/headless task supervision, retained results, interruption, and exact stop. |
 
@@ -44,24 +44,15 @@ hermes-live setup
 hermes dashboard
 ```
 
-Choose **Live Voice**. The plugin contributes:
+Open **Chat**, select a saved conversation in Hermes’s native list, and press **Start voice**. Hermes owns the conversation list, terminal transcript, input, navigation, and theme. The plugin contributes only voice controls and a collapsed task panel through the documented `chat:top` slot, with `tab.hidden: true` and Hermes’s own `Card`, `Button`, and `Badge` components. It ships no separate chat page or stylesheet.
 
-- `dashboard/manifest.json` for the `/live-voice` tab;
-- a responsive, theme-aware frontend using the shared browser SDK and worklet;
-- authenticated `/status` and `/live` plugin routes;
-- a sanitized `/conversations` route and saved-chat picker;
-- a server-side WebSocket relay that applies the gateway bearer.
+The Dashboard integration requires Hermes Agent 0.20.0+ with `registerSlot`, authenticated `fetchJSON`, and `buildWsUrl`. Update Hermes if those helpers are missing. The old `/live-voice` URL links to native Chat.
 
-The browser never receives `HERMES_LIVE_AUTH_TOKEN`. The plugin backend revalidates Hermes Dashboard authentication and origin policy, rejects redirects, and keeps the upstream URL and credential out of status responses.
+The web Dashboard does not expose its current unsaved PTY session through the plugin SDK. Select a saved conversation in Hermes’s list before starting voice; the plugin attaches to the documented `/chat?resume=<id>` target. It detaches when that route changes. Reconnect explicitly to enable voice for the newly selected chat. Background work continues.
 
-For a remote gateway, set in the Dashboard server process:
+Voice turns handled by Hermes are persisted in its conversation history. The web Dashboard’s embedded TUI does not expose a plugin API for streaming external turns into its terminal; reopen the conversation to load them. The plugin does not rebuild a transcript or inject text into the PTY. Full native streaming integration would require a new Hermes extension point.
 
-```sh
-HERMES_LIVE_URL=https://voice.example.com
-HERMES_LIVE_AUTH_TOKEN=your-high-entropy-gateway-token
-```
-
-See [Setup](setup.md) for installation and relay details.
+The backend provides authenticated `/status` and `/live` routes and relays the gateway connection. Provider keys and the gateway bearer remain server-side. Browser code uses only the host’s authenticated SDK helpers.
 
 ## Custom Or Community Browser UI
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.3.0-rc.2 - 2026-10-09
+
+- Put Live Voice inside Hermes Dashboard Chat using the supported `chat:top` slot and host `Card`, `Button`, and `Badge` components. Remove the separate chat page, transcript, composer, saved-chat picker, stylesheet, and redundant conversation-list relay.
+- Attach voice to the conversation selected in Hermes’s native list. Detach when the native chat route changes; keep background work running. Collapse the task inbox until opened.
+- Replace the preview screenshot with the actual Hermes v0.21.6 Dashboard and native chat UI. Update setup and CLI guidance to match.
+
+The Dashboard UI requires Hermes 0.20.0+. Select a saved chat before starting voice. Hermes’s web plugin SDK does not expose unsaved PTY identity or live transcript injection; reopen a conversation to load external Hermes turns. See the [UI qualification receipt](https://github.com/bielcarpi/hermes-live-voice/blob/v1.3.0-rc.2/docs/provider-receipts/2026-10-09-v1.3.0-rc.2.md). Hosted provider audio and physical devices remain unqualified, so npm publication stays on `next`.
+
 ## 1.3.0-rc.1 - 2026-10-09
 
 - Make Docker runtime assets readable by its non-root user even when built from a private checkout.

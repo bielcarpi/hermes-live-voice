@@ -3,9 +3,7 @@
 
   const PLUGIN_NAME = "hermes-live";
   const STATUS_ENDPOINT = "/api/plugins/hermes-live/status";
-  const CONVERSATIONS_ENDPOINT = "/api/plugins/hermes-live/conversations";
   const LIVE_ENDPOINT = "/api/plugins/hermes-live/live";
-  const MAX_TRANSCRIPT_ENTRIES = 80;
   const MAX_VISIBLE_RECENT_TASKS = 16;
   const MAX_VISIBLE_UNREAD_TASKS = 2_048;
   const ACTIVE_TASK_STATES = new Set([
@@ -65,10 +63,16 @@
     );
   }
 
-  function shortId(value) {
-    const text = typeof value === "string" ? value : "";
-    if (text.length <= 22) return text;
-    return text.slice(0, 11) + "\u2026" + text.slice(-7);
+  // Hermes documents /chat?resume=<id> as its native conversation route.
+  // Never infer the selected conversation from private React state or DOM.
+  function selectedChat() {
+    const url = new URL(window.location.href);
+    const sessionId = url.searchParams.get("resume");
+    return {
+      active: /(?:^|\/)chat\/?$/.test(url.pathname),
+      sessionId: sessionId && /^[A-Za-z0-9_.:-]{1,256}$/.test(sessionId) ? sessionId : null,
+      key: url.pathname + url.search,
+    };
   }
 
   function titleCase(value) {
@@ -172,8 +176,8 @@
         : "Connected. You can keep talking while tasks run.";
     }
     return inputAudio && inputAudio.enabled === false
-      ? "Live Voice is connected in text mode. Type a message to Hermes."
-      : "Live Voice is connected. Type a message to Hermes; microphone capture is unavailable for this session.";
+      ? "Voice input is unavailable for this session."
+      : "Voice is connected, but microphone capture is unavailable for this session.";
   }
 
 
@@ -225,11 +229,6 @@
         }
       });
     await client.disconnect("user disconnected from dashboard");
-  }
-
-  function scrollTranscriptToLatest(container, transcriptCount) {
-    if (!container || transcriptCount < 1) return;
-    container.scrollTop = container.scrollHeight;
   }
 
   function connectionClosedNotice(event, fatalNotice) {
@@ -306,12 +305,17 @@
     };
   }
 
-  function formatTaskTime(timestamp) {
-    if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return "";
-    return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  function ControlButton(props) {
+    const SDK = window.__HERMES_PLUGIN_SDK__;
+    return SDK.React.createElement(SDK.components.Button, {
+      type: "button", size: "sm", outlined: true,
+      disabled: Boolean(props.disabled), onClick: props.onClick,
+      title: props.title, "aria-label": props.ariaLabel,
+      "aria-pressed": props.pressed,
+    }, props.children);
   }
 
-  function LiveVoicePage() {
+  function LiveVoiceControls() {
     const SDK = window.__HERMES_PLUGIN_SDK__;
     if (!SDK || !SDK.React || !SDK.hooks) {
       return "Live Voice requires a newer Hermes Dashboard plugin SDK.";
@@ -319,10 +323,12 @@
 
     const h = SDK.React.createElement;
     const hooks = SDK.hooks;
+    const UI = SDK.components || {};
     if (typeof SDK.fetchJSON !== "function" || typeof SDK.buildWsUrl !== "function" ||
         typeof hooks.useState !== "function" || typeof hooks.useEffect !== "function" ||
-        typeof hooks.useRef !== "function" || typeof hooks.useCallback !== "function") {
-      return h("div", { className: "hlv-upgrade", role: "alert" },
+        typeof hooks.useRef !== "function" || typeof hooks.useCallback !== "function" ||
+        !UI.Button || !UI.Card || !UI.CardContent || !UI.Badge) {
+      return h("div", { role: "alert" },
         h("strong", null, "Dashboard update required"),
         h("p", null,
           "Live Voice needs the authenticated fetch and WebSocket helpers from a newer Hermes Dashboard. " +
@@ -337,13 +343,11 @@
     const useCallback = hooks.useCallback;
 
     const [gateway, setGateway] = useState({ loading: true });
-    const [conversations, setConversations] = useState([]);
-    const [conversationId, setConversationId] = useState("new");
+    const [chat, setChat] = useState(selectedChat);
+    const chatRef = useRef(chat);
     const [snapshot, setSnapshot] = useState(initialSnapshot);
     const [microphone, setMicrophone] = useState(initialMicrophone);
     const [playback, setPlayback] = useState(initialPlayback);
-    const [transcript, setTranscript] = useState([]);
-    const [textInput, setTextInput] = useState("");
     const [notice, setNotice] = useState(null);
     const [clientLoading, setClientLoading] = useState(true);
     const [busyAction, setBusyAction] = useState("");
@@ -353,47 +357,8 @@
     const audioRef = useRef(null);
     const ensureAudioRef = useRef(null);
     const audioUnsubscribersRef = useRef([]);
-    const transcriptSequence = useRef(0);
-    const transcriptViewportRef = useRef(null);
     const disconnectNoticeRef = useRef(null);
-    const attachedConversationRef = useRef(null);
     const taskRequestsRef = useRef(new Map());
-
-    const addTranscript = useCallback(function (speaker, text, final, source) {
-      const normalized = clampText(text, 20_000);
-      if (!normalized) return;
-      setTranscript(function (current) {
-        const last = current[current.length - 1];
-        if (source === "stream" && last && last.source === "stream" &&
-            last.speaker === speaker && !last.final) {
-          const updated = current.slice();
-          updated[updated.length - 1] = {
-            ...last,
-            text: clampText(last.text + normalized, 20_000),
-            final: Boolean(final),
-          };
-          return updated;
-        }
-        const entry = {
-          id: ++transcriptSequence.current,
-          speaker: speaker || "system",
-          text: normalized,
-          final: Boolean(final),
-          source: source || "stream",
-        };
-        return current.concat(entry).slice(-MAX_TRANSCRIPT_ENTRIES);
-      });
-    }, []);
-
-    const finalizeAssistantTranscript = useCallback(function () {
-      setTranscript(function (current) {
-        const last = current[current.length - 1];
-        if (!last || last.speaker !== "assistant" || last.final) return current;
-        const updated = current.slice();
-        updated[updated.length - 1] = { ...last, final: true };
-        return updated;
-      });
-    }, []);
 
     const refreshStatus = useCallback(function () {
       setGateway(function (current) { return { ...current, loading: true, error: "" }; });
@@ -409,19 +374,9 @@
         });
     }, [SDK]);
 
-    const refreshConversations = useCallback(function () {
-      return SDK.fetchJSON(CONVERSATIONS_ENDPOINT)
-        .then(function (value) {
-          const items = value && Array.isArray(value.conversations) ? value.conversations : [];
-          setConversations(items);
-        })
-        .catch(function () { setConversations([]); });
-    }, [SDK]);
-
     useEffect(function () {
       let active = true;
       refreshStatus();
-      refreshConversations();
       const interval = window.setInterval(function () {
         if (active) refreshStatus();
       }, 30_000);
@@ -429,7 +384,7 @@
         active = false;
         window.clearInterval(interval);
       };
-    }, [refreshStatus, refreshConversations]);
+    }, [refreshStatus]);
 
     useEffect(function () {
       let active = true;
@@ -488,19 +443,6 @@
             client.subscribe(function (value) {
               if (!active) return;
               setSnapshot(value);
-              const conversation = value && value.session && value.session.conversation;
-              if (conversation && conversation.sessionId) {
-                const previous = attachedConversationRef.current;
-                if (previous && previous.sessionId !== conversation.sessionId) {
-                  setTranscript([]);
-                  setTextInput("");
-                }
-                attachedConversationRef.current = conversation;
-                setConversationId(conversation.sessionId);
-              }
-            }),
-            client.on("transcript.delta", function (message) {
-              if (active) addTranscript(message.speaker, message.text, message.final, "stream");
             }),
             client.on("audio.output", function (message) {
               const audio = audioRef.current;
@@ -512,9 +454,6 @@
                 });
               });
             }),
-            client.on("response.completed", function () {
-              if (active) finalizeAssistantTranscript();
-            }),
             client.on("response.started", function () {
               if (!active) return;
               const retained = disconnectNoticeRef.current;
@@ -524,13 +463,11 @@
               if (!active) return;
               const audio = audioRef.current;
               if (audio) audio.clearPlayback();
-              finalizeAssistantTranscript();
             }),
             client.on("response.failed", function (message) {
               if (!active) return;
               const audio = audioRef.current;
               if (audio) audio.clearPlayback();
-              finalizeAssistantTranscript();
               setNotice({ tone: "danger", text: clampText(message.error, 300) });
             }),
             client.on("task.notification", function (message) {
@@ -645,11 +582,34 @@
         if (audio) void audio.dispose();
         if (client) void client.disconnect("dashboard page closed").catch(function () { return undefined; });
       };
-    }, [SDK, addTranscript, finalizeAssistantTranscript]);
+    }, [SDK]);
 
     useEffect(function () {
-      scrollTranscriptToLatest(transcriptViewportRef.current, transcript.length);
-    }, [transcript.length]);
+      function syncChat() {
+        const next = selectedChat();
+        if (next.key === chatRef.current.key) return;
+        chatRef.current = next;
+        setChat(next);
+        const client = clientRef.current;
+        if (client && ["connecting", "starting", "ready"].includes(client.getSnapshot().connection)) {
+          const audio = audioRef.current;
+          if (audio) audio.clearPlayback();
+          void disconnectSession(audio, client).catch(function (error) {
+            setNotice({ tone: "danger", text: friendlyError(error, "Could not detach voice from the previous chat.") });
+          });
+        }
+      }
+      // Browser navigation events cover Back/Forward. Hermes's router also
+      // changes the documented URL with pushState, which emits no event.
+      const interval = window.setInterval(syncChat, 250);
+      window.addEventListener("popstate", syncChat);
+      window.addEventListener("focus", syncChat);
+      return function () {
+        window.clearInterval(interval);
+        window.removeEventListener("popstate", syncChat);
+        window.removeEventListener("focus", syncChat);
+      };
+    }, []);
 
     function runAction(name, action) {
       setBusyAction(name);
@@ -678,14 +638,15 @@
 
     function connect() {
       const client = clientRef.current;
-      if (!client) return;
+      const target = selectedChat();
+      if (!client || !target.active || !target.sessionId) return;
+      chatRef.current = target;
       disconnectNoticeRef.current = null;
       const audio = primePlaybackFromGesture();
       runAction("connect", function () {
-        const conversation = conversationId === "new"
-          ? { mode: "new" }
-          : { mode: "resume", sessionId: conversationId };
+        const conversation = { mode: "resume", sessionId: target.sessionId };
         return client.connect({ conversation: conversation }).then(function () {
+          if (selectedChat().key !== target.key) return disconnectSession(audio, client);
           if (ensureAudioRef.current) ensureAudioRef.current();
           const connectedInputAudio = negotiatedInputAudio(client.getSnapshot(), inputAudio);
           const browserMicrophoneSupported = supportsBrowserMicrophone(connectedInputAudio);
@@ -696,9 +657,9 @@
               : connectedSessionNotice(connectedInputAudio, false, false),
           });
           void startMicrophoneAfterConnect(audio, connectedInputAudio, function () {
-            return clientRef.current === client && client.connected && audioRef.current === audio;
+            return clientRef.current === client && client.connected && audioRef.current === audio && selectedChat().key === target.key;
           }).then(function (microphoneStart) {
-            if (clientRef.current !== client || !client.connected || audioRef.current !== audio) return;
+            if (clientRef.current !== client || !client.connected || audioRef.current !== audio || selectedChat().key !== target.key) return;
             setNotice(microphoneStart.error
               ? {
                   tone: "warning",
@@ -717,7 +678,6 @@
                 });
           });
           refreshStatus();
-          refreshConversations();
         });
       });
     }
@@ -802,56 +762,17 @@
       runTaskAction("get:" + task.taskId, function () { return client.getTask(task.taskId); }, "Could not load this result. Try again.");
     }
 
-    function sendText(event) {
-      event.preventDefault();
-      const text = textInput.trim();
-      const client = clientRef.current;
-      if (!text || !client) return;
-      try {
-        const audio = primePlaybackFromGesture() || audioRef.current;
-        if (audio) audio.interrupt("new Dashboard text input");
-        else client.cancelResponse("new Dashboard text input");
-        client.sendText(text);
-        addTranscript("user", text, true, "local");
-        setTextInput("");
-      } catch (error) {
-        setNotice({ tone: "danger", text: friendlyError(error, "The message could not be sent.") });
-      }
-    }
-
     const connection = connectionPresentation(snapshot.connection);
     const gatewayState = gatewayPresentation(gateway);
     const connectControl = connectControlPresentation(gateway, clientLoading, busyAction, snapshot.connection);
     const connected = snapshot.connection === "ready";
     const session = snapshot.session;
     const realtime = session && session.realtime ? session.realtime : {};
-    const taskCapabilities = session && session.tasks ? session.tasks : gateway.tasks || {};
     const audioCapabilities = realtime.audio || gateway.audio || {};
     const inputAudio = audioCapabilities.input || {};
     const outputAudio = audioCapabilities.output || {};
-    const inputMime = inputAudio.mimeType || "";
     const browserMicSupported = supportsBrowserMicrophone(inputAudio);
-    const provider = realtime.provider || gateway.provider || "\u2014";
-    const model = realtime.model || gateway.model || "\u2014";
-    const protocolVersion = session && session.protocolVersion ? session.protocolVersion : gateway.protocolVersion || "\u2014";
-    const selectedConversation = session && session.conversation || attachedConversationRef.current;
     const inboxItems = taskInboxItems(snapshot);
-
-    function StatusPill(props) {
-      return h("span", { className: "hlv-pill hlv-pill--" + (props.tone || "neutral") }, props.children);
-    }
-
-    function ControlButton(props) {
-      return h("button", {
-        type: "button",
-        className: "hlv-button" + (props.variant ? " hlv-button--" + props.variant : ""),
-        disabled: Boolean(props.disabled),
-        onClick: props.onClick,
-        title: props.title,
-        "aria-label": props.ariaLabel,
-        "aria-pressed": props.pressed,
-      }, props.children);
-    }
 
     function TaskCard(item) {
       const task = item.task;
@@ -862,28 +783,28 @@
       const result = task.result || {};
       const needsResult = task.state === "completed" && result.truncated && result.output === undefined;
       const loading = pendingTaskActions.includes("get:" + task.taskId);
-      return h("article", { key: task.taskId, className: "hlv-task" },
-        h("div", { className: "hlv-task__heading" },
-          h("h3", null, task.title || "Background task"),
-          h(StatusPill, { tone: state.tone }, state.label),
+      return h(UI.Card, { key: task.taskId, "data-voice-task": task.taskId },
+        h(UI.CardContent, { style: { padding: "1rem" } },
+        h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" } },
+          h("strong", null, task.title || "Background task"),
+          h(UI.Badge, { variant: "outline" }, state.label),
         ),
-        progress ? h("p", { className: "hlv-muted" }, progress) : null,
+        progress ? h("p", { style: { opacity: 0.7 } }, progress) : null,
         notification ? h("p", { role: "status" }, notification.message) : null,
         detail || needsResult ? h("details", {
-          className: "hlv-result",
+          "data-voice-result": true,
           onToggle: function (event) { if (event.currentTarget.open) loadTaskResult(task); },
         },
           h("summary", null, task.state === "completed" ? "View result" : "View details"),
           loading ? h("p", { role: "status" }, "Loading result…") : null,
-          h("pre", null, detail),
-          needsResult ? h("p", { className: "hlv-muted" },
+          h("pre", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "20rem", overflow: "auto" } }, detail),
+          needsResult ? h("p", { style: { opacity: 0.7 } },
             connected ? "Summary shown. Load the retained result for full details." : "Reconnect to load the retained result.",
             connected ? h(ControlButton, { disabled: loading, onClick: function () { loadTaskResult(task); } }, "Load full result") : null,
-          ) : result.truncated ? h("p", { className: "hlv-muted" }, "This result was shortened before storage.") : null,
+          ) : result.truncated ? h("p", { style: { opacity: 0.7 } }, "This result was shortened before storage.") : null,
         ) : null,
-        h("div", { className: "hlv-task__actions" },
+        h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.5rem", marginTop: "0.75rem" } },
           isTaskActive(task) ? h(ControlButton, {
-            variant: "danger",
             disabled: !connected || task.state === "stopping" || pendingTaskActions.includes("stop:" + task.taskId),
             onClick: function () { stopTask(task); },
             ariaLabel: "Stop task " + (task.title || task.taskId),
@@ -893,118 +814,59 @@
             onClick: function () { acknowledgeTask(notification); },
           }, "Mark read") : null,
         ),
-        h("details", { className: "hlv-task-meta" },
-          h("summary", null, "Task details"),
-          h("code", null, task.taskId),
-          h("time", { dateTime: new Date(task.updatedAt).toISOString() }, formatTaskTime(task.updatedAt)),
-          task.parentTaskId ? h("p", null, "Parent: ", h("code", null, task.parentTaskId)) : null,
         ),
       );
     }
 
-    return h("div", { className: "hlv-page" },
-      h("header", { className: "hlv-header" },
-        h("h1", null, "Live Voice"),
-        h("span", { role: "status", className: "hlv-muted" },
-          playback.active ? "Hermes is speaking" : microphone.active ? "Listening" : connection.label,
-        ),
-      ),
-      h("div", { className: "hlv-controls" },
-        h("label", { className: "hlv-picker" },
-          h("span", null, "Chat"),
-          h("select", {
-            value: connected && selectedConversation && selectedConversation.sessionId ? selectedConversation.sessionId : conversationId,
-            disabled: connected || busyAction === "connect",
-            onChange: function (event) { setConversationId(event.target.value); },
-            "aria-label": "Choose a Hermes conversation",
-          },
-            h("option", { value: "new" }, "New chat"),
-            conversations.map(function (conversation) {
-              return h("option", { key: conversation.id, value: conversation.id }, clampText(conversation.title || conversation.preview || shortId(conversation.id), 80));
-            }),
-            conversationId !== "new" && !conversations.some(function (item) { return item.id === conversationId; })
-              ? h("option", { value: conversationId },
-                  selectedConversation && selectedConversation.sessionId === conversationId && selectedConversation.title || "Selected chat") : null,
+    return h(UI.Card, { "aria-label": "Live Voice" },
+      h(UI.CardContent, { style: { padding: "0.75rem 1rem" } },
+        h("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" } },
+          h("strong", { style: { marginRight: "auto" } }, "Live Voice"),
+          h(UI.Badge, { variant: "outline", role: "status" },
+            playback.active ? "Speaking" : microphone.active ? "Listening" : connection.label,
           ),
-        ),
-        connected ? h(ControlButton, {
-          disabled: busyAction === "disconnect", onClick: disconnect,
-          title: "Disconnect voice; background tasks keep running.",
-        }, "Disconnect") : h(ControlButton, {
-          variant: "primary", disabled: connectControl.disabled, onClick: connect,
-        }, connectControl.label),
-        connected ? h(ControlButton, {
-          disabled: !browserMicSupported || busyAction === "microphone",
-          pressed: microphone.active,
-          onClick: microphone.active ? stopMicrophone : startMicrophone,
-        }, microphone.active
-          ? audioCapabilities.turnDetection === "disabled" ? "Stop & send turn" : "Pause microphone"
-          : "Start microphone") : null,
-        connected ? h(ControlButton, {
-          onClick: interruptSpeech,
-          title: "Interrupt the current reply; background tasks keep running.",
-        }, "Interrupt speech") : null,
-      ),
-      notice ? h("div", {
-        className: "hlv-notice hlv-notice--" + notice.tone,
-        role: notice.tone === "danger" ? "alert" : "status",
-      },
-        h("span", null, notice.text),
-        h("button", { type: "button", onClick: function () { setNotice(null); }, "aria-label": "Dismiss message" }, "×"),
-      ) : null,
-      !connected && !gateway.ready ? h("p", { className: "hlv-muted", role: "status" }, gatewayState.detail) : null,
-      connected && microphone.active && audioCapabilities.turnDetection === "disabled"
-        ? h("p", { className: "hlv-muted" }, microphoneActiveGuidance("disabled")) : null,
-      connected && !browserMicSupported ? h("p", { className: "hlv-muted" }, "Voice input is unavailable for this session. You can type below.") : null,
-      h("div", { className: "hlv-workspace" + (inboxItems.length ? " hlv-workspace--tasks" : "") },
-        h("section", { className: "hlv-conversation", "aria-label": "Conversation" },
-          h("div", { ref: transcriptViewportRef, className: "hlv-transcript", "aria-live": "polite", "aria-relevant": "additions text" },
-            transcript.length ? transcript.map(function (entry) {
-              return h("article", { key: entry.id, className: "hlv-message" },
-                h("strong", null, entry.speaker === "user" ? "You" : entry.speaker === "assistant" ? "Hermes" : "System"),
-                h("p", null, entry.text),
-              );
-            }) : h("div", { className: "hlv-empty" },
-              h("h2", null, connected ? "What would you like to do?" : "Talk to Hermes"),
-              h("p", null, connected ? "Speak or type a message." : "Choose a chat and connect. You can keep talking while tasks run."),
+          connected ? h(ControlButton, {
+            disabled: busyAction === "disconnect", onClick: disconnect,
+            title: "End voice; background tasks keep running.",
+          }, "End voice") : h(ControlButton, {
+            disabled: connectControl.disabled || !chat.active || !chat.sessionId, onClick: connect,
+          }, connectControl.label === "Connect" ? "Start voice" : connectControl.label),
+          connected && browserMicSupported ? h(ControlButton, {
+            disabled: busyAction === "microphone", pressed: microphone.active,
+            onClick: microphone.active ? stopMicrophone : startMicrophone,
+          }, microphone.active
+            ? audioCapabilities.turnDetection === "disabled" ? "Stop & send turn" : "Pause microphone"
+            : "Start microphone") : null,
+          connected ? h(ControlButton, { onClick: interruptSpeech,
+            title: "Interrupt speech; background tasks keep running.",
+          }, "Interrupt speech") : null,
+          inboxItems.length ? h("details", { style: { flexBasis: "100%" }, "data-voice-tasks": true },
+            h("summary", { style: { cursor: "pointer" } }, "Tasks · " + taskInboxSummary(snapshot)),
+            h("div", { style: { display: "grid", gap: "0.5rem", marginTop: "0.75rem", maxHeight: "45vh", overflow: "auto" } },
+              inboxItems.map(TaskCard),
             ),
-          ),
-          h("form", { className: "hlv-composer", onSubmit: sendText },
-            h("textarea", {
-              "aria-label": "Message to Hermes", rows: 2, maxLength: 16_000, value: textInput, disabled: !connected,
-              placeholder: connected ? "Message Hermes…" : "Connect to start a conversation",
-              onChange: function (event) { setTextInput(event.target.value); },
-              onKeyDown: function (event) { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") sendText(event); },
-            }),
-            h("button", { type: "submit", className: "hlv-button hlv-button--primary", disabled: !connected || !textInput.trim() }, "Send"),
-          ),
-          transcript.length ? h("button", { className: "hlv-text-button", type: "button", onClick: function () { setTranscript([]); } }, "Clear transcript") : null,
+          ) : null,
         ),
-        inboxItems.length ? h("aside", { className: "hlv-tasks", "aria-label": "Background tasks" },
-          h("h2", null, "Tasks"),
-          h("p", { className: "hlv-muted" }, taskInboxSummary(snapshot)),
-          inboxItems.map(TaskCard),
-          h("p", { className: "hlv-muted" }, "Tasks keep running when you disconnect."),
+        !chat.sessionId ? h("p", null, "Select a saved chat in Hermes’s conversation list to start voice.") : null,
+        !connected && !gateway.ready ? h("p", { role: "status" }, gatewayState.detail) : null,
+        connected && microphone.active && audioCapabilities.turnDetection === "disabled"
+          ? h("p", null, microphoneActiveGuidance("disabled")) : null,
+        notice ? h("div", { role: notice.tone === "danger" ? "alert" : "status", style: { display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.5rem" } },
+          h("span", { style: { flex: 1 } }, notice.text),
+          h(ControlButton, { onClick: function () { setNotice(null); }, ariaLabel: "Dismiss message" }, "Dismiss"),
         ) : null,
-      ),
-      h("details", { className: "hlv-details" },
-        h("summary", null, "Connection details"),
-        h("dl", null,
-          h("dt", null, "Gateway"), h("dd", null, gatewayState.label),
-          h("dt", null, "Provider"), h("dd", null, titleCase(provider)),
-          h("dt", null, "Model"), h("dd", null, model),
-          h("dt", null, "Protocol"), h("dd", null, "v" + protocolVersion),
-          h("dt", null, "Microphone"), h("dd", null, inputAudio.enabled === false ? "Unavailable" : inputMime || "Negotiated on connect"),
-          h("dt", null, "Turn detection"), h("dd", null, audioCapabilities.turnDetection || "Negotiated on connect"),
-          h("dt", null, "Task execution"), h("dd", null, taskCapabilities.parallel ? "Read-only parallelism enabled" : "One task at a time"),
-        ),
-        h(ControlButton, { disabled: gateway.loading, onClick: refreshStatus }, "Refresh connection"),
       ),
     );
   }
 
   const registry = window.__HERMES_PLUGINS__;
   if (registry && typeof registry.register === "function") {
-    registry.register(PLUGIN_NAME, LiveVoicePage);
+    registry.register(PLUGIN_NAME, function () {
+      const SDK = window.__HERMES_PLUGIN_SDK__;
+      return SDK.React.createElement("a", { href: "/chat" }, "Open Hermes Chat to use Live Voice.");
+    });
+    if (typeof registry.registerSlot === "function") {
+      registry.registerSlot(PLUGIN_NAME, "chat:top", LiveVoiceControls);
+    }
   }
 })();

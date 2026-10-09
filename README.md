@@ -10,7 +10,7 @@ Talk to [Hermes Agent](https://github.com/NousResearch/hermes-agent) while it wo
 
 This is the 1.3 release candidate. Install from `next`; the stable version remains available from `latest`.
 
-You need Hermes Agent 0.18.2+, Node.js 20+ (22 or 24 recommended), and an OpenAI API key with Realtime access.
+You need Hermes Agent 0.20.0+ for the Dashboard UI, Node.js 20+ (22 or 24 recommended), and an OpenAI API key with Realtime access.
 
 ```sh
 npm install --global hermes-live-voice@next
@@ -20,17 +20,17 @@ hermes dashboard
 
 Setup prompts for your key, installs the Live Voice plugin, and starts the gateway. It preserves your configured provider and detects an available hosted key; otherwise it uses OpenAI. Local models are installed only when you explicitly choose local voice.
 
-Open **Live Voice**, choose a new or saved chat, and press **Connect**. Allow microphone access and speak. Automatic turn detection is enabled by default. You can pause the microphone or interrupt a reply without stopping background work.
+Open **Chat**, select a saved conversation in Hermes’s own conversation list, and press **Start voice**. Allow microphone access and speak. Automatic turn detection is enabled by default. You can pause the microphone or interrupt a reply without stopping background work.
 
 Try:
 
 > Inspect this repository and run the tests in the background. While that runs, help me plan the release.
 
-Task cards show progress and retained results. **Stop task** stops that task; disconnecting voice lets it continue.
+Expand **Tasks** to see progress and retained results. **Stop task** stops that task; disconnecting voice lets it continue.
 
-![Live Voice dashboard](assets/live-voice-dashboard.jpg)
+![Live Voice inside Hermes Chat](assets/live-voice-dashboard.jpg)
 
-The screenshot shows the Dashboard plugin with a fixture session; it is not evidence of live provider audio. See [provider testing](docs/live-provider-testing.md) for the verification procedure and current receipts.
+The screenshot shows the actual Hermes Dashboard with its native chat UI, the voice plugin, and fixture data. Audio uses a synthetic microphone; this is not evidence of live provider audio. See [provider testing](docs/live-provider-testing.md) for the verification procedure and current receipts.
 
 ## Providers
 

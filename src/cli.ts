@@ -359,7 +359,7 @@ function printHelp(): void {
 
 Quick start:
   hermes-live setup
-  hermes dashboard          Open Dashboard, then choose Live Voice
+  hermes dashboard          Open Chat, select a saved chat, then Start voice
 
 Everyday commands:
   hermes-live setup         Configure, verify, and start everything

@@ -1,6 +1,6 @@
 # Hermes Live Voice is installed
 
-The plugin adds the **Live Voice** Dashboard tab, status tool, slash command, and authenticated browser relay. The matching npm package runs the companion gateway.
+The plugin adds **Live Voice** controls to Dashboard Chat, status tool, slash command, and authenticated browser relay. The matching npm package runs the companion gateway.
 
 For the normal setup:
 
@@ -10,7 +10,7 @@ hermes-live setup
 hermes dashboard
 ```
 
-Choose **Live Voice**, then start a new Hermes chat or resume a saved one. The Dashboard stays responsive while delegated tasks run, shows what each task is doing, keeps results in a durable inbox, and supports follow-up work.
+Open **Chat**, select a saved conversation in Hermes’s list, and press **Start voice**. Expand **Tasks** to inspect background work and retained results.
 
 Setup defaults to OpenAI, detects an available hosted key, and keeps an existing provider choice. Local voice requires `hermes-live setup --provider local`; on Apple Silicon that installation downloads Python and models.
 

@@ -168,7 +168,7 @@ export function launchCheckHelp(): string {
 Check the installed plugin, gateway, voice-provider connection, and one bounded
 Hermes worker. These checks run separately; they do not test browser audio.
 
-Mock mode is rejected. Test a conversation in Live Voice after this passes.`;
+Mock mode is rejected. Test Start voice in Hermes Chat after this passes.`;
 }
 
 async function checkedPlugin(
