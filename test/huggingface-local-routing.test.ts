@@ -195,6 +195,18 @@ describe("managed local voice routing", () => {
     }, "Stop the repository audit task.")).toEqual({ status: "ambiguous", count: 2 });
   });
 
+  it("selects the newest stoppable task even when the running task is listed first", () => {
+    const response = { ok: true, tasks: [
+      { taskId: TASK_A, state: "running", createdAt: 100, updatedAt: 300 },
+      { taskId: TASK_B, state: "queued", createdAt: 200, updatedAt: 200 },
+    ] };
+    expect(selectLocalStoppableTasks(response)).toEqual([TASK_B, TASK_A]);
+    expect(selectLocalTaskForQuestion("What is the latest task doing?", response)).toBe(TASK_B);
+    expect(selectLocalTaskForQuestion("What is the current task doing?", response)).toBe(TASK_A);
+    expect(selectLocalStoppableTasks(response, "current")).toEqual([TASK_A]);
+    expect(localRoutedAction("Stop the current task.")?.taskControl).toEqual({ type: "stop", selection: "current" });
+  });
+
   it("selects a named task for an introspection follow-up without exposing its id to speech", () => {
     const response = {
       ok: true,
@@ -208,6 +220,41 @@ describe("managed local voice routing", () => {
     expect(JSON.stringify(spoken)).toContain("Research release notes");
     expect(JSON.stringify(spoken)).not.toContain("Audit repository security");
     expect(JSON.stringify(spoken)).not.toContain(TASK_B);
+  });
+
+  it("does not select an unrelated or ambiguous task for a named question", () => {
+    const tasks = [
+      { taskId: TASK_A, state: "running", title: "Audit backend repository" },
+      { taskId: TASK_B, state: "queued", title: "Audit frontend repository" },
+    ];
+    for (const question of ["What is the deployment task doing?", "What is the audit task doing?"]) {
+      const response = { ok: true, tasks };
+      expect(selectLocalTaskForQuestion(question, response)).toBeUndefined();
+      const spoken = buildLocalTaskQuestionResponse(question, response);
+      expect((spoken.input as any[])[0].content[0].text).toContain('"task":null');
+    }
+    expect(selectLocalTaskForQuestion("What is the latest task doing?", { ok: true, tasks })).toBe(TASK_A);
+  });
+
+  it("rejects a partial title match and failed inbox reads", () => {
+    const tasks = [{ taskId: TASK_A, state: "running", title: "Audit backend repository" }];
+    expect(matchLocalStoppableTask({ ok: true, tasks }, "Stop the deployment audit task.")).toEqual({ status: "not_found" });
+    expect(selectLocalTaskForQuestion("What is the deployment audit task doing?", { ok: true, tasks })).toBeUndefined();
+    expect(selectLocalTaskForQuestion("What is the current task doing?", { ok: false, tasks })).toBeUndefined();
+    expect(selectLocalTaskForQuestion("What is the current task doing?", { ok: true, truncated: true, tasks })).toBeUndefined();
+    expect(matchLocalStoppableTask({ ok: true, tasks: [{
+      taskId: TASK_A, state: "running", title: "Product audit",
+    }] }, "Stop the production audit task.")).toEqual({ status: "not_found" });
+  });
+
+  it("distinguishes generic latest-task questions from named questions in all routed languages", () => {
+    const response = { ok: true, tasks: [
+      { taskId: TASK_A, state: "completed", title: "Exact database audit", createdAt: 100 },
+      { taskId: TASK_B, state: "running", title: "Release review", createdAt: 200 },
+    ] };
+    expect(selectLocalTaskForQuestion("Tell me the exact result of my latest background task.", response)).toBe(TASK_B);
+    expect(selectLocalTaskForQuestion("¿Qué está haciendo la tarea de database audit?", response)).toBe(TASK_A);
+    expect(selectLocalTaskForQuestion("Què està fent la tasca de database audit?", response)).toBe(TASK_A);
   });
 
   it("builds tools-disabled, bounded responses from untrusted Hermes data", () => {
@@ -257,8 +304,8 @@ describe("managed local voice routing", () => {
     const resultQuestion = buildLocalTaskQuestionResponse("What was the result of the latest task?", {
       ok: true,
       tasks: [
-        { taskId: TASK_B, state: "running", title: "Current work" },
-        { taskId: TASK_A, state: "completed", title: "Finished work", result: { summary: "PASS" } },
+        { taskId: TASK_B, state: "running", title: "Current work", createdAt: 100 },
+        { taskId: TASK_A, state: "completed", title: "Finished work", createdAt: 200, result: { summary: "PASS" } },
       ],
     });
     expect(JSON.stringify(resultQuestion)).toContain("Finished work");
@@ -289,12 +336,32 @@ describe("managed local voice routing", () => {
     for (const formatted of [
       "Read [the release](https://example.com/release).",
       "Run `npm test` and inspect the output.",
-      "Use **production** only after verification.",
+      "A | B\n--- | ---\n1 | 2",
+      "Do not read this\u0000control character.",
     ]) {
       const response = buildLocalConversationResponse({ ok: true, message: formatted });
       expect(response.metadata).toEqual({ hermes_live_purpose: "conversation_summary" });
       expect(response).not.toHaveProperty("metadata.hermes_live_exact_speech");
       expect(response).toMatchObject({ tools: [], tool_choice: "none" });
     }
+  });
+
+  it("speaks short formatted prose directly without changing its words", () => {
+    for (const [message, spoken] of [
+      ["**The check passed.**\n\n- The gateway is ready.", "The check passed. The gateway is ready."],
+      ["Use **production** only after verification.", "Use production only after verification."],
+      ["- Primer paso.\r\n* 第二步。", "Primer paso. 第二步。"],
+    ]) {
+      expect(buildLocalConversationResponse({ ok: true, message })).toMatchObject({
+        tools: [],
+        tool_choice: "none",
+        metadata: {
+          hermes_live_purpose: "conversation_answer",
+          hermes_live_exact_speech: spoken,
+        },
+      });
+    }
+    expect(buildLocalConversationResponse({ ok: false, message: "**Failed.**" }).metadata)
+      .toEqual({ hermes_live_purpose: "conversation_summary" });
   });
 });

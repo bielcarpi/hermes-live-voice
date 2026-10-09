@@ -159,7 +159,7 @@ export async function runSetup(
   const existing = await readManagedConfig({ path: managedConfigPath, home });
   const legacy = await readLegacyHermesEnvironment(hermesHome);
   const inherited = firstDefinedEnvironment(env, existing.values, legacy);
-  const provider = await selectProvider(options, inherited, dependencies);
+  const provider = selectProvider(options, inherited);
   const hermesCommand = options.hermesCommand
     ? await findCommand(options.hermesCommand, env)
     : await findCommand("hermes", env);
@@ -187,7 +187,7 @@ export async function runSetup(
   };
   delete values.HERMES_API_KEY;
 
-  const initialConfig = loadConfig({ ...values, ...env });
+  const initialConfig = loadConfig({ ...env, ...values });
   const gatewayPort = await resolveSetupGatewayPort({
     host: initialConfig.server.host,
     port: initialConfig.server.port,
@@ -233,7 +233,7 @@ export async function runSetup(
   delete values.HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING;
   if (provider === "local" && options.service && supportsManagedLocalService(dependencies)) {
     values.HERMES_LIVE_LOCAL_OWNS_TURN_ROUTING = "true";
-    const configuredLocal = loadConfig({ ...values, ...env });
+    const configuredLocal = loadConfig({ ...env, ...values });
     const existingLocalService = await runServiceAction("status", {
       kind: "local-voice",
       home,
@@ -252,7 +252,7 @@ export async function runSetup(
       progress: dependencies.progress,
     });
     preparedLocalVoiceCommand = await resolveLocalVoiceCommand(
-      loadConfig({ ...values, ...env }),
+      loadConfig({ ...env, ...values }),
       dependencies,
     );
   }
@@ -278,7 +278,7 @@ export async function runSetup(
     force: true,
   });
   const hermesCli = await enableHermesPlugin(options, env, runner, findCommand, hermesCommand);
-  const config = loadConfig({ ...values, ...env });
+  const config = loadConfig({ ...env, ...values });
   const hermesGateway = canManageHermesGateway && hermesCommand
     ? await ensureHermesGatewayReady(config, {
       command: hermesCommand,
@@ -454,7 +454,7 @@ export function printSetupHelp(): void {
 Configure voice, install the Hermes plugin, verify both runtimes, and start the gateway.
 
 Options:
-  --provider <local|gemini|openai|mock>  Realtime voice provider
+  --provider <openai|gemini|local|mock>  Provider (default: existing config, available hosted key, or OpenAI)
   --hermes-url <url>               Hermes API Server URL
   --config <path>                  Managed config path
   --plugins-dir <path>             Hermes plugins directory
@@ -489,23 +489,16 @@ function printSetupReport(report: SetupReport): void {
   }
 }
 
-async function selectProvider(
+function selectProvider(
   options: SetupOptions,
   inherited: Record<string, string | undefined>,
-  dependencies: SetupDependencies,
-): Promise<RealtimeProvider> {
+): RealtimeProvider {
   if (options.provider) return options.provider;
   const configured = inherited.HERMES_LIVE_PROVIDER;
   if (configured === "local" || configured === "gemini" || configured === "openai" || configured === "mock") return configured;
-  if ((dependencies.platform ?? process.platform) === "darwin" && (dependencies.arch ?? process.arch) === "arm64") return "local";
-  if (inherited.OPENAI_API_KEY && !inherited.GEMINI_API_KEY && !inherited.GOOGLE_API_KEY) return "openai";
+  if (inherited.OPENAI_API_KEY) return "openai";
   if (inherited.GEMINI_API_KEY || inherited.GOOGLE_API_KEY) return "gemini";
-  if (options.nonInteractive) {
-    throw new Error("No voice provider was selected. Pass --provider local, gemini, openai, or mock.");
-  }
-  const answer = (await (dependencies.prompt ?? promptText)("Voice provider [gemini/openai/local/mock]: ")).trim();
-  if (!answer) throw new Error("Choose a voice provider, or rerun setup with --provider.");
-  return parseProvider(answer);
+  return "openai";
 }
 
 async function requireSecret(

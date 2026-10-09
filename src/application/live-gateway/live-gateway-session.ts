@@ -286,18 +286,10 @@ export class LiveGatewaySession {
       // active work and unread notifications are correctness-critical. Load
       // those independently so neither can disappear behind newer terminal
       // history, then de-duplicate and project the union in bounded frames.
-      const [recentWindow, activeTasks, unreadTasks] = await Promise.all([
-        this.deps.taskSupervisor.list(this.ownerId, MAX_PUBLIC_TASKS + 1),
-        this.deps.taskSupervisor.listActive(this.ownerId),
-        this.deps.taskSupervisor.listUnreadNotifications(this.ownerId),
-      ]);
-      const initialTasks = mergeTaskRecords([
-        ...activeTasks,
-        ...unreadTasks,
-        ...recentWindow.slice(0, MAX_PUBLIC_TASKS),
-      ]);
+      const inbox = await this.loadTaskInbox();
+      const initialTasks = inbox.records;
       const projectedInitialTasks = projectTaskList(initialTasks);
-      const initialSnapshotTruncated = recentWindow.length > MAX_PUBLIC_TASKS
+      const initialSnapshotTruncated = inbox.truncated
         || projectedInitialTasks.length > MAX_PUBLIC_TASKS;
       this.send({
         type: "session.ready",
@@ -351,7 +343,7 @@ export class LiveGatewaySession {
       }
       this.readySent = true;
       const initialTaskSequences = new Map(initialTasks.map((record) => [record.taskId, record.sequence]));
-      for (const record of unreadTasks) {
+      for (const record of initialTasks) {
         const notification = projectTaskNotification(record);
         if (!record.notification.unread || !notification) continue;
         this.send({
@@ -485,7 +477,11 @@ export class LiveGatewaySession {
     switch (message.type) {
       case "audio.input":
         validateAudioFrame(message.data, message.mimeType, this.deps.config.server.maxAudioBytes);
-        this.userSpeaking = true;
+        // Continuous capture includes silence. Only manual turn submission
+        // treats an open audio stream as speech; otherwise the provider owns it.
+        if (this.deps.config.realtime.provider === "openai" && this.deps.config.openai.turnDetection === "disabled") {
+          this.userSpeaking = true;
+        }
         await this.forwardRealtimeClientInput(
           "audio",
           () => this.liveSession!.sendRealtimeAudio({ data: message.data, mimeType: message.mimeType }),
@@ -718,15 +714,27 @@ export class LiveGatewaySession {
         const includeCompleted = booleanArg(call, "include_completed", true);
         const summaryOnly = booleanArg(call, "summary_only", false);
         return this.runTaskOperation(
-          () => this.deps.taskSupervisor.list(this.ownerId!, 25),
+          () => this.loadTaskInbox(includeCompleted),
           "Unable to read the background task inbox.",
-        ).then((records) => {
-          const selected = records
-            .filter((record) => includeCompleted || !isTaskNotificationState(record.status));
+        ).then(({ records, truncated }) => {
+          // Working tasks precede the queue and history in a bounded voice
+          // response. Reconnect snapshots still hydrate the complete inbox.
+          const selected = [...records].sort((left, right) => taskInboxPriority(left) - taskInboxPriority(right));
+          const tasks: PublicTaskSnapshot[] = [];
+          for (const record of selected.slice(0, MAX_PUBLIC_TASKS)) {
+            const task = projectTaskSnapshot(record);
+            if (safeJsonByteLength({ tasks: [...tasks, task] }) > MAX_PROVIDER_TOOL_RESPONSE_BYTES - 2_000) break;
+            tasks.push(task);
+          }
+          const partial = truncated || tasks.length < selected.length;
           return {
-            ...(summaryOnly ? { spoken_response: taskInboxSpokenSummary(selected) } : {}),
+            ...(summaryOnly ? {
+              spoken_response: taskInboxSpokenSummary(selected)
+                + (partial ? " This list is partial. Open the task inbox for retained details." : ""),
+            } : {}),
             ok: true,
-            tasks: selected.map((record) => projectTaskSnapshot(record)),
+            tasks,
+            truncated: partial,
           };
         });
       }
@@ -1042,9 +1050,13 @@ export class LiveGatewaySession {
       if (!event.text || event.text.length > MAX_PROVIDER_TRANSCRIPT_CHARS) {
         throw new Error("Realtime provider transcript is empty or exceeds its limit.");
       }
-      if ((event.speaker ?? "assistant") === "user" && event.final) {
-        this.userSpeaking = false;
-        this.scheduleNotificationFlush();
+      if ((event.speaker ?? "assistant") === "user") {
+        if (event.final) {
+          this.userSpeaking = false;
+          this.scheduleNotificationFlush();
+        } else if (this.deps.config.realtime.provider === "gemini") {
+          this.userSpeaking = true;
+        }
       }
       this.send({
         type: "transcript.delta",
@@ -1091,6 +1103,9 @@ export class LiveGatewaySession {
     }
 
     this.providerResponseActive = false;
+    // Gemini can send interim transcripts without a final speech event. Its
+    // completed conversation turn is the fallback end of speech activity.
+    if (this.deps.config.realtime.provider === "gemini" && event.scope !== "task_notification") this.userSpeaking = false;
     if (event.scope !== "conversation") this.clearNotificationResponsePending();
     const responseId = publicProviderIdentifier(event.responseId);
     if (event.status === "failed") {
@@ -1105,6 +1120,24 @@ export class LiveGatewaySession {
       this.send({ type: "response.cancelled", ...(responseId ? { responseId } : {}) });
     }
     this.scheduleNotificationFlush();
+  }
+
+  private async loadTaskInbox(includeCompleted = true): Promise<{ records: TaskRecord[]; truncated: boolean }> {
+    const supervisor = this.deps.taskSupervisor;
+    const ownerId = this.ownerId!;
+    if (!includeCompleted) return {
+      records: (await supervisor.listActive(ownerId)).filter((record) => !isTaskNotificationState(record.status)),
+      truncated: false,
+    };
+    const [recent, active, unread] = await Promise.all([
+      supervisor.list(ownerId, MAX_PUBLIC_TASKS + 1),
+      supervisor.listActive(ownerId),
+      supervisor.listUnreadNotifications(ownerId),
+    ]);
+    return {
+      records: mergeTaskRecords([...active, ...unread, ...recent.slice(0, MAX_PUBLIC_TASKS)]),
+      truncated: recent.length > MAX_PUBLIC_TASKS,
+    };
   }
 
   private receiveTaskRecord(record: TaskRecord): void {
@@ -1586,6 +1619,11 @@ function publicTaskOperationMessage(error: unknown, fallback: string): string {
 
 function projectTaskList(records: TaskRecord[]): PublicTaskSnapshot[] {
   return records.map((record) => projectTaskSnapshot(record));
+}
+
+function taskInboxPriority(record: TaskRecord): number {
+  if (isTaskNotificationState(record.status)) return 2;
+  return record.status === "queued" ? 1 : 0;
 }
 
 function mergeTaskRecords(records: TaskRecord[]): TaskRecord[] {

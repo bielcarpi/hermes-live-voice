@@ -98,7 +98,7 @@ const EnvSchema = z.object({
     .max(2_147_483_647)
     .default(DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS),
 
-  HERMES_LIVE_PROVIDER: z.enum(["local", "gemini", "openai", "mock"]).default("gemini"),
+  HERMES_LIVE_PROVIDER: z.enum(["local", "gemini", "openai", "mock"]).default("openai"),
   HERMES_LIVE_LOCAL_URL: LocalRealtimeUrlSchema.default("ws://127.0.0.1:8765/v1/realtime"),
   HERMES_LIVE_LOCAL_VOICE: z.string().trim().min(1).max(128).default("Aiden"),
   HERMES_LIVE_LOCAL_ALLOW_REMOTE: z.string().optional(),
@@ -116,7 +116,7 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
   OPENAI_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("low"),
-  OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("disabled"),
+  OPENAI_REALTIME_TURN_DETECTION: z.enum(["disabled", "semantic_vad", "server_vad"]).default("server_vad"),
   OPENAI_REALTIME_INPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: OpenAITranscriptionModelSchema.default("gpt-4o-mini-transcribe"),

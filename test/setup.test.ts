@@ -109,6 +109,45 @@ describe("setup", () => {
     }
   });
 
+  it("checks the provider and Hermes URL explicitly selected over inherited environment values", async () => {
+    const home = await temporaryHome();
+    const checked: Array<{ provider: string; url: string }> = [];
+    await runSetup({
+      provider: "mock",
+      hermesUrl: "http://127.0.0.1:9999",
+      enablePlugin: false,
+      service: false,
+      nonInteractive: true,
+      json: true,
+    }, {
+      home,
+      env: {
+        HERMES_LIVE_PROVIDER: "gemini",
+        GEMINI_API_KEY: "fixture-gemini-key",
+        HERMES_AGENT_API_SERVER_KEY: "fixture-hermes-key",
+        HERMES_BASE_URL: "http://127.0.0.1:8888",
+      },
+      findCommand: async () => undefined,
+      gatewayEndpointProbe: async () => "available",
+      readinessCheck: async (config) => {
+        checked.push({ provider: config.realtime.provider, url: config.hermes.baseUrl });
+        return { ok: true, gateway: { ok: true }, hermes: { ok: true }, realtime: { ok: true }, tasks: { ok: true } };
+      },
+      providerSessionCheck: async (config) => {
+        checked.push({ provider: config.realtime.provider, url: config.hermes.baseUrl });
+        return { checked: true, ok: true };
+      },
+    });
+    expect(checked).toEqual([
+      { provider: "mock", url: "http://127.0.0.1:9999" },
+      { provider: "mock", url: "http://127.0.0.1:9999" },
+    ]);
+    expect((await readManagedConfig({ home })).values).toMatchObject({
+      HERMES_LIVE_PROVIDER: "mock",
+      HERMES_BASE_URL: "http://127.0.0.1:9999",
+    });
+  });
+
   it("fails non-interactively before writing when required secrets are absent", async () => {
     const home = await temporaryHome();
     await expect(runSetup({
@@ -233,7 +272,7 @@ describe("setup", () => {
     expect(managed.values.HERMES_AGENT_API_SERVER_KEY).toBe(generatedKey);
   });
 
-  it("requires an explicit provider in headless setup when local voice is not managed", async () => {
+  it.each(["linux", "darwin"] as const)("requires the default hosted key without installing local models on %s", async (platform) => {
     const home = await temporaryHome();
     await expect(runSetup({
       enablePlugin: false,
@@ -242,10 +281,10 @@ describe("setup", () => {
       json: true,
     }, {
       home,
-      platform: "linux",
-      arch: "x64",
+      platform,
+      arch: "arm64",
       env: { HERMES_AGENT_API_SERVER_KEY: "private" },
-    })).rejects.toThrow(/No voice provider was selected/u);
+    })).rejects.toThrow(/OpenAI API key is required/u);
     await expect(readManagedConfig({ home })).resolves.toMatchObject({ exists: false });
   });
 
@@ -330,7 +369,7 @@ describe("setup", () => {
     }
   });
 
-  it("starts managed local voice before verifying it and starting the gateway", async () => {
+  it("starts explicitly selected local voice before verifying it and starting the gateway", async () => {
     const home = await temporaryHome();
     const pluginsDir = join(home, ".hermes", "plugins");
     const server = createServer((request, response) => {
@@ -376,6 +415,7 @@ describe("setup", () => {
     };
     try {
       const report = await runSetup({
+        provider: "local",
         hermesUrl: `http://127.0.0.1:${address.port}`,
         pluginsDir,
         enablePlugin: false,

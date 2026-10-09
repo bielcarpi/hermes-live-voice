@@ -165,10 +165,10 @@ export async function runLaunchCheckCommand(args: readonly string[]): Promise<vo
 export function launchCheckHelp(): string {
   return `hermes-live launch-check [--json] [--timeout-ms <ms>]
 
-Run the v1 launch proof. This opens a real voice-provider session, checks the
-Dashboard plugin and gateway, then starts one bounded Hermes worker.
+Check the installed plugin, gateway, voice-provider connection, and one bounded
+Hermes worker. These checks run separately; they do not test browser audio.
 
-Mock mode is rejected. Use this before a public release or user demo.`;
+Mock mode is rejected. Test a conversation in Live Voice after this passes.`;
 }
 
 async function checkedPlugin(

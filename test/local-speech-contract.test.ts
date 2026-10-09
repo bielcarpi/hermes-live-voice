@@ -6,6 +6,7 @@ import { buildLocalConversationResponse } from "../src/adapters/outbound/realtim
 it("delivers real gateway answer payloads through the managed Python speech patch", () => {
   const responses = [
     { ok: true, message: "The weather is clear." },
+    { ok: true, message: "**The check passed.**\n\n- The gateway is ready." },
     { ok: true, message: "长沙今天晴，气温二十八度。" },
     { ok: true, message: "长沙天气：\n**晴天**，28°C。\n[来源](https://example.com/weather)" },
     { ok: true, message: "a".repeat(500) },
