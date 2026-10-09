@@ -1623,7 +1623,7 @@ export function validateServerMessage(value) {
       break;
     case "input.speech_started":
       requireOnlyKeys(message, ["type", "provider", "itemId", "audioStartMs"]);
-      requireEnum(message, "provider", ["openai", "local"]);
+      requireEnum(message, "provider", ["openai", "local", "voxtral"]);
       optionalOpaqueId(message, "itemId");
       optionalFiniteNumber(message, "audioStartMs", { minimum: 0, maximum: 3_600_000 });
       break;
