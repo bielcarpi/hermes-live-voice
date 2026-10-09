@@ -84,7 +84,8 @@ def main() -> None:
     assert_equal(dashboard_manifest["version"], package["version"], "dashboard/package version")
     assert_equal(dashboard_manifest["tab"]["path"], "/live-voice", "dashboard tab path")
     assert_equal(dashboard_manifest["entry"], "dist/index.js", "dashboard entry")
-    assert_equal(dashboard_manifest["css"], "dist/style.css", "dashboard CSS")
+    assert_equal(dashboard_manifest["tab"]["hidden"], True, "slot-only dashboard plugin")
+    assert_equal(dashboard_manifest["slots"], ["chat:top"], "native chat slot")
     assert_equal(dashboard_manifest["api"], "plugin_api.py", "dashboard API")
 
     canonical_assets = {
@@ -97,7 +98,6 @@ def main() -> None:
 
     static_assets = [
         DASHBOARD_DIR / "dist" / "index.js",
-        DASHBOARD_DIR / "dist" / "style.css",
         *canonical_assets.values(),
     ]
     forbidden_secret_markers = [

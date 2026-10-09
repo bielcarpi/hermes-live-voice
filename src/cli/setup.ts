@@ -882,7 +882,7 @@ function setupNextSteps(input: {
     steps.push("Run `hermes-live service logs`, then `hermes-live doctor`.");
   }
   if (input.readiness.ok && input.providerSession.ok && (input.hermesCli.enabled || input.hermesCli.skipped) && (input.gateway.ready || !input.options.service)) {
-    steps.push("Open `hermes dashboard` and choose Live Voice.");
+    steps.push("Open `hermes dashboard`, select a saved chat in Chat, and press Start voice.");
   }
   return steps;
 }

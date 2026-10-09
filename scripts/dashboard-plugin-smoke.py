@@ -347,19 +347,6 @@ def test_capability_sanitizing(plugin: Any) -> None:
         "parallel": True,
     }
 
-    assert plugin._safe_conversation({
-        "id": "session_1",
-        "title": "Saved chat",
-        "preview": "Continue here",
-        "lastActive": 1_784_131_200_000,
-        "ignored": "private",
-    }) == {
-        "id": "session_1",
-        "title": "Saved chat",
-        "preview": "Continue here",
-        "lastActive": 1_784_131_200_000,
-    }
-    assert plugin._safe_conversation({"id": "unsafe session"}) is None
     assert "statePath" not in json.dumps(tasks)
 
     reflected = "configured-dashboard-bearer"

@@ -6,9 +6,11 @@
   "version": "1.3.0-rc.1",
   "tab": {
     "path": "/live-voice",
-    "position": "after:chat"
+    "hidden": true
   },
   "entry": "dist/index.js",
-  "css": "dist/style.css",
-  "api": "plugin_api.py"
+  "api": "plugin_api.py",
+  "slots": [
+    "chat:top"
+  ]
 }

@@ -75,8 +75,8 @@ try {
   if (dashboardPlugin.version !== packageJson.version) {
     throw new Error(`Dashboard plugin v${String(dashboardPlugin.version)} does not match package v${packageJson.version}.`);
   }
-  if (dashboardPlugin.tab?.path !== "/live-voice" || dashboardPlugin.has_api !== true) {
-    throw new Error("Hermes Dashboard rejected the Live Voice route or backend.");
+  if (dashboardPlugin.tab?.hidden !== true || !dashboardPlugin.slots?.includes("chat:top") || dashboardPlugin.has_api !== true) {
+    throw new Error("Hermes Dashboard rejected the Live Voice chat slot or backend.");
   }
 
   const authModule = (await dockerExec([

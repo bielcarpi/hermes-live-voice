@@ -5,10 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 const dashboardUrl = new URL("../plugins/hermes-live/dashboard/", import.meta.url);
 
 describe("Hermes Dashboard plugin", () => {
-  it("registers the Live Voice tab synchronously as a dependency-free IIFE", () => {
+  it("registers only the native chat slot synchronously as a dependency-free IIFE", () => {
     const register = vi.fn();
+    const registerSlot = vi.fn();
     const window = {
-      __HERMES_PLUGINS__: { register },
+      __HERMES_PLUGINS__: { register, registerSlot },
       location: { href: "http://127.0.0.1:9119/live-voice" },
     };
     const document = dashboardDocument();
@@ -20,9 +21,10 @@ describe("Hermes Dashboard plugin", () => {
 
     expect(register).toHaveBeenCalledTimes(1);
     expect(register).toHaveBeenCalledWith("hermes-live", expect.any(Function));
+    expect(registerSlot).toHaveBeenCalledWith("hermes-live", "chat:top", expect.any(Function));
   });
 
-  it("declares an official Dashboard tab, assets, and backend with package-version parity", () => {
+  it("declares a hidden route, native chat slot, assets, and backend with package-version parity", () => {
     const manifest = JSON.parse(readFileSync(new URL("manifest.json", dashboardUrl), "utf8"));
     const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -31,9 +33,9 @@ describe("Hermes Dashboard plugin", () => {
       label: "Live Voice",
       icon: "Zap",
       version: packageJson.version,
-      tab: { path: "/live-voice", position: "after:chat" },
+      tab: { path: "/live-voice", hidden: true },
+      slots: ["chat:top"],
       entry: "dist/index.js",
-      css: "dist/style.css",
       api: "plugin_api.py",
     });
   });
@@ -43,7 +45,6 @@ describe("Hermes Dashboard plugin", () => {
 
     expect(source).toContain("SDK.buildWsUrl(LIVE_ENDPOINT)");
     expect(source).toContain("SDK.fetchJSON(STATUS_ENDPOINT)");
-    expect(source).toContain("SDK.fetchJSON(CONVERSATIONS_ENDPOINT)");
     expect(source).not.toContain("__HERMES_SESSION_TOKEN__");
     expect(source).not.toContain("HERMES_LIVE_AUTH_TOKEN");
     expect(source).not.toContain("OPENAI_API_KEY");
@@ -187,7 +188,7 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.microphoneActiveGuidance("disabled")).toContain("stop the microphone to submit");
     expect(utilities.microphoneActiveGuidance("semantic_vad")).toContain("Speak naturally");
     expect(utilities.connectedSessionNotice({ enabled: false }, false))
-      .toBe("Live Voice is connected in text mode. Type a message to Hermes.");
+      .toBe("Voice input is unavailable for this session.");
     expect(utilities.connectedSessionNotice({ enabled: true }, true, true)).toContain("Connected and listening");
     expect(utilities.supportsBrowserPlayback({ enabled: false })).toBe(false);
     expect(utilities.supportsBrowserPlayback({ enabled: true, mimeType: "audio/pcm;rate=24000" })).toBe(true);
@@ -213,18 +214,6 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).toContain("void startMicrophoneAfterConnect(audio, connectedInputAudio, function () {");
     expect(source).not.toContain("client.connect({ conversation: conversation }).then(async function");
     expect(source).toContain("Live Voice connected. Allow microphone access to start talking.");
-  });
-
-  it("keeps the connection controls in view until a transcript actually exists", () => {
-    const utilities = loadDashboardUtilities();
-    const viewport = { scrollTop: 0, scrollHeight: 640 };
-
-    utilities.scrollTranscriptToLatest(viewport, 0);
-    expect(viewport.scrollTop).toBe(0);
-
-    utilities.scrollTranscriptToLatest(viewport, 1);
-    expect(viewport.scrollTop).toBe(640);
-    expect(dashboardSource()).not.toContain("scrollIntoView");
   });
 
   it("stops a microphone permission result that arrives after disconnect", async () => {
@@ -310,7 +299,7 @@ function task(
 
 function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
   const source = dashboardSource().replace(
-    "  function LiveVoicePage() {",
+    "  function LiveVoiceControls() {",
     `  window.__HERMES_LIVE_TEST_UTILITIES__ = {
       connectedSessionNotice,
       connectionClosedNotice,
@@ -323,7 +312,6 @@ function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
       supportsBrowserPlayback,
       supportsBrowserMicrophone,
       startMicrophoneAfterConnect,
-      scrollTranscriptToLatest,
       taskDetail,
       taskInboxItems,
       taskInboxSummary,
@@ -331,7 +319,7 @@ function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
       taskStatePresentation,
     };
 
-  function LiveVoicePage() {`,
+  function LiveVoiceControls() {`,
   );
   const window: Record<string, any> = {
     location: { href: "http://127.0.0.1:9119/live-voice" },
