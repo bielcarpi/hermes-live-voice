@@ -18,11 +18,11 @@ Install the complete product through npm:
 
 ```sh
 npm install --global hermes-live-voice
-hermes-live setup --provider openai
+hermes-live setup
 hermes dashboard
 ```
 
-Use `--provider gemini` for Gemini Live. Use `--provider local --service` for managed local voice on Apple Silicon.
+Use `--provider gemini` for Gemini Live. Use `--provider local` for managed local voice on Apple Silicon.
 
 The gateway and plugin share `$HERMES_HOME/hermes-live/config.env`. Use `hermes-live doctor` to diagnose the installation.
 

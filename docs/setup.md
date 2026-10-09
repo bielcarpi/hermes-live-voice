@@ -7,11 +7,10 @@ Run:
 ```sh
 npm install --global hermes-live-voice
 hermes-live setup
-hermes-live launch-check
 hermes dashboard
 ```
 
-Setup enables Hermes' private API bridge, creates a random bridge credential when needed, installs and enables the bundled Dashboard plugin, checks both runtimes, then installs the required user services. On Apple Silicon it defaults to fully local voice. Existing custom or remote Hermes API endpoints are never reconfigured.
+Setup enables Hermes' private API bridge, creates a bridge credential when needed, installs the Dashboard plugin, checks both runtimes, and starts the user services. It preserves an existing provider selection, otherwise uses an available OpenAI/Gemini key or defaults to OpenAI. Local models require an explicit `--provider local`. Existing custom or remote Hermes API endpoints are never reconfigured.
 
 If activation fails, run:
 
@@ -22,20 +21,26 @@ hermes-live doctor --provider-smoke
 
 Both commands suppress credentials and print the next concrete fix.
 
-Use `hermes-live launch-check` before production use or a public walkthrough. It rejects mock mode and starts one bounded Hermes worker.
+`hermes-live launch-check` checks the plugin, gateway, provider connection, and a bounded Hermes worker separately. It rejects mock mode. Follow it with a Dashboard conversation to verify microphone capture, playback, interruption, and completion notices.
 
 To create a support bundle, run `hermes-live diagnostics`. The private JSON file excludes logs, prompts, task results, audio, and secret values.
 
 ## Local voice
 
-On Apple Silicon, `hermes-live setup` uses `uv` to install and run `speech-to-speech==1.0.0`.
+Choose local voice explicitly:
+
+```sh
+hermes-live setup --provider local
+```
+
+On Apple Silicon, this uses `uv` to install and run `speech-to-speech==1.0.0`.
 The managed voice stack uses Parakeet STT, a 4-bit MLX language model, Qwen3-TTS, VAD, and realtime WebSocket transport.
 It installs a private launchd service and waits for the models.
 Then it proves a structured task tool call and spoken receipt before it starts the gateway.
 This warms the first real inference path.
 No second terminal is needed.
 
-The managed profile requires at least 12 GB of physical memory; a 16 GB Apple Silicon Mac is recommended (7.6 GB observed warm, 9.0 GB peak on the tested 16 GB M1 Pro). Setup checks this before downloading models. It moves an implicit local endpoint to a nearby free port when needed; an explicit `HERMES_LIVE_LOCAL_URL` is never changed.
+The managed profile requires at least 12 GB of physical memory; use 16 GB or more when possible. Setup checks this before downloading models. Other applications and available memory can strongly affect speech latency. Setup moves an implicit local endpoint to a nearby free port when needed; an explicit `HERMES_LIVE_LOCAL_URL` is never changed.
 
 The `hermes-live local` commands are for diagnostics and development:
 
@@ -68,21 +73,7 @@ different limit is needed. Without that setting, the limit is the greater of
 120000 ms and `HERMES_LIVE_HERMES_TIMEOUT_MS`. Ordinary API requests keep their
 30000 ms default. The stream idle timeout only applies to background run streams.
 
-If work finishes in Hermes but voice stays silent on 1.1.0, install the new
-package before refreshing the plugin and services:
-
-```sh
-npm install --global hermes-live-voice@latest
-hermes-live upgrade
-```
-
-`hermes-live upgrade` uses the installed package; it does not download updates.
-Then restart Hermes Dashboard so it loads the updated plugin.
-The plugin supports both the legacy `web_server` authorization helpers
-and their newer `web_server_chat` location. The `deny_all_then_stop` readiness
-value is the intended fallback for approvals; changing it does not fix speech.
-
-## Other providers
+## Hosted providers
 
 ```sh
 # Gemini Live
@@ -95,7 +86,7 @@ OPENAI_API_KEY=... hermes-live setup --provider openai
 hermes-live setup --provider mock
 ```
 
-OpenAI Realtime uses `gpt-realtime-2` by default. Set
+OpenAI Realtime uses `gpt-realtime-2` and automatic server VAD by default. Leave the microphone open for multiple turns. Set `OPENAI_REALTIME_TURN_DETECTION=disabled` only for manual turn submission, or `semantic_vad` for semantic turn detection. Explicit existing settings are preserved. Set
 `OPENAI_REALTIME_MODEL=gpt-realtime-1.5` when you want the faster
 non-reasoning Realtime path. OpenAI user transcripts use
 `gpt-4o-mini-transcribe` by default. Set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE` to a two-letter language code when a known language needs a hint. Set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL=disabled` to turn input transcription off.
@@ -119,10 +110,11 @@ Common settings:
 | `HERMES_BASE_URL` | `http://127.0.0.1:8642` | Hermes API Server |
 | `HERMES_MODEL` | Hermes profile default | Optional literal model override; normally leave unset |
 | `HERMES_LIVE_HERMES_CHAT_TIMEOUT_MS` | greater of `120000` and the ordinary request timeout | Time to wait for a saved-chat answer, including tool execution |
-| `HERMES_LIVE_PROVIDER` | selected by setup | `local`, `gemini`, `openai`, or `mock` |
+| `HERMES_LIVE_PROVIDER` | `openai` unless setup preserves/detects another hosted provider | `openai`, `gemini`, `local`, or `mock` |
 | `HERMES_LIVE_LOCAL_URL` | `ws://127.0.0.1:8765/v1/realtime` | Hugging Face realtime endpoint |
 | `GEMINI_MODEL` | `gemini-3.1-flash-live-preview` | Gemini Live model |
 | `OPENAI_REALTIME_MODEL` | `gpt-realtime-2` | OpenAI Realtime model |
+| `OPENAI_REALTIME_TURN_DETECTION` | `server_vad` | Automatic turns; `disabled` is manual submission |
 | `HERMES_LIVE_HOST` / `HERMES_LIVE_PORT` | `127.0.0.1` / first free port from `8788` | Gateway listener |
 | `HERMES_LIVE_AUTH_TOKEN` | unset | Required for network-accessible gateway binds |
 | `HERMES_LIVE_MAX_SESSIONS` | `1` local / `8` hosted | Concurrent voice sessions; match the provider pool |
@@ -172,6 +164,7 @@ Run `npm run verify` before opening a pull request. The mock provider proves det
 The image contains the Node gateway, not Python models. Point it at Gemini/OpenAI or a separately managed Hugging Face endpoint:
 
 ```sh
+OPENAI_API_KEY=... \
 HERMES_AGENT_API_SERVER_KEY=... \
 HERMES_LIVE_AUTH_TOKEN=replace-with-a-long-random-value \
 docker compose -f examples/docker-compose.yml up --build

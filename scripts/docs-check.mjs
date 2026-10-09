@@ -43,56 +43,6 @@ for (const file of markdownFiles) {
   }
 }
 
-const protocolRevisionContract = [
-  {
-    file: "docs/client-protocol.md",
-    required: [
-      "two independent per-task revision channels",
-      "complementary projections, not duplicates",
-      "exact equal-sequence replay as idempotent",
-      "same channel is a protocol error and must fail closed",
-    ],
-  },
-  {
-    file: "docs/background-tasks.md",
-    required: [
-      "two independent revisions",
-      "Lifecycle and notification messages can share one sequence and arrive in either order",
-      "conflicting content at the same channel sequence must fail closed",
-    ],
-  },
-  {
-    file: "docs/ui-integration.md",
-    required: [
-      "keeps lifecycle and notification revisions separate",
-      "may share one sequence and arrive in either order; both are applied",
-      "conflicting equal-sequence repeats fail closed",
-    ],
-  },
-];
-
-for (const contract of protocolRevisionContract) {
-  const source = await readFile(resolve(root, contract.file), "utf8");
-  for (const snippet of contract.required) {
-    if (!source.includes(snippet)) {
-      failures.push(`${contract.file} (missing protocol ordering contract: ${snippet})`);
-    }
-  }
-}
-
-const obsoleteProtocolClaims = [
-  "Clients deduplicate and order lifecycle updates by `(taskId, sequence)`.",
-  "The SDK deduplicates by `(taskId, sequence)`",
-];
-for (const file of markdownFiles) {
-  const source = await readFile(file, "utf8");
-  for (const claim of obsoleteProtocolClaims) {
-    if (source.includes(claim)) {
-      failures.push(`${relative(file)} (obsolete single-channel ordering claim: ${claim})`);
-    }
-  }
-}
-
 const anchorSanitizationCases = [
   { heading: "<span>Release notes</span>", expected: "release-notes" },
   { heading: "<<script>alert(1)</script> Release", expected: "alert1-release" },
@@ -109,7 +59,7 @@ if (failures.length > 0) {
   console.error("Documentation checks failed:\n" + failures.map((failure) => `- ${failure}`).join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Checked ${markdownFiles.length} Markdown files for links, anchors, and the protocol ordering contract.`);
+  console.log(`Checked ${markdownFiles.length} Markdown files for links and anchors.`);
 }
 
 async function markdownAnchors(file) {

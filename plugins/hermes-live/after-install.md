@@ -12,7 +12,7 @@ hermes dashboard
 
 Choose **Live Voice**, then start a new Hermes chat or resume a saved one. The Dashboard stays responsive while delegated tasks run, shows what each task is doing, keeps results in a durable inbox, and supports follow-up work.
 
-On Apple Silicon, setup installs and starts fully local voice automatically. The first run downloads the models; no separate provider terminal is needed.
+Setup defaults to OpenAI, detects an available hosted key, and keeps an existing provider choice. Local voice requires `hermes-live setup --provider local`; on Apple Silicon that installation downloads Python and models.
 
 Useful commands:
 
