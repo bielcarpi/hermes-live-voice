@@ -138,12 +138,11 @@ class VoxtralLiveSession implements LiveModelSession {
     const event = parsed as Record<string, unknown>;
     const type = event.type;
     if (type === "transcription.text.delta") {
-      this.partial += String(event.text ?? "");
-      this.callbacks.onEvent({ type: "text", text: this.partial, speaker: "user", final: false });
+      const fragment = String(event.text ?? "");
+      this.partial += fragment;
+      this.callbacks.onEvent({ type: "text", text: fragment, speaker: "user", final: false });
     } else if (type === "transcription.done") {
-      const text = String(event.text ?? "").trim() || this.partial.trim();
-      this.partial = "";
-      this.resolvePendingFlush(text);
+      this.resolvePendingFlush(String(event.text ?? "").trim() || this.partial.trim());
     } else if (type === "error") {
       const err = (event.error ?? {}) as Record<string, unknown>;
       this.sttFailure = `Voxtral realtime error: ${String(err.message ?? err.code ?? "unknown")}`;
@@ -215,9 +214,25 @@ class VoxtralLiveSession implements LiveModelSession {
         this.pendingFlush = { resolve, reject, timer };
       });
     } catch {
-      return this.dispatchConversationTurn(this.partial.trim());
+      return this.dispatchConversationTurn(this.finalizeUserEntry(this.partial.trim()));
     }
-    return this.dispatchConversationTurn(transcript.trim());
+    return this.dispatchConversationTurn(this.finalizeUserEntry(transcript.trim()));
+  }
+
+  /**
+   * transcript.delta fragments are APPENDED client-side; the live user entry
+   * settles when a final text event arrives. Emit only the correction — the
+   * difference between the final transcript and what was already displayed —
+   * so the completed entry is neither duplicated nor garbled. A single space
+   * settles the entry when the fragments already cover the final transcript.
+   */
+  private finalizeUserEntry(transcript: string): string {
+    const displayed = this.partial;
+    let correction = transcript.startsWith(displayed) ? transcript.slice(displayed.length) : "";
+    if (correction.length === 0) correction = " ";
+    this.partial = "";
+    this.callbacks.onEvent({ type: "text", text: correction, speaker: "user", final: true });
+    return transcript;
   }
 
   private dispatchConversationTurn(transcript: string): boolean {
