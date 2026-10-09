@@ -2105,7 +2105,7 @@ function validateTaskNotification(value) {
 function validateRealtimeCapabilities(value) {
   requireOnlyKeys(value, ["provider", "model", "audio"], "session.ready realtime");
   const realtime = { ...value, type: "session.ready realtime" };
-  requireEnum(realtime, "provider", ["local", "gemini", "openai", "mock"]);
+  requireEnum(realtime, "provider", ["local", "gemini", "openai", "voxtral", "mock"]);
   requireBoundedString(realtime, "model", PUBLIC_MODEL_MAX_CHARS);
   requireObject(realtime, "audio");
   const audio = value.audio;

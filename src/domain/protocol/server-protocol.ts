@@ -45,7 +45,7 @@ const BoundedJsonObjectSchema = z.record(z.unknown()).superRefine((value, contex
 
 export const RealtimeClientCapabilitiesSchema = z
   .object({
-    provider: z.enum(["local", "gemini", "openai", "mock"]),
+    provider: z.enum(["local", "gemini", "openai", "voxtral", "mock"]),
     model: z.string().min(1).max(PUBLIC_MODEL_MAX_CHARS),
     audio: z
       .object({

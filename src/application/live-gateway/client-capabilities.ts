@@ -26,6 +26,19 @@ export function realtimeClientCapabilities(
       },
     };
   }
+  if (config.realtime.provider === "voxtral") {
+    return {
+      provider: "voxtral",
+      model: config.realtime.model,
+      audio: {
+        // The chained Voxtral adapter resamples to 16 kHz for the realtime
+        // STT WebSocket; the client keeps sending comfortable 24 kHz PCM.
+        input: { enabled: true, mimeType: "audio/pcm;rate=24000", recommendedFrameMs: 50 },
+        output: { enabled: true, mimeType: "audio/pcm;rate=24000" },
+        turnDetection: "disabled",
+      },
+    };
+  }
   if (config.realtime.provider === "local") {
     return {
       provider: "local",
