@@ -111,7 +111,7 @@ The host endpoint must return either a same-origin authenticated WebSocket relay
 
 | Contract | UI behavior |
 | --- | --- |
-| `session.ready` | Show provider, model, protocol v6, audio formats/turn detection, and task limits. |
+| `session.ready` | Show connection/listening state. Keep provider, model, protocol, formats, and limits in collapsed diagnostics; explain manual submission if turn detection is disabled. |
 | `session.ready.conversation` | Show the selected persisted Hermes chat and retain its writable session id for reconnect. |
 | `task.snapshot` | Reconcile the owner inbox after initial connect/reconnect and correlated list/get requests. |
 | `task.accepted/started/progress/stopping` | Show durable state and queue/progress without claiming success. |
@@ -132,7 +132,7 @@ client.stopTask(taskId, "user stopped this task");
 client.acknowledgeNotification(taskId, notificationId);
 ```
 
-List/reconnect snapshots contain summaries but omit full retained output. Use `getTask(taskId)` for details. `followUpTask(...)` creates a distinct worker only after the selected task is terminal and exposes its parent/root lineage. Connected clients can also receive bounded output with `task.completed`. Reconnect hydration may arrive in multiple 100-task frames; every retained active task and unread notification is included even when older read history is truncated.
+List/reconnect snapshots contain summaries but omit full retained output. Use `getTask(taskId)` when opening a result. Render the full retained output, indicate storage truncation, and allow a failed fetch to be retried. Keep task IDs and lineage in collapsed details. `followUpTask(...)` creates a distinct worker only after the selected task is terminal and exposes its parent/root lineage. Connected clients can also receive bounded output with `task.completed`. Reconnect hydration may arrive in multiple 100-task frames; every retained active task and unread notification is included even when older read history is truncated.
 
 ## Separate Speech And Task Controls
 

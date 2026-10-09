@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
 import type { Logger } from "../src/logger.js";
@@ -30,6 +31,7 @@ import type {
   LiveToolCall,
 } from "../src/application/live-gateway/ports/realtime-model.port.js";
 import { startServer } from "../src/adapters/inbound/http/server.js";
+import { createLiveModelAdapter } from "../src/adapters/outbound/realtime/factory.js";
 import { FileTaskStore } from "../src/adapters/outbound/task-store/file-task-store.js";
 import { TaskSupervisor } from "../src/application/task-supervisor/task-supervisor.js";
 import {
@@ -637,6 +639,19 @@ describe("live gateway WebSocket", () => {
     const hydratedTaskIds = hydrationFrames.flatMap((message) => message.tasks.map((task: JsonMessage) => task.taskId));
     expect(hydratedTaskIds).toContain(active.taskId);
     expect(hydratedTaskIds).toContain(unread.taskId);
+
+    provider.emit({ type: "tool_call", call: {
+      id: "voice_active_history", name: "list_background_tasks", args: { include_completed: false },
+    } });
+    const activeList = await provider.latest.toolResponses.wait((entry) => entry.call.id === "voice_active_history");
+    expect((activeList.response.tasks as JsonMessage[]).map((task) => task.taskId)).toContain(active.taskId);
+
+    provider.emit({ type: "tool_call", call: {
+      id: "voice_bounded_history", name: "list_background_tasks", args: { include_completed: true },
+    } });
+    const historyList = await provider.latest.toolResponses.wait((entry) => entry.call.id === "voice_bounded_history");
+    expect(historyList.response.truncated).toBe(true);
+    expect((historyList.response.tasks as JsonMessage[])[0]?.taskId).toBe(active.taskId);
 
     await expect(client.messages.wait(
       "task.notification",
@@ -1613,6 +1628,29 @@ describe("transport, tool-call, and notification safety", () => {
     expect(detailed.response).not.toHaveProperty("spoken_response");
   });
 
+  it("keeps the running task visible by voice behind a full newer queue", async () => {
+    const config = testConfig({ tasks: { pollIntervalMs: 10_000 } });
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const server = await startTestServer({ config, hermes, provider });
+    const client = await readyClient(server.url);
+    provider.emit({ type: "tool_call", call: backgroundTaskCall("running_before_queue", "Long-running work") });
+    const running = await provider.latest.toolResponses.wait((entry) => entry.call.id === "running_before_queue");
+    await client.messages.wait("task.started", (message) => message.taskId === running.response.task_id);
+    for (let index = 0; index < 32; index += 1) {
+      const id = `queued_after_running_${index}`;
+      provider.emit({ type: "tool_call", call: backgroundTaskCall(id, `Queued work ${index}`) });
+      await provider.latest.toolResponses.wait((entry) => entry.call.id === id);
+    }
+    provider.emit({ type: "tool_call", call: {
+      id: "voice_full_queue", name: "list_background_tasks", args: { include_completed: false, summary_only: true },
+    } });
+    const response = (await provider.latest.toolResponses.wait((entry) => entry.call.id === "voice_full_queue")).response;
+    expect(response).toMatchObject({ truncated: false, spoken_response: "33 background tasks are active." });
+    expect(response.tasks).toHaveLength(33);
+    expect((response.tasks as JsonMessage[])[0]).toMatchObject({ taskId: running.response.task_id, state: "running" });
+  });
+
   it("does not present an unknown outcome as an active task", async () => {
     const config = testConfig({ tasks: { pollIntervalMs: 10_000 } });
     const hermes = new HermesHarness();
@@ -1814,12 +1852,76 @@ describe("transport, tool-call, and notification safety", () => {
     },
   );
 
-  it("waits for the OpenAI VAD turn response before releasing a pending completion notice", async () => {
+  it("composes real OpenAI VAD events, task dispatch, and out-of-band completion speech", async () => {
+    const upstreamServer = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(upstreamServer, "listening");
+    const address = upstreamServer.address();
+    if (typeof address === "string" || !address) throw new Error("Expected an upstream fixture port.");
+    const upstreamMessages: JsonMessage[] = [];
+    let upstream: WebSocket | undefined;
+    upstreamServer.on("connection", (socket) => {
+      upstream = socket;
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString());
+        upstreamMessages.push(message);
+        if (message.type === "session.update") send(socket, { type: "session.updated" });
+      });
+    });
+    let server: TestServer | undefined;
+    try {
+      const config = testConfig();
+      config.realtime.provider = "openai";
+      config.openai = { ...config.openai, apiKey: "fixture-openai-key", baseUrl: `ws://127.0.0.1:${address.port}/v1/realtime`, turnDetection: "server_vad" };
+      const hermes = new HermesHarness();
+      server = await startTestServer({ config, hermes, provider: createLiveModelAdapter(config) });
+      const client = await readyClient(server.url, { protocolVersion: 6 });
+      const responseCreates = () => upstreamMessages.filter((message) => message.type === "response.create");
+      send(client.socket, { type: "audio.input", data: Buffer.alloc(2_400).toString("base64"), mimeType: "audio/pcm;rate=24000" });
+      await waitUntil(() => upstreamMessages.some((message) => message.type === "input_audio_buffer.append"));
+      send(upstream!, { type: "input_audio_buffer.speech_started", item_id: "fixture_input" });
+      send(upstream!, { type: "input_audio_buffer.speech_stopped", item_id: "fixture_input" });
+      await waitUntil(() => responseCreates().length === 1);
+      send(upstream!, { type: "response.created", response: { id: "fixture_delegation", status: "in_progress", conversation_id: "fixture_conversation" } });
+      send(upstream!, { type: "response.function_call_arguments.done", response_id: "fixture_delegation", call_id: "fixture_task_call",
+        name: "start_background_task", arguments: JSON.stringify({ message: "Inspect the fixture repository" }) });
+      send(upstream!, { type: "response.done", response: { id: "fixture_delegation", status: "completed", conversation_id: "fixture_conversation" } });
+      const accepted = await client.messages.wait("task.accepted");
+      await waitUntil(() => hermes.startCalls.length === 1 && responseCreates().length === 2);
+      expect(hermes.startCalls[0]?.input).toBe("Inspect the fixture repository");
+      send(upstream!, { type: "response.created", response: { id: "fixture_receipt", status: "in_progress", conversation_id: "fixture_conversation" } });
+      await client.messages.wait("response.started", (message) => message.responseId === "fixture_receipt");
+      send(client.socket, { type: "audio.input", data: Buffer.alloc(2_400).toString("base64"), mimeType: "audio/pcm;rate=24000" });
+      await waitUntil(() => upstreamMessages.filter((message) => message.type === "input_audio_buffer.append").length === 2);
+      hermes.complete(hermes.runIdForInput("Inspect the fixture repository"), "Fixture audit complete.");
+      await client.messages.wait("task.completed", (message) => message.taskId === accepted.taskId);
+      expect(responseCreates()).toHaveLength(2);
+      send(upstream!, { type: "response.done", response: { id: "fixture_receipt", status: "completed", conversation_id: "fixture_conversation" } });
+      await waitUntil(() => responseCreates().length === 3);
+      expect(responseCreates()[2]?.response).toMatchObject({ conversation: "none", tools: [], tool_choice: "none" });
+      expect(JSON.stringify(responseCreates()[2])).toContain("Your background task is finished");
+      send(upstream!, { type: "response.created", response: { id: "fixture_notice", status: "in_progress", conversation_id: null } });
+      send(upstream!, { type: "response.output_audio.delta", response_id: "fixture_notice", item_id: "fixture_notice_audio", content_index: 0,
+        delta: Buffer.alloc(480).toString("base64") });
+      await client.messages.wait("audio.output");
+      send(upstream!, { type: "response.done", response: { id: "fixture_notice", status: "completed", conversation_id: null } });
+      await client.messages.wait("response.completed", (message) => message.responseId === "fixture_notice");
+      expect(hermes.stopCalls).toEqual([]);
+    } finally {
+      if (server) await server.close();
+      for (const socket of upstreamServer.clients) socket.terminate();
+      await new Promise<void>((resolve) => upstreamServer.close(() => resolve()));
+    }
+  });
+
+  it.each(["openai", "local"] as const)("delivers completion speech while silent PCM continues after a %s VAD turn", async (providerName) => {
     const hermes = new HermesHarness();
     const provider = new RecordingLiveAdapter();
-    const server = await startTestServer({ config: testConfig(), hermes, provider });
-    const client = await readyClient(server.url);
-    provider.emit({ type: "input_speech_started", provider: "openai", itemId: "speech_1" });
+    const config = testConfig();
+    config.realtime.provider = providerName;
+    config.openai.turnDetection = "server_vad";
+    const server = await startTestServer({ config, hermes, provider });
+    const client = await readyClient(server.url, { protocolVersion: 6 });
+    provider.emit({ type: "input_speech_started", provider: providerName, itemId: "speech_1" });
     provider.emit({
       type: "tool_call",
       call: backgroundTaskCall("vad_notice", "Finish while the user is speaking"),
@@ -1832,11 +1934,38 @@ describe("transport, tool-call, and notification safety", () => {
     await delay(40);
     expect(provider.latest.notifications.items).toEqual([]);
 
-    provider.emit({ type: "input_speech_stopped", provider: "openai", itemId: "speech_1" });
+    provider.emit({ type: "input_speech_stopped", provider: providerName, itemId: "speech_1" });
     await delay(40);
     expect(provider.latest.notifications.items).toEqual([]);
     provider.emit({ type: "response", status: "started", responseId: "vad_turn_response" });
+    send(client.socket, { type: "audio.input", data: Buffer.alloc(2_400).toString("base64"), mimeType: "audio/pcm;rate=24000" });
+    await waitUntil(() => provider.latest.audioInputs.length > 0);
     provider.emit({ type: "response", status: "completed", responseId: "vad_turn_response" });
+    await expect(provider.latest.notifications.wait()).resolves.toMatchObject({
+      announcement: "Your background task is finished. The result is ready in the task inbox.",
+    });
+  });
+
+  it("releases Gemini completion speech after an interim transcript and a completed turn", async () => {
+    const hermes = new HermesHarness();
+    const provider = new RecordingLiveAdapter();
+    const config = testConfig();
+    config.realtime.provider = "gemini";
+    const server = await startTestServer({ config, hermes, provider });
+    const client = await readyClient(server.url);
+    provider.emit({ type: "text", speaker: "user", text: "Keep working", final: false });
+    provider.emit({ type: "tool_call", call: backgroundTaskCall("gemini_notice", "Finish during Gemini speech") });
+    const receipt = await provider.latest.toolResponses.wait((entry) => entry.call.id === "gemini_notice");
+    await waitUntil(() => hermes.startCalls.length === 1);
+    hermes.complete(hermes.runIdForInput("Finish during Gemini speech"), "done");
+    await client.messages.wait("task.completed", (message) => message.taskId === receipt.response.task_id);
+    await delay(40);
+    expect(provider.latest.notifications.items).toEqual([]);
+
+    provider.emit({ type: "response", status: "started" });
+    send(client.socket, { type: "audio.input", data: Buffer.alloc(2_400).toString("base64"), mimeType: "audio/pcm;rate=16000" });
+    await waitUntil(() => provider.latest.audioInputs.length > 0);
+    provider.emit({ type: "response", status: "completed" });
     await expect(provider.latest.notifications.wait()).resolves.toMatchObject({
       announcement: "Your background task is finished. The result is ready in the task inbox.",
     });

@@ -53,6 +53,7 @@ try {
 
   await dockerExec(["mkdir", "-p", "/opt/data/plugins"]);
   await dockerExec(["cp", "-R", "/repo-plugin", "/opt/data/plugins/hermes-live"]);
+  await dockerExec(["chmod", "-R", "a+rX", "/opt/data/plugins/hermes-live"]);
   await dockerExec(["hermes", "plugins", "enable", "hermes-live"]);
   const pluginList = JSON.parse(await dockerExec(["hermes", "plugins", "list", "--json"]));
   const plugin = pluginList.find((entry) => entry?.name === "hermes-live");

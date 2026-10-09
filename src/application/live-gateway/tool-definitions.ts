@@ -56,7 +56,7 @@ const HERMES_LIVE_TOOL_DEFINITIONS = [
   },
   {
     name: "list_background_tasks",
-    description: "List this user's active and recent Hermes background tasks from the durable task inbox.",
+    description: "List this user's working tasks first, then queued and recent tasks. A truncated response is partial; a missing task is not proof it does not exist.",
     parametersJsonSchema: {
       type: "object",
       additionalProperties: false,

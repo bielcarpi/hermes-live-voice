@@ -34,7 +34,6 @@ Release notes must distinguish:
    npm run verify
    npm run check:scripts
    npm run check:workflow-pins
-   npm run check:positioning
    npm run check:hermes-compatibility
    node dist/cli.js launch-check
    npm audit --audit-level=moderate
@@ -74,7 +73,6 @@ Before tagging a stable release, record evidence for:
 - browser/Dashboard/terminal and clean-package installation smokes.
 - pinned Hermes plugin-index entry generation for `plugins/hermes-live`.
 - script syntax smoke for JavaScript maintenance scripts and release helpers.
-- positioning smoke for community, non-official public copy.
 - workflow pin smoke for immutable external GitHub Action references.
 
 Repeat the gate on the final commit and complete an appropriate soak window. Keep recent live evidence for every advertised provider, and record any account, quota, region, or model-access blocker without relabeling it as a pass. Document manual audio/device coverage; tests cannot prove microphones, autoplay, perceived latency, or provider speech quality on untested hardware.

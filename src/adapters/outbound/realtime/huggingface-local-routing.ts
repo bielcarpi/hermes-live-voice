@@ -18,7 +18,7 @@ export interface LocalRoutedAction {
   args: Record<string, unknown>;
   taskQuestion?: string;
   taskControl?:
-    | { type: "stop"; selection: "latest" | "single" }
+    | { type: "stop"; selection: "latest" | "current" | "single" }
     | { type: "stop"; selection: "matching"; query: string }
     | { type: "follow_up"; message: string };
 }
@@ -91,7 +91,7 @@ export function localRoutedAction(text: string): LocalRoutedAction | undefined {
     return {
       name: "list_background_tasks",
       args: { include_completed: false },
-      taskControl: { type: "stop", selection: "latest" },
+      taskControl: { type: "stop", selection: /\b(?:latest|last|most\s+recent)\b|(?:^|[\s'’])[uú]ltim[ao]\b/iu.test(value) ? "latest" : "current" },
     };
   }
   if (isNamedTaskStopRequest(value)) {
@@ -142,12 +142,13 @@ export function buildLocalTaskQuestionResponse(
   question: string,
   toolResponse: Record<string, unknown>,
 ): Record<string, unknown> {
-  const tasks = Array.isArray(toolResponse.tasks)
+  const tasks = toolResponse.ok === true && Array.isArray(toolResponse.tasks)
     ? toolResponse.tasks.filter(isRecord)
     : [];
-  const selected = selectTaskForLocalQuestion(question, tasks);
+  const selected = toolResponse.truncated === true ? undefined : selectTaskForLocalQuestion(question, tasks);
   const context = JSON.stringify({
     ok: toolResponse.ok === true,
+    truncated: toolResponse.truncated === true,
     task_count: tasks.length,
     selection: selected?.selection ?? null,
     task: selected ? localTaskQuestionContext(selected.task) : null,
@@ -178,10 +179,15 @@ function selectTaskForLocalQuestion(
 ): { task: Record<string, unknown>; selection: "active" | "finished" | "matching" | "recent" } | undefined {
   const activeStates = new Set(["accepted", "queued", "running", "stopping"]);
   const finishedStates = new Set(["completed", "failed", "cancelled", "unknown"]);
-  const named = matchTaskTitle(question, tasks);
-  if (named.status === "matched") {
-    const task = tasks.find((candidate) => candidate.taskId === named.taskId);
-    if (task) return { task, selection: "matching" };
+  const title = namedTaskQuestionTitle(question);
+  if (title) {
+    const named = matchTaskTitle(title, tasks);
+    const task = named.status === "matched" ? tasks.find((candidate) => candidate.taskId === named.taskId) : undefined;
+    return task ? { task, selection: "matching" } : undefined;
+  }
+  if (/\b(?:latest|last|most\s+recent)\b|(?:^|[\s'’])[uú]ltim[ao]\b/iu.test(question)) {
+    const latest = [...tasks].sort((left, right) => localTaskCreatedAt(right) - localTaskCreatedAt(left))[0];
+    return latest ? { task: latest, selection: "recent" } : undefined;
   }
   if (prefersFinishedTask(question)) {
     const task = tasks.find((candidate) =>
@@ -195,11 +201,21 @@ function selectTaskForLocalQuestion(
   return tasks[0] ? { task: tasks[0], selection: "recent" } : undefined;
 }
 
+function namedTaskQuestionTitle(question: string): string | undefined {
+  const title = [
+    /^(?:please\s+)?what(?:'s|\s+is)\s+(?:(?:the|my)\s+)?(.+?)\s+(?:background\s+)?task\s+(?:doing|working|looking|using|running)\b/iu,
+    /qu[eé]\s+est[aá]\s+haciendo\s+la\s+tarea\s+(?:de|del|sobre)\s+(.+)/iu,
+    /qu[eè]\s+est[aà]\s+fent\s+la\s+tasca\s+(?:de|d['’]|sobre)\s*(.+)/iu,
+  ].map((pattern) => question.match(pattern)?.[1]).find(Boolean)?.trim();
+  return title !== undefined && !/^(?:the|my|latest|current|last|most\s+recent)(?:\s+background)?$/iu.test(title) ? title : undefined;
+}
+
 export function selectLocalTaskForQuestion(
   question: string,
   toolResponse: Record<string, unknown>,
 ): string | undefined {
-  const tasks = Array.isArray(toolResponse.tasks)
+  if (toolResponse.truncated === true) return undefined;
+  const tasks = toolResponse.ok === true && Array.isArray(toolResponse.tasks)
     ? toolResponse.tasks.filter(isRecord)
     : [];
   const taskId = selectTaskForLocalQuestion(question, tasks)?.task.taskId;
@@ -257,23 +273,21 @@ export function buildLocalExactSpeechResponse(spoken: string): Record<string, un
   };
 }
 
-export function selectLocalStoppableTasks(toolResponse: Record<string, unknown>): string[] {
+export function selectLocalStoppableTasks(toolResponse: Record<string, unknown>, selection: "latest" | "current" = "latest"): string[] {
   if (toolResponse.ok !== true || !Array.isArray(toolResponse.tasks)) return [];
-  const states = new Set(["accepted", "queued", "running"]);
-  const ids: string[] = [];
-  for (const task of toolResponse.tasks) {
-    if (!task || typeof task !== "object" || Array.isArray(task)) continue;
-    const value = task as Record<string, unknown>;
-    if (
-      typeof value.taskId === "string"
-      && TASK_ID_PATTERN.test(value.taskId)
-      && typeof value.state === "string"
-      && states.has(value.state)
-    ) {
-      ids.push(value.taskId);
-    }
-  }
-  return ids;
+  const states = new Set(selection === "current" ? ["accepted", "running"] : ["accepted", "queued", "running"]);
+  return toolResponse.tasks.filter(isRecord)
+    .filter((task): task is Record<string, unknown> & { taskId: string } =>
+      typeof task.taskId === "string" && TASK_ID_PATTERN.test(task.taskId)
+      && typeof task.state === "string" && states.has(task.state))
+    // Inbox order favors running work. "Latest" means the newest task,
+    // independently of that presentation order or its most recent progress.
+    .sort((left, right) => localTaskCreatedAt(right) - localTaskCreatedAt(left))
+    .map((task) => task.taskId);
+}
+
+function localTaskCreatedAt(task: Record<string, unknown>): number {
+  return typeof task.createdAt === "number" && Number.isFinite(task.createdAt) ? task.createdAt : 0;
 }
 
 export function matchLocalStoppableTask(
@@ -391,23 +405,15 @@ function isNamedTaskStopRequest(value: string): boolean {
 function matchTaskTitle(query: string, tasks: Record<string, unknown>[]): LocalTaskMatch {
   const queryTokens = taskTitleQueryTokens(query);
   if (queryTokens.length === 0) return { status: "not_found" };
-  const scored = tasks.flatMap((task) => {
-    if (
-      typeof task.taskId !== "string"
-      || !TASK_ID_PATTERN.test(task.taskId)
-      || typeof task.title !== "string"
-    ) return [];
+  const matches = tasks.filter((task) => {
+    if (typeof task.taskId !== "string" || !TASK_ID_PATTERN.test(task.taskId) || typeof task.title !== "string") return false;
     const titleTokens = taskTitleQueryTokens(task.title);
-    const score = queryTokens.reduce((total, queryToken) =>
-      total + (titleTokens.some((titleToken) => comparableTaskToken(queryToken, titleToken)) ? 1 : 0), 0);
-    return score > 0 ? [{ taskId: task.taskId, score }] : [];
-  }).sort((left, right) => right.score - left.score);
-  const best = scored[0];
-  if (!best) return { status: "not_found" };
-  const tied = scored.filter((candidate) => candidate.score === best.score);
-  return tied.length === 1
-    ? { status: "matched", taskId: best.taskId }
-    : { status: "ambiguous", count: tied.length };
+    return queryTokens.every((queryToken) => titleTokens.includes(queryToken));
+  });
+  if (matches.length === 0) return { status: "not_found" };
+  return matches.length === 1
+    ? { status: "matched", taskId: matches[0]!.taskId as string }
+    : { status: "ambiguous", count: matches.length };
 }
 
 const TASK_QUERY_STOP_WORDS = new Set([
@@ -428,10 +434,4 @@ function taskTitleQueryTokens(value: string): string[] {
   return [...normalized.matchAll(/[\p{L}\p{N}]+/gu)]
     .map((match) => match[0]!)
     .filter((token) => token.length >= 3 && !TASK_QUERY_STOP_WORDS.has(token));
-}
-
-function comparableTaskToken(left: string, right: string): boolean {
-  if (left === right) return true;
-  if (Math.min(left.length, right.length) < 4) return false;
-  return left.startsWith(right) || right.startsWith(left);
 }

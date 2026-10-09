@@ -9,7 +9,6 @@
 /plugins/hermes-live/ @bielcarpi
 /scripts/hermes-compatibility-smoke.mjs @bielcarpi
 /scripts/plugin-index-entry.mjs @bielcarpi
-/scripts/positioning-smoke.mjs @bielcarpi
 /package.json @bielcarpi
 /package-lock.json @bielcarpi
 /.github/workflows/ @bielcarpi

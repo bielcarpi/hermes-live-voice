@@ -1,160 +1,81 @@
-<p align="center">
-  <img src="assets/banner.svg" alt="Hermes Live Voice — Keep talking. Hermes keeps working." width="100%">
-</p>
+# Hermes Live Voice
 
-<h1 align="center">Hermes Live Voice</h1>
+Talk to [Hermes Agent](https://github.com/NousResearch/hermes-agent) while it works. Start a background task, keep talking, and find the result when you reconnect.
 
-<p align="center">
-  <strong>Keep talking while Hermes does real work.</strong><br>
-  Continuous realtime voice for saved chats, background runs, live progress, and reconnect-safe completion notices.
-</p>
+[![CI](https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml/badge.svg)](https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/hermes-live-voice)](https://www.npmjs.com/package/hermes-live-voice)
+[![Stars](https://img.shields.io/github/stars/bielcarpi/hermes-live-voice?style=flat)](https://github.com/bielcarpi/hermes-live-voice/stargazers)
 
-<p align="center">
-  <a href="https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/bielcarpi/hermes-live-voice/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://www.npmjs.com/package/hermes-live-voice"><img alt="npm version" src="https://img.shields.io/npm/v/hermes-live-voice"></a>
-  <a href="https://github.com/bielcarpi/hermes-live-voice/releases"><img alt="release" src="https://img.shields.io/github/v/release/bielcarpi/hermes-live-voice?display_name=tag"></a>
-  <a href="https://github.com/bielcarpi/hermes-live-voice/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/bielcarpi/hermes-live-voice?style=flat"></a>
-  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
-</p>
+## Start talking
 
-Hermes Live Voice is a self-hosted realtime voice gateway and Dashboard plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+This is the 1.3 release candidate. Install from `next`; the stable version remains available from `latest`.
 
-It supports long voice workflows: start a task, keep talking, disconnect, reconnect, and still receive the result.
-
-Hermes remains the agent brain: model routing, tools, memory, skills, and execution stay in Hermes. The realtime provider handles speech and turn-taking. Hermes Live Voice owns the gateway, task supervision, progress stream, and client protocol.
-
-<p align="center">
-  <img src="assets/live-voice-dashboard.jpg" alt="Hermes Live Voice running as a connected tab inside the native Hermes Dashboard" width="100%">
-  <br>
-  <sub>Native Hermes Dashboard v0.20.6 with the bundled plugin connected in local mock mode.</sub>
-</p>
-
-## Quick start
-
-You need Hermes Agent 0.18.2 or newer and Node.js 20+. Use Node 22 or Node 24 LTS for new installations. Local voice on Apple Silicon also needs [uv](https://docs.astral.sh/uv/).
+You need Hermes Agent 0.18.2+, Node.js 20+ (22 or 24 recommended), and an OpenAI API key with Realtime access.
 
 ```sh
-npm install --global hermes-live-voice
-hermes-live setup --provider openai
-hermes-live launch-check
+npm install --global hermes-live-voice@next
+hermes-live setup
 hermes dashboard
 ```
 
-Open **Live Voice**. Choose a new or saved chat. Select **Connect**. The microphone starts automatically. Say "pause listening" to pause. Use the microphone button to resume.
+Setup prompts for your key, installs the Live Voice plugin, and starts the gateway. It preserves your configured provider and detects an available hosted key; otherwise it uses OpenAI. Local models are installed only when you explicitly choose local voice.
 
-| Provider | Best for | Setup |
-| --- | --- | --- |
-| OpenAI Realtime | Fast hosted setup | `hermes-live setup --provider openai` |
-| Gemini Live | Google or Vertex deployments | `hermes-live setup --provider gemini` |
-| Local Hugging Face | Private local voice on Apple Silicon | `hermes-live setup --provider local --service` |
-
-`hermes-live setup` installs the Hermes Dashboard plugin and the companion gateway. `launch-check` rejects mock mode and proves the complete path through one bounded Hermes worker.
-
-Deterministic fixtures cover Hermes Agent 0.20.0 (`v2026.8.3`). Scheduled CI also checks the current Hermes image. See [Setup](docs/setup.md) for local voice requirements, remote endpoints, and Docker.
-
-## What it does
-
-- Continuous microphone mode with voice activity detection and barge-in
-- New or resumed Hermes chats with their existing memory and history
-- Background work that continues through voice disconnects
-- Live, sanitized task progress and tool activity
-- Parallel read-only work when the operator explicitly enables it
-- Spoken completion notices and a persistent task inbox
-- Dashboard, browser SDK, and headless terminal clients
+Open **Live Voice**, choose a new or saved chat, and press **Connect**. Allow microphone access and speak. Automatic turn detection is enabled by default. You can pause the microphone or interrupt a reply without stopping background work.
 
 Try:
 
-> Audit this repository and run the tests in the background. While that runs, help me plan the release. Tell me when it is done.
+> Inspect this repository and run the tests in the background. While that runs, help me plan the release.
 
-The voice conversation stays responsive while a server-side supervisor owns the Hermes run. Interrupting speech never stops a task. Stopping a task always targets its exact task ID.
+Task cards show progress and retained results. **Stop task** stops that task; disconnecting voice lets it continue.
 
-See the [text-only workflow transcript](examples/live-workflow-transcript.md) for the expected task handoff, progress, reconnect, and completion flow.
+![Live Voice dashboard](assets/live-voice-dashboard.jpg)
+
+The screenshot shows the Dashboard plugin with a fixture session; it is not evidence of live provider audio. See [provider testing](docs/live-provider-testing.md) for the verification procedure and current receipts.
+
+## Providers
+
+OpenAI is the default hosted path. Gemini and local Hugging Face voice are also available:
+
+```sh
+hermes-live setup --provider gemini
+hermes-live setup --provider local
+```
+
+Managed local voice requires Apple Silicon, [uv](https://docs.astral.sh/uv/), and at least 12 GB memory. The first installation downloads Python and model weights. Available memory affects latency. See [setup](docs/setup.md) before choosing it.
+
+## Troubleshooting and updates
+
+```sh
+hermes-live doctor
+hermes-live launch-check
+```
+
+`doctor` prints concrete fixes. `launch-check` checks the installed plugin, gateway, provider connection, and a bounded Hermes worker separately. After it passes, test a conversation in the Dashboard to verify microphone, playback, interruption, and spoken notices.
+
+To update:
+
+```sh
+npm install --global hermes-live-voice@next
+hermes-live upgrade
+```
+
+Restart Hermes Dashboard to load the updated plugin. `upgrade` keeps your provider settings. [Setup and operations](docs/setup.md) cover services, support bundles, remote endpoints, Docker, and advanced clients.
 
 ## How it works
 
-![Hermes Live Voice architecture](assets/architecture.svg)
+The Dashboard connects to a private gateway. The realtime provider handles speech and turn-taking. Hermes owns conversation history, memory, tools, and task execution. The gateway persists task receipts, progress, notifications, and results.
 
-1. The Dashboard, browser SDK, or terminal opens the authenticated protocol v6 WebSocket and selects a Hermes conversation.
-2. Local speech-to-speech, Gemini Live, or OpenAI Realtime handles the live voice turn and can call the gateway's small task-control toolset.
-3. The gateway persists accepted work, starts a separate Hermes `/v1/runs` worker, and publishes bounded progress events.
-4. Results remain in the task inbox across reconnects. Follow-ups create new workers with explicit parent/root lineage.
+- Task state and results survive voice disconnects and gateway restarts. Running Hermes work cannot survive a Hermes Agent restart; ambiguous outcomes remain `unknown`.
+- Work runs one task at a time by default. Declared read-only parallelism is an advanced operator option.
+- Approval-required work is denied and stopped until Hermes provides safe targeted approval identity.
+- This is a single-process, self-hosted integration. Network deployments require authentication, TLS, and an exact allowed origin.
 
-Task state lives at `~/.hermes/hermes-live/tasks-v1.json` by default. It is bounded, private, and single-writer.
+[Architecture](docs/architecture.md) · [Task recovery](docs/background-tasks.md) · [Security](docs/security.md)
 
-## Clients
+The [browser SDK](docs/ui-integration.md) supports host-app integrations. `hermes-live terminal` provides advanced text control over SSH. Both use the same [client protocol](docs/client-protocol.md).
 
-| Use | Client |
-| --- | --- |
-| Everyday voice | Hermes Dashboard → Live Voice |
-| SSH or headless control | `hermes-live terminal` |
-| Host app integration | `hermes-live-voice/browser` |
+## Contribute
 
-The terminal can resume chats and inspect or control tasks:
+[Report a bug](https://github.com/bielcarpi/hermes-live-voice/issues/new?template=bug_report.md), share a [provider compatibility receipt](docs/provider-compatibility-receipt-template.md), or read [contributing](CONTRIBUTING.md). The [roadmap](docs/roadmap.md) prioritizes the everyday voice workflow.
 
-```sh
-hermes-live terminal --resume <sessionId>
-```
-
-Commands include `/tasks`, `/status`, `/result`, `/followup`, `/ack`, `/stop`, and `/interrupt`. `/quit` detaches. It does not cancel work.
-
-Browser integration is dependency-free:
-
-```js
-import { HermesLiveClient } from "hermes-live-voice/browser";
-
-const client = new HermesLiveClient({
-  webSocketUrlProvider: () => getAuthenticatedSameOriginUrl(),
-  conversation: { mode: "resume", sessionId: savedSessionId },
-});
-
-client.on("task.notification", renderNotification);
-await client.connect();
-```
-
-See [UI integration](docs/ui-integration.md) for authentication and the full client lifecycle.
-
-## Operations
-
-```sh
-hermes-live launch-check
-hermes-live doctor --provider-smoke
-hermes-live diagnostics
-hermes-live service status
-hermes-live service logs
-hermes-live local status
-hermes-live local logs
-hermes-live print-config
-```
-
-After updating the npm package, run `hermes-live upgrade`. It reinstalls the matching plugin and service definitions without replacing your provider settings. Run `hermes-live launch-check` after the upgrade. `hermes-live diagnostics` writes a private support bundle without logs, prompts, task results, audio, or secret values.
-
-`hermes-live setup` writes an allow-listed config to `$HERMES_HOME/hermes-live/config.env` (normally `~/.hermes/hermes-live/config.env`) with private permissions. The gateway and Dashboard plugin read the same file. If the default port belongs to another app, setup picks a free local port automatically. Environment variables override the managed config. Project `.env` files are never loaded or executed.
-
-For any non-loopback gateway bind, use a strong `HERMES_LIVE_AUTH_TOKEN`, an exact allowed origin, TLS, and edge rate limits. Keep Hermes itself private. See the [security model](docs/security.md).
-
-## Current boundaries
-
-- Durability applies to task receipts, state, notifications, and retained results. In-progress Hermes runs do not survive a Hermes Agent restart. Missing or ambiguous outcomes become `unknown`.
-- Work is exclusive by default. Parallelism requires `HERMES_LIVE_TRUST_DECLARED_READ_ONLY=true` because model-declared read-only scope is policy input, not a sandbox.
-- Approval-required tasks are denied and stopped fail-closed until Hermes exposes exact targeted approval identity to the gateway.
-- One delegated task creates one Hermes run. Hermes Live does not create a subagent team for every request.
-- The local launcher is currently managed on Apple Silicon. Other systems can run the upstream realtime server and set `HERMES_LIVE_LOCAL_URL`.
-- The local file store is for one gateway process, not a public multi-tenant or multi-node queue.
-- This repository does not ship a standalone web app. Browser voice runs in the Hermes Dashboard plugin or a host app that uses the browser SDK.
-
-## Documentation
-
-- [Setup, configuration, and Docker](docs/setup.md)
-- [Architecture](docs/architecture.md)
-- [Background tasks and recovery](docs/background-tasks.md)
-- [Protocol v6](docs/client-protocol.md)
-- [UI integration](docs/ui-integration.md)
-- [Security](docs/security.md)
-- [Live provider testing](docs/live-provider-testing.md)
-- [Roadmap](docs/roadmap.md)
-- [Release process](docs/releasing.md)
-- [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md)
-
-## License
-
-[MIT](LICENSE). This is a community project, not an official NousResearch distribution.
+[MIT](LICENSE). This is a community integration, not an official NousResearch distribution.

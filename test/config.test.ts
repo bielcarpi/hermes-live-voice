@@ -11,7 +11,7 @@ import {
 } from "../src/config.js";
 
 describe("config", () => {
-  it("loads defaults and selects Gemini as the default provider", () => {
+  it("defaults to continuous OpenAI voice", () => {
     const config = loadConfig({});
 
     expect(config.server.host).toBe("127.0.0.1");
@@ -35,7 +35,7 @@ describe("config", () => {
       pollIntervalMs: 2_000,
     });
     expect(config.tasks.stateFile).toMatch(/tasks-v1\.json$/u);
-    expect(config.realtime.provider).toBe("gemini");
+    expect(config.realtime.provider).toBe("openai");
     expect(config.local).toEqual({
       url: "ws://127.0.0.1:8765/v1/realtime",
       voice: "Aiden",
@@ -43,7 +43,8 @@ describe("config", () => {
       ownsTurnRouting: false,
     });
     expect(config.gemini.model).toBe("gemini-3.1-flash-live-preview");
-    expect(config.realtime.model).toBe(config.gemini.model);
+    expect(config.realtime.model).toBe(config.openai.model);
+    expect(config.openai.turnDetection).toBe("server_vad");
     expect(config.openai.inputTranscriptionModel).toBe("gpt-4o-mini-transcribe");
     expect(config.openai.inputTranscriptionLanguage).toBeUndefined();
   });

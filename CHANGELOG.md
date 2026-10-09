@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.3.0-rc.1 - 2026-10-09
+
+- Make Docker runtime assets readable by its non-root user even when built from a private checkout.
+- Honor explicit setup provider/URL options over inherited environment settings.
+- Preserve the displayed chat across disconnects, clear transcripts only when another chat connects, and correlate concurrent task requests independently.
+- Always release microphone capture after final-turn submission errors; evict expired task records after an exact read.
+- Match complete task-name words in local voice, distinguish current work from the latest queued task, and refuse task selection from failed or partial inbox reads.
+- Simplify the Dashboard around chat, transcript, and task results. Collapse connection/task metadata and remove decorative panels and animations.
+- Default to continuous OpenAI voice with server VAD. Preserve explicit provider settings, detect hosted keys, and require an explicit local-model installation.
+- Deliver completion notices while silent PCM continues, keep running tasks visible in bounded voice queries, and load full retained results when opened after reconnect.
+- Shorten onboarding and remove copy-enforcement/internal-file checks while retaining behavioral, installation, and safety coverage. Clarify what launch-check verifies.
+
+Release qualification: automated tests, packed installation, Docker, and fixture/synthetic browser flows pass. Hosted provider audio and physical devices remain unqualified, so this is a release candidate published to npm's `next` channel. See the [qualification receipt](https://github.com/bielcarpi/hermes-live-voice/blob/v1.3.0-rc.1/docs/provider-receipts/2026-10-09-v1.3.0-rc.1.md).
+
+Task work continues across voice disconnects. A gateway restart reconciles with the same running Hermes process; a Hermes restart cannot recover in-progress execution and ambiguous dispatch remains `dispatch_unknown`/`unknown`. OpenAI completion speech uses out-of-band responses; Gemini notices are best effort. Interactive approvals remain unavailable and approval-required work is denied and stopped.
+
 ## 1.2.0 - 2026-10-07
 
 - Upgrade managed local voice to speech-to-speech 1.0.0 and its `serve` command. Remove two compatibility patches now handled upstream. Preserve controlled responses, exact speech, stale-turn suppression, and private service logs.

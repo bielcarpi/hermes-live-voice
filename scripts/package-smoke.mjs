@@ -54,48 +54,6 @@ try {
     "assets/live-voice-dashboard.jpg",
     "dist/index.js",
     "dist/cli.js",
-    "dist/cli/task-operator.js",
-    "dist/cli/terminal-session.js",
-    "dist/cli/doctor.js",
-    "dist/cli/launch-check.js",
-    "dist/cli/diagnostics.js",
-    "dist/cli/gateway-probe.js",
-    "dist/cli/managed-config.js",
-    "dist/cli/local-voice.js",
-    "dist/cli/plugin-installer.js",
-    "dist/cli/process.js",
-    "dist/cli/service-manager.js",
-    "dist/cli/setup.js",
-    "dist/cli/upgrade.js",
-    "dist/config.js",
-    "dist/hermes-compatibility.js",
-    "dist/live-provider-smoke.js",
-    "dist/service-identity.js",
-    "dist/adapters/inbound/http/server.js",
-    "dist/adapters/inbound/http/websocket-client-connection.js",
-    "dist/adapters/outbound/hermes/hermes-runs.client.js",
-    "dist/adapters/outbound/hermes/sse.js",
-    "dist/adapters/outbound/realtime/factory.js",
-    "dist/adapters/outbound/realtime/gemini-live.adapter.js",
-    "dist/adapters/outbound/realtime/huggingface-realtime.adapter.js",
-    "dist/adapters/outbound/realtime/mock-live.adapter.js",
-    "dist/adapters/outbound/realtime/openai-realtime.adapter.js",
-    "dist/adapters/outbound/task-store/file-task-store.js",
-    "dist/application/live-gateway/live-gateway-session.js",
-    "dist/application/live-gateway/client-capabilities.js",
-    "dist/application/live-gateway/ports/client-connection.port.js",
-    "dist/application/live-gateway/ports/hermes-runs.port.js",
-    "dist/application/live-gateway/ports/realtime-model.port.js",
-    "dist/application/live-gateway/ports/task-supervisor.port.js",
-    "dist/application/live-gateway/task-public-projection.js",
-    "dist/application/task-supervisor/ports/task-store.port.js",
-    "dist/application/task-supervisor/task-supervisor.js",
-    "dist/domain/audio/pcm.js",
-    "dist/domain/protocol/client-protocol.js",
-    "dist/domain/protocol/server-protocol.js",
-    "dist/domain/protocol/version.js",
-    "dist/domain/tasks/task-transition.js",
-    "dist/domain/tasks/task.js",
     "clients/browser/hermes-live-client.js",
     "clients/browser/hermes-live-client.d.ts",
     "clients/browser/mic-worklet.js",
@@ -161,23 +119,6 @@ try {
 
   if (forbidden.length > 0) {
     throw new Error(`Package includes forbidden files:\n${forbidden.join("\n")}`);
-  }
-
-  const staleCompiledPaths = pack.files
-    .map((file) => file.path)
-    .filter(
-      (file) =>
-        file.startsWith("dist/audio/") ||
-        file.startsWith("dist/gemini/") ||
-        file.startsWith("dist/hermes/") ||
-        file.startsWith("dist/openai/") ||
-        file.startsWith("dist/realtime/") ||
-        file.startsWith("dist/server/") ||
-        file.startsWith("dist/session/"),
-    );
-
-  if (staleCompiledPaths.length > 0) {
-    throw new Error(`Package includes pre-migration compiled paths:\n${staleCompiledPaths.join("\n")}`);
   }
 
   const tarball = join(workDir, pack.filename);

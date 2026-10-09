@@ -312,11 +312,19 @@ class HuggingFaceRealtimeSession implements LiveModelSession {
           response: buildLocalTaskQuestionResponse(routedAction.taskQuestion, response),
         });
       } else if (routedAction.taskControl?.type === "stop") {
-        const stoppable = selectLocalStoppableTasks(response);
-        if (stoppable.length === 0) {
+        this.referencedTaskId = undefined;
+        const stoppable = selectLocalStoppableTasks(response, routedAction.taskControl.selection === "current" ? "current" : "latest");
+        if (response.ok !== true || response.truncated === true) {
           this.schedule({
             kind: "conversation",
-            response: buildLocalExactSpeechResponse("There isn't an active background task to stop."),
+            response: buildLocalExactSpeechResponse("I couldn't read a complete task inbox. Open the task inbox to choose the exact task."),
+          });
+        } else if (stoppable.length === 0) {
+          this.schedule({
+            kind: "conversation",
+            response: buildLocalExactSpeechResponse(routedAction.taskControl.selection === "current"
+              ? "There isn't a running background task to stop. Open the task inbox to choose queued work."
+              : "There isn't an active background task to stop."),
           });
         } else if (routedAction.taskControl.selection === "matching") {
           const match = matchLocalStoppableTask(response, routedAction.taskControl.query);
@@ -336,7 +344,7 @@ class HuggingFaceRealtimeSession implements LiveModelSession {
               ),
             });
           }
-        } else if (routedAction.taskControl.selection === "single" && stoppable.length > 1) {
+        } else if (routedAction.taskControl.selection !== "latest" && stoppable.length > 1) {
           this.schedule({
             kind: "conversation",
             response: buildLocalExactSpeechResponse(

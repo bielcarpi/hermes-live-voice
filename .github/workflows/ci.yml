@@ -79,9 +79,11 @@ jobs:
           npm run check:package
       - run: npm audit --audit-level=moderate
       - run: npm pack --dry-run
-      - name: Build Docker image
+      - name: Build Docker image from private checkout files
         if: matrix.node-version == 20
-        run: docker build -t hermes-live-voice:ci .
+        run: |
+          chmod -R go-rwx clients docs plugins package.json package-lock.json LICENSE
+          docker build -t hermes-live-voice:ci .
       - name: Smoke-test Docker runtime
         if: matrix.node-version == 20
         run: node scripts/gateway-smoke.mjs --docker-image hermes-live-voice:ci

@@ -26,7 +26,8 @@ COPY --from=build /app/dist ./dist
 COPY clients ./clients
 COPY docs ./docs
 COPY plugins ./plugins
-RUN mkdir -p /var/lib/hermes-live \
+RUN chmod -R a+rX /app \
+    && mkdir -p /var/lib/hermes-live \
     && chown node:node /var/lib/hermes-live \
     && chmod 700 /var/lib/hermes-live
 USER node:node

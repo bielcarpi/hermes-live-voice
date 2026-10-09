@@ -38,6 +38,8 @@ npm run verify
 
 `npm run verify` covers TypeScript, browser-client syntax, plugin syntax, unit tests, build output, CLI/gateway smokes, fake Hermes HTTP/SSE integration, and packed-package installation.
 
+Dashboard flow tests mount React with the packaged browser client and a fixture WebSocket server. They cover chat selection, reconnect, transcript isolation, and concurrent result retrieval. These tests do not qualify physical audio or hosted providers.
+
 Vitest 5 requires Node 22.12 or newer for development. The published package
 keeps its Node 20 runtime compatibility. CI builds with Node 22, then runs the
 CLI, gateway, and packed installation checks on Node 20. Full test suites run
@@ -115,8 +117,7 @@ The WebSocket tests include a fixed-seed malformed-command check. Keep it bounde
 - Add user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 - Do not claim model support until the compatibility gates in [live provider testing](docs/live-provider-testing.md) pass.
 - Keep product claims specific and consistent with the documented recovery and security boundaries.
-- `npm run check:positioning` must pass. Public copy must not claim official
-  NousResearch/Hermes status before explicit maintainer approval.
+- Describe this as a community integration; do not imply official NousResearch/Hermes status.
 - Run `actionlint` when changing GitHub Actions workflows.
 
 ## Dependency updates

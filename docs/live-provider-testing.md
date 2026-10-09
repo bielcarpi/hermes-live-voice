@@ -13,7 +13,7 @@ hermes-live launch-check
 
 The default smoke opens the gateway's provider adapter and closes it cleanly. With `--functional`, it also checks task delegation and receipt audio using a synthetic task result. This works with local, OpenAI, and Gemini providers. It does not start a Hermes worker. Managed Apple Silicon setup runs this functional check before declaring local voice ready.
 
-`hermes-live launch-check` is the v1 go/no-go check. It rejects mock mode and starts one bounded Hermes worker.
+`hermes-live launch-check` checks the plugin, gateway, provider connection, and a bounded Hermes worker separately. It rejects mock mode. A pass still requires a Dashboard conversation to establish microphone, playback, interruption, and spoken completion behavior.
 Record release-relevant live results with the
 [provider compatibility receipt template](provider-compatibility-receipt-template.md).
 Blocked or failing attempts can be kept under `docs/provider-receipts/` when
@@ -87,7 +87,7 @@ OPENAI_API_KEY=... \
 hermes-live provider-smoke
 ```
 
-The default uses `gpt-realtime-2`, `marin`, PCM16, and push-to-talk semantics. `gpt-realtime-1.5` remains available through `OPENAI_REALTIME_MODEL` when you want the faster non-reasoning Realtime path. Some OpenAI transport examples can lag the model guide, so record the exact accepted model in the receipt. Change model, voice, VAD, or G.711 settings only when the target account supports them.
+The default uses `gpt-realtime-2`, `marin`, PCM16, and automatic server VAD. Manual submission requires `OPENAI_REALTIME_TURN_DETECTION=disabled`. `gpt-realtime-1.5` remains available through `OPENAI_REALTIME_MODEL` when you want the faster non-reasoning Realtime path. Some OpenAI transport examples can lag the model guide, so record the exact accepted model in the receipt. Change model, voice, VAD, or G.711 settings only when the target account supports them.
 
 ## End-to-end release check
 

@@ -50,56 +50,6 @@ describe("Hermes Dashboard plugin", () => {
     expect(source).not.toContain("GEMINI_API_KEY");
   });
 
-  it("offers a no-code saved-chat picker and binds the selected session", () => {
-    const source = dashboardSource();
-
-    expect(source).toContain("Start a new chat");
-    expect(source).toContain("Continue a saved chat or start a fresh one.");
-    expect(source).toContain('? { mode: "new" }');
-    expect(source).not.toContain('{ mode: "new", title: "Live Voice" }');
-    expect(source).toContain('{ mode: "resume", sessionId: conversationId }');
-    expect(source).toContain("if (attachedSessionId) setConversationId(attachedSessionId);");
-    expect(source).toContain("client.connect({ conversation: conversation })");
-  });
-
-  it("presents durable multi-task work without legacy singleton controls", () => {
-    const source = dashboardSource();
-    const forbidden = [
-      ["stop", "Run"],
-      ["active", "Run"],
-      ["run", "Id"],
-      ["respond", "ToAppro", "val"],
-      ["waiting_for_appro", "val"],
-    ].map((parts) => parts.join(""));
-
-    expect(source).toContain("Keep talking while Hermes keeps working.");
-    expect(source).toContain("Continuous voice for saved chats, durable tasks, and live progress.");
-    expect(source).toContain("Task inbox");
-    expect(source).toContain("Stable task ID");
-    expect(source).toContain('client.stopTask(task.taskId, "stopped from Hermes Dashboard")');
-    expect(source).toContain("client.acknowledgeNotification(notification.taskId, notification.notificationId)");
-    expect(source).toContain("leaving this page does not cancel background work");
-    expect(source).toContain('className: "hlv-task-item"');
-    for (const token of forbidden) expect(source).not.toContain(token);
-  });
-
-  it("keeps speech interruption independent from exact task stopping", () => {
-    const source = dashboardSource();
-
-    expect(source).toContain('audio.interrupt("interrupted from Hermes Dashboard")');
-    expect(source).toContain('audio.interrupt("provider detected user speech")');
-    expect(source).toContain('audio.interrupt("new Dashboard text input")');
-    expect(source).toContain("Assistant speech interrupted. Background tasks keep running.");
-    expect(source).toContain("Interrupt speech");
-    expect(source).toContain("Stop task");
-    expect(source).toContain('client.on("input.pause_requested"');
-    expect(source).toContain('text: "Listening paused by voice command. Press Start microphone when you want to resume."');
-    expect(source).toContain("audio.stopMicrophone({ endTurn: false })");
-    expect(source).toContain("audio.clearPlayback()");
-    expect(source).toContain("audio.primePlayback()");
-    expect(source).toContain("const audio = primePlaybackFromGesture();");
-  });
-
   it("keeps stable task identity and attaches unread updates under out-of-order completion", () => {
     const utilities = loadDashboardUtilities();
     const activeSecond = task("task_second", "running", 8, 2_000);
@@ -238,9 +188,7 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.microphoneActiveGuidance("semantic_vad")).toContain("Speak naturally");
     expect(utilities.connectedSessionNotice({ enabled: false }, false))
       .toBe("Live Voice is connected in text mode. Type a message to Hermes.");
-    expect(utilities.connectedSessionGuidance(false)).toBe("Type a message below.");
     expect(utilities.connectedSessionNotice({ enabled: true }, true, true)).toContain("Connected and listening");
-    expect(utilities.connectedSessionGuidance(true)).toContain("Start the microphone");
     expect(utilities.supportsBrowserPlayback({ enabled: false })).toBe(false);
     expect(utilities.supportsBrowserPlayback({ enabled: true, mimeType: "audio/pcm;rate=24000" })).toBe(true);
     expect(utilities.supportsBrowserPlayback({ enabled: true, mimeType: "audio/opus" })).toBe(false);
@@ -332,7 +280,7 @@ describe("Hermes Dashboard plugin", () => {
     expect(utilities.connectControlPresentation({ ready: false }, false, "", "idle"))
       .toEqual({ disabled: true, label: "Gateway not ready" });
     expect(utilities.connectControlPresentation({ ready: true }, false, "", "idle"))
-      .toEqual({ disabled: false, label: "Connect Live Voice" });
+      .toEqual({ disabled: false, label: "Connect" });
   });
 });
 
@@ -364,7 +312,6 @@ function loadDashboardUtilities(): Record<string, (...args: any[]) => any> {
   const source = dashboardSource().replace(
     "  function LiveVoicePage() {",
     `  window.__HERMES_LIVE_TEST_UTILITIES__ = {
-      connectedSessionGuidance,
       connectedSessionNotice,
       connectionClosedNotice,
       connectControlPresentation,

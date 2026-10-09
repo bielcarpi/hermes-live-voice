@@ -728,7 +728,10 @@ describe("Hugging Face speech-to-speech adapter", () => {
     await session.close();
   });
 
-  it("resolves a spoken latest-task stop to one validated exact task id", async () => {
+  it.each([
+    { selection: "latest", expected: "task_abcdef0123456789abcdef0123456789" },
+    { selection: "current", expected: "task_0123456789abcdef0123456789abcdef" },
+  ])("resolves a spoken $selection-task stop to one validated exact task id", async ({ selection, expected }) => {
     const harness = await createHarness();
     const events: LiveModelEvent[] = [];
     const session = await new HuggingFaceRealtimeAdapter(
@@ -742,7 +745,7 @@ describe("Hugging Face speech-to-speech adapter", () => {
       callbacks: { onEvent: (event) => events.push(event) },
     });
 
-    await session.sendText("Stop the latest background task.");
+    await session.sendText(`Stop the ${selection} background task.`);
     await waitUntil(() => events.some((event) => event.type === "tool_call"));
     const list = events.find((event): event is Extract<LiveModelEvent, { type: "tool_call" }> =>
       event.type === "tool_call");
@@ -754,8 +757,8 @@ describe("Hugging Face speech-to-speech adapter", () => {
       ok: true,
       tasks: [
         { taskId: "invalid_task", state: "running" },
-        { taskId: "task_0123456789abcdef0123456789abcdef", state: "running" },
-        { taskId: "task_abcdef0123456789abcdef0123456789", state: "completed" },
+        { taskId: "task_0123456789abcdef0123456789abcdef", state: "running", createdAt: 100 },
+        { taskId: "task_abcdef0123456789abcdef0123456789", state: "queued", createdAt: 200 },
       ],
     });
     await waitUntil(() => events.filter((event) => event.type === "tool_call").length === 2);
@@ -763,11 +766,42 @@ describe("Hugging Face speech-to-speech adapter", () => {
       event.type === "tool_call")[1];
     expect(stop?.call).toMatchObject({
       name: "stop_background_task",
-      args: { task_id: "task_0123456789abcdef0123456789abcdef" },
+      args: { task_id: expected },
     });
     expect(harness.messages.some((message) => message.type === "response.create")).toBe(false);
 
     await session.close();
+  });
+
+  it.each([
+    { name: "a failed read", response: { ok: false, error: "fixture read failed" } },
+    { name: "an incomplete read", response: { ok: true, truncated: true, tasks: [{
+      taskId: "task_0123456789abcdef0123456789abcdef", state: "running", createdAt: 1,
+    }] } },
+  ])("refuses to choose a task to stop after $name", async ({ response }) => {
+    const harness = await createHarness();
+    const events: LiveModelEvent[] = [];
+    const session = await new HuggingFaceRealtimeAdapter(
+      { ...localConfig(), url: harness.url, ownsTurnRouting: true }, 1_000, 1_000,
+    ).connect({
+      sessionId: "local_managed_incomplete_stop",
+      systemInstruction: "You are Hermes.",
+      availableTools: ["list_background_tasks", "stop_background_task"],
+      callbacks: { onEvent: (event) => events.push(event) },
+    });
+    try {
+      await session.sendText("Stop the latest background task.");
+      await waitUntil(() => events.some((event) => event.type === "tool_call"));
+      const list = events.find((event): event is Extract<LiveModelEvent, { type: "tool_call" }> => event.type === "tool_call");
+      await session.sendToolResponse(list!.call, response);
+      await waitUntil(() => harness.messages.some((message) => message.type === "response.create")
+        || events.filter((event) => event.type === "tool_call").length > 1);
+      expect(events.filter((event) => event.type === "tool_call")).toHaveLength(1);
+      expect(harness.messages.at(-1).response.metadata.hermes_live_exact_speech)
+        .toBe("I couldn't read a complete task inbox. Open the task inbox to choose the exact task.");
+    } finally {
+      await session.close();
+    }
   });
 
   it("asks which task to stop when an unqualified voice command matches multiple active tasks", async () => {

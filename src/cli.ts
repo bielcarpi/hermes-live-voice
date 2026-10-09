@@ -374,7 +374,7 @@ Operations:
   hermes-live service <status|restart|logs|stop|start|uninstall>
   hermes-live local <status|restart|logs|stop|start|uninstall>
   hermes-live check         Check Hermes and provider readiness
-  hermes-live launch-check  Run the real v1 launch proof
+  hermes-live launch-check  Check provider connection, gateway, and Hermes worker
   hermes-live provider-smoke  Open and close a real provider session
   hermes-live print-config  Show resolved settings with secrets redacted
 
