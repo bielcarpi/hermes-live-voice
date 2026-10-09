@@ -1,6 +1,6 @@
 {
   "name": "hermes-live-voice",
-  "version": "1.3.0-rc.1",
+  "version": "1.3.0-rc.2",
   "description": "Continuous realtime voice for Hermes Agent. Talk while Hermes runs background tasks.",
   "type": "module",
   "main": "./dist/index.js",
