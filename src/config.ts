@@ -98,7 +98,7 @@ const EnvSchema = z.object({
     .max(2_147_483_647)
     .default(DEFAULT_HERMES_STREAM_IDLE_TIMEOUT_MS),
 
-  HERMES_LIVE_PROVIDER: z.enum(["local", "gemini", "openai", "mock"]).default("gemini"),
+  HERMES_LIVE_PROVIDER: z.enum(["local", "gemini", "openai", "voxtral", "mock"]).default("gemini"),
   HERMES_LIVE_LOCAL_URL: LocalRealtimeUrlSchema.default("ws://127.0.0.1:8765/v1/realtime"),
   HERMES_LIVE_LOCAL_VOICE: z.string().trim().min(1).max(128).default("Aiden"),
   HERMES_LIVE_LOCAL_ALLOW_REMOTE: z.string().optional(),
@@ -121,9 +121,17 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_OUTPUT_AUDIO_FORMAT: z.enum(["pcm16", "g711_ulaw", "g711_alaw"]).default("pcm16"),
   OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: OpenAITranscriptionModelSchema.default("gpt-4o-mini-transcribe"),
   OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE: OpenAITranscriptionLanguageSchema,
+
+  VOXTRAL_API_KEY: z.string().optional(),
+  MISTRAL_API_KEY: z.string().optional(),
+  VOXTRAL_BASE_URL: z.string().trim().min(1).default("https://api.mistral.ai"),
+  VOXTRAL_STT_MODEL: z.string().trim().min(1).max(128).default("voxtral-mini-transcribe-realtime-2602"),
+  VOXTRAL_TTS_MODEL: z.string().trim().min(1).max(128).default("voxtral-mini-tts-latest"),
+  VOXTRAL_TTS_VOICE: z.string().trim().min(1).max(128).default("fr_marie_happy"),
+  VOXTRAL_TTS_LANGUAGE: z.string().trim().min(1).max(16).optional(),
 });
 
-export type RealtimeProvider = "local" | "gemini" | "openai" | "mock";
+export type RealtimeProvider = "local" | "gemini" | "openai" | "voxtral" | "mock";
 
 export interface AppConfig {
   server: {
@@ -190,14 +198,23 @@ export interface AppConfig {
     inputTranscriptionModel?: string;
     inputTranscriptionLanguage?: string;
   };
+  voxtral: {
+    apiKey?: string;
+    baseUrl: string;
+    sttModel: string;
+    ttsModel: string;
+    voice: string;
+    language?: string;
+  };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = EnvSchema.parse(env);
   const geminiApiKey = parsed.GEMINI_API_KEY || parsed.GOOGLE_API_KEY;
+  const voxtralApiKey = parsed.VOXTRAL_API_KEY || parsed.MISTRAL_API_KEY;
   const hermesApiKey = parsed.HERMES_AGENT_API_SERVER_KEY || parsed.HERMES_API_KEY;
   const enterprise = parseBool(parsed.GOOGLE_GENAI_USE_ENTERPRISE);
-  const realtimeModel = selectedRealtimeModel(parsed.HERMES_LIVE_PROVIDER, parsed.GEMINI_MODEL, parsed.OPENAI_REALTIME_MODEL);
+  const realtimeModel = selectedRealtimeModel(parsed.HERMES_LIVE_PROVIDER, parsed.GEMINI_MODEL, parsed.OPENAI_REALTIME_MODEL, parsed.VOXTRAL_STT_MODEL);
 
   return {
     server: {
@@ -268,6 +285,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         ? { inputTranscriptionLanguage: parsed.OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE }
         : {}),
     },
+    voxtral: {
+      ...(voxtralApiKey ? { apiKey: voxtralApiKey } : {}),
+      baseUrl: withoutTrailingSlash(parsed.VOXTRAL_BASE_URL),
+      sttModel: parsed.VOXTRAL_STT_MODEL,
+      ttsModel: parsed.VOXTRAL_TTS_MODEL,
+      voice: parsed.VOXTRAL_TTS_VOICE,
+      ...(parsed.VOXTRAL_TTS_LANGUAGE ? { language: parsed.VOXTRAL_TTS_LANGUAGE } : {}),
+    },
   };
 }
 
@@ -295,7 +320,7 @@ export function assertGatewayExposureConfig(config: Pick<AppConfig, "server">): 
   }
 }
 
-export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" | "local" | "gemini" | "openai">): void {
+export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" | "local" | "gemini" | "openai" | "voxtral">): void {
   if (config.realtime.provider === "local") {
     const endpoint = new URL(config.local.url);
     if (!isLoopbackHostname(endpoint.hostname) && !config.local.allowRemote) {
@@ -321,6 +346,11 @@ export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" 
   if (config.realtime.provider === "openai") {
     throw new Error("Set OPENAI_API_KEY or use HERMES_LIVE_PROVIDER=mock for local text-only development.");
   }
+  if (config.realtime.provider === "voxtral" && !config.voxtral.apiKey) {
+    throw new Error(
+      "Set VOXTRAL_API_KEY or MISTRAL_API_KEY, or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
+    );
+  }
   if (config.realtime.provider === "gemini" && !config.gemini.enterprise && !config.gemini.apiKey) {
     throw new Error(
       "Set GEMINI_API_KEY or GOOGLE_API_KEY, enable GOOGLE_GENAI_USE_ENTERPRISE=true, or use HERMES_LIVE_PROVIDER=mock for local text-only development.",
@@ -328,7 +358,7 @@ export function assertRealtimeProviderConfig(config: Pick<AppConfig, "realtime" 
   }
 }
 
-export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | "local" | "gemini" | "openai">): boolean {
+export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | "local" | "gemini" | "openai" | "voxtral">): boolean {
   if (config.realtime.provider === "local") {
     return true;
   }
@@ -337,6 +367,9 @@ export function realtimeProviderConfigured(config: Pick<AppConfig, "realtime" | 
   }
   if (config.realtime.provider === "openai") {
     return Boolean(config.openai.apiKey);
+  }
+  if (config.realtime.provider === "voxtral") {
+    return Boolean(config.voxtral.apiKey);
   }
   if (config.gemini.enterprise) {
     return Boolean(config.gemini.project);
@@ -469,12 +502,15 @@ export function publicBaseUrl(value: string): string {
   }
 }
 
-function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, openaiModel: string): string {
+function selectedRealtimeModel(provider: RealtimeProvider, geminiModel: string, openaiModel: string, voxtralSttModel: string): string {
   if (provider === "local") {
     return "huggingface/speech-to-speech";
   }
   if (provider === "openai") {
     return openaiModel;
+  }
+  if (provider === "voxtral") {
+    return voxtralSttModel;
   }
   if (provider === "mock") {
     return "mock-live";

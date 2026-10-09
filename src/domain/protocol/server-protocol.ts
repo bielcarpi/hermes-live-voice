@@ -261,7 +261,7 @@ const TranscriptDeltaMessageSchema = z
 const InputSpeechStartedMessageSchema = z
   .object({
     type: z.literal("input.speech_started"),
-    provider: z.enum(["openai", "local"]),
+    provider: z.enum(["openai", "local", "voxtral"]),
     itemId: PublicIdSchema.optional(),
     audioStartMs: z.number().finite().nonnegative().max(60 * 60 * 1_000).optional(),
   })

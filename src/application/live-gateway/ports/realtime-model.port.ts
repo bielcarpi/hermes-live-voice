@@ -76,8 +76,8 @@ export type LiveModelEvent =
     }
   | { type: "tool_call"; call: LiveToolCall }
   | { type: "tool_call_cancelled"; callIds: string[] }
-  | { type: "input_speech_started"; provider: "openai" | "local"; itemId?: string; audioStartMs?: number }
-  | { type: "input_speech_stopped"; provider: "openai" | "local"; itemId?: string; audioEndMs?: number };
+  | { type: "input_speech_started"; provider: "openai" | "local" | "voxtral"; itemId?: string; audioStartMs?: number }
+  | { type: "input_speech_stopped"; provider: "openai" | "local" | "voxtral"; itemId?: string; audioEndMs?: number };
 
 export interface LiveModelCallbacks {
   onEvent(event: LiveModelEvent): void;

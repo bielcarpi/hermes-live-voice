@@ -4,6 +4,7 @@ import { GeminiLiveAdapter } from "./gemini-live.adapter.js";
 import { HuggingFaceRealtimeAdapter } from "./huggingface-realtime.adapter.js";
 import { MockLiveAdapter } from "./mock-live.adapter.js";
 import { OpenAIRealtimeAdapter } from "./openai-realtime.adapter.js";
+import { VoxtralLiveAdapter } from "./voxtral.adapter.js";
 
 export function createLiveModelAdapter(config: AppConfig): LiveModelAdapter {
   switch (config.realtime.provider) {
@@ -13,6 +14,8 @@ export function createLiveModelAdapter(config: AppConfig): LiveModelAdapter {
       return new MockLiveAdapter();
     case "openai":
       return new OpenAIRealtimeAdapter(config.openai, config.server.providerReadyTimeoutMs);
+    case "voxtral":
+      return new VoxtralLiveAdapter(config.voxtral, config.server.providerReadyTimeoutMs);
     case "gemini":
       return new GeminiLiveAdapter(config.gemini);
   }
