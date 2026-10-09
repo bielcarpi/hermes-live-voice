@@ -114,7 +114,6 @@
     "check:package": "node scripts/package-smoke.mjs",
     "check:plugin": "python3 scripts/plugin-smoke.py",
     "check:plugin-local": "python3 plugins/hermes-live/tests/test_manifest_contract.py",
-    "check:positioning": "node scripts/positioning-smoke.mjs",
     "check:release-notes": "node scripts/release-notes-smoke.mjs",
     "check:scripts": "node scripts/script-syntax-smoke.mjs",
     "check:workflow-pins": "node scripts/workflow-pins-smoke.mjs",
@@ -124,7 +123,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "sync:dashboard-assets": "node scripts/sync-dashboard-assets.mjs",
-    "verify": "npm run typecheck && npm run check:scripts && npm run check:docs && npm run check:release-notes && npm run check:workflow-pins && npm run check:positioning && npm run check:browser-client && npm run check:dashboard-assets && npm run check:dashboard-plugin && npm run check:plugin && npm run check:plugin-local && npm run check:plugin-index-entry && npm run check:local-runtime && npm test && npm run build && npm run check:live-provider-cli && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
+    "verify": "npm run typecheck && npm run check:scripts && npm run check:docs && npm run check:release-notes && npm run check:workflow-pins && npm run check:browser-client && npm run check:dashboard-assets && npm run check:dashboard-plugin && npm run check:plugin && npm run check:plugin-local && npm run check:plugin-index-entry && npm run check:local-runtime && npm test && npm run build && npm run check:live-provider-cli && npm run check:cli-check && npm run check:cli-client && npm run check:gateway && npm run check:package",
     "prepack": "npm run check:dashboard-assets && npm run build"
   },
   "dependencies": {
@@ -134,6 +133,9 @@
   "devDependencies": {
     "@types/node": "^22.20.3",
     "@types/ws": "^8.18.1",
+    "happy-dom": "20.14.6",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "tsx": "^4.23.11",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"

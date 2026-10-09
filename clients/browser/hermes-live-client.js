@@ -710,6 +710,13 @@ export class HermesLiveClient {
         request: pending,
         response: message,
       });
+      if (message.reason === "get" && message.tasks.length === 0) {
+        this.taskMap.delete(pending.taskId);
+        this.taskLifecycleSequenceMap.delete(pending.taskId);
+        this.taskLifecycleRevisionMap.delete(pending.taskId);
+        this.unreadNotificationMap.delete(pending.taskId);
+        this.notificationRevisionMap.delete(pending.taskId);
+      }
     }
 
     const reconnectReconciliation = message.reason === "initial" || message.reason === "reconnect";
@@ -1210,22 +1217,24 @@ export class HermesLiveAudio {
     ++this.captureGeneration;
     if (this.microphoneState !== "disposed") this.setMicrophoneState("stopping");
     this.microphoneStartCancellation?.cancel();
-    await this.microphoneStartPromise?.catch(() => undefined);
-    if (wasActive) await this.flushMicrophone();
-    if (endTurn && wasActive && this.client.connected) this.client.endAudio();
-
-    const capture = {
-      stream: this.mediaStream,
-      context: this.captureContext,
-      source: this.captureSource,
-      node: this.workletNode,
-    };
-    this.mediaStream = undefined;
-    this.captureContext = undefined;
-    this.captureSource = undefined;
-    this.workletNode = undefined;
-    await cleanupCapture(capture);
-    this.setMicrophoneState(this.disposed ? "disposed" : "idle");
+    try {
+      await this.microphoneStartPromise?.catch(() => undefined);
+      if (wasActive) await this.flushMicrophone();
+      if (endTurn && wasActive && this.client.connected) this.client.endAudio();
+    } finally {
+      const capture = {
+        stream: this.mediaStream,
+        context: this.captureContext,
+        source: this.captureSource,
+        node: this.workletNode,
+      };
+      this.mediaStream = undefined;
+      this.captureContext = undefined;
+      this.captureSource = undefined;
+      this.workletNode = undefined;
+      await cleanupCapture(capture);
+      this.setMicrophoneState(this.disposed ? "disposed" : "idle");
+    }
   }
 
   async flushMicrophone() {

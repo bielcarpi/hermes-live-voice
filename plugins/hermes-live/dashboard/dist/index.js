@@ -8,7 +8,6 @@
   const MAX_TRANSCRIPT_ENTRIES = 80;
   const MAX_VISIBLE_RECENT_TASKS = 16;
   const MAX_VISIBLE_UNREAD_TASKS = 2_048;
-  const MAX_TASK_DETAIL_CHARS = 12_000;
   const ACTIVE_TASK_STATES = new Set([
     "accepted",
     "queued",
@@ -148,7 +147,7 @@
     const result = task.result || {};
     const error = task.error || {};
     const value = result.output || result.summary || error.message || "";
-    return clampText(value, MAX_TASK_DETAIL_CHARS);
+    return value;
   }
 
   function taskInboxSummary(snapshot) {
@@ -177,11 +176,6 @@
       : "Live Voice is connected. Type a message to Hermes; microphone capture is unavailable for this session.";
   }
 
-  function connectedSessionGuidance(browserMicSupported) {
-    return browserMicSupported
-      ? "Start the microphone or type a message below."
-      : "Type a message below.";
-  }
 
   function negotiatedInputAudio(snapshot, fallback) {
     const realtime = snapshot && snapshot.session && snapshot.session.realtime;
@@ -308,7 +302,7 @@
             ? "Checking gateway\u2026"
             : !gatewayReady
               ? "Gateway not ready"
-              : "Connect Live Voice",
+              : "Connect",
     };
   }
 
@@ -353,6 +347,7 @@
     const [notice, setNotice] = useState(null);
     const [clientLoading, setClientLoading] = useState(true);
     const [busyAction, setBusyAction] = useState("");
+    const [pendingTaskActions, setPendingTaskActions] = useState([]);
 
     const clientRef = useRef(null);
     const audioRef = useRef(null);
@@ -361,6 +356,8 @@
     const transcriptSequence = useRef(0);
     const transcriptViewportRef = useRef(null);
     const disconnectNoticeRef = useRef(null);
+    const attachedConversationRef = useRef(null);
+    const taskRequestsRef = useRef(new Map());
 
     const addTranscript = useCallback(function (speaker, text, final, source) {
       const normalized = clampText(text, 20_000);
@@ -491,9 +488,16 @@
             client.subscribe(function (value) {
               if (!active) return;
               setSnapshot(value);
-              const attachedSessionId = value && value.session && value.session.conversation &&
-                value.session.conversation.sessionId;
-              if (attachedSessionId) setConversationId(attachedSessionId);
+              const conversation = value && value.session && value.session.conversation;
+              if (conversation && conversation.sessionId) {
+                const previous = attachedConversationRef.current;
+                if (previous && previous.sessionId !== conversation.sessionId) {
+                  setTranscript([]);
+                  setTextInput("");
+                }
+                attachedConversationRef.current = conversation;
+                setConversationId(conversation.sessionId);
+              }
             }),
             client.on("transcript.delta", function (message) {
               if (active) addTranscript(message.speaker, message.text, message.final, "stream");
@@ -539,12 +543,18 @@
             client.on("task.unknown", function (message) {
               if (active) setNotice({ tone: "warning", text: clampText(message.error.message, 300) });
             }),
-            client.on("request.succeeded", function () {
-              if (active) setBusyAction("");
+            client.on("request.succeeded", function (event) {
+              if (!active) return;
+              taskRequestsRef.current.delete(event.requestId);
+              setPendingTaskActions(Array.from(taskRequestsRef.current.values()));
+              if (event.request.type === "task.get" && event.response.tasks.length === 0) {
+                setNotice({ tone: "warning", text: "This task is no longer retained by the gateway." });
+              }
             }),
             client.on("request.failed", function (event) {
               if (!active) return;
-              setBusyAction("");
+              taskRequestsRef.current.delete(event.requestId);
+              setPendingTaskActions(Array.from(taskRequestsRef.current.values()));
               setNotice({ tone: "danger", text: clampText(event.error.message, 300) });
             }),
             client.on("input.speech_started", function () {
@@ -605,6 +615,8 @@
               setMicrophone(initialMicrophone());
               setPlayback(initialPlayback());
               setBusyAction("");
+              taskRequestsRef.current.clear();
+              setPendingTaskActions([]);
               setNotice(connectionClosedNotice(
                 event,
                 disconnectNoticeRef.current && disconnectNoticeRef.current.notice,
@@ -753,31 +765,41 @@
       }
     }
 
+    function runTaskAction(action, sendRequest, errorMessage) {
+      if (Array.from(taskRequestsRef.current.values()).includes(action)) return false;
+      try {
+        const requestId = sendRequest();
+        taskRequestsRef.current.set(requestId, action);
+        setPendingTaskActions(Array.from(taskRequestsRef.current.values()));
+        return true;
+      } catch (error) {
+        setNotice({ tone: "danger", text: friendlyError(error, errorMessage) });
+        return false;
+      }
+    }
+
     function stopTask(task) {
       const client = clientRef.current;
       if (!client || !task || task.state === "stopping") return;
-      const action = "stop:" + task.taskId;
-      setBusyAction(action);
-      try {
-        client.stopTask(task.taskId, "stopped from Hermes Dashboard");
-        setNotice({ tone: "warning", text: "Stop requested for " + shortId(task.taskId) + ". Voice stays connected." });
-      } catch (error) {
-        setBusyAction("");
-        setNotice({ tone: "danger", text: friendlyError(error, "The selected task could not be stopped.") });
+      if (runTaskAction("stop:" + task.taskId, function () {
+        return client.stopTask(task.taskId, "stopped from Hermes Dashboard");
+      }, "The selected task could not be stopped.")) {
+        setNotice({ tone: "warning", text: "Stop requested for " + (task.title || "this task") + "." });
       }
     }
 
     function acknowledgeTask(notification) {
       const client = clientRef.current;
       if (!client || !notification) return;
-      const action = "ack:" + notification.taskId;
-      setBusyAction(action);
-      try {
-        client.acknowledgeNotification(notification.taskId, notification.notificationId);
-      } catch (error) {
-        setBusyAction("");
-        setNotice({ tone: "danger", text: friendlyError(error, "The task update could not be marked as read.") });
-      }
+      runTaskAction("ack:" + notification.taskId, function () {
+        return client.acknowledgeNotification(notification.taskId, notification.notificationId);
+      }, "The task update could not be marked as read.");
+    }
+
+    function loadTaskResult(task) {
+      const client = clientRef.current;
+      if (!client || !client.connected || !task.result || task.result.output !== undefined || !task.result.truncated) return;
+      runTaskAction("get:" + task.taskId, function () { return client.getTask(task.taskId); }, "Could not load this result. Try again.");
     }
 
     function sendText(event) {
@@ -812,39 +834,23 @@
     const provider = realtime.provider || gateway.provider || "\u2014";
     const model = realtime.model || gateway.model || "\u2014";
     const protocolVersion = session && session.protocolVersion ? session.protocolVersion : gateway.protocolVersion || "\u2014";
-    const selectedConversation = session && session.conversation;
-    const activeTasks = Array.isArray(snapshot.activeTasks) ? snapshot.activeTasks : [];
-    const unreadNotifications = Array.isArray(snapshot.unreadNotifications) ? snapshot.unreadNotifications : [];
+    const selectedConversation = session && session.conversation || attachedConversationRef.current;
     const inboxItems = taskInboxItems(snapshot);
 
     function StatusPill(props) {
-      return h("span", { className: "hlv-pill hlv-pill--" + (props.tone || "neutral") },
-        h("span", { className: "hlv-pill__dot", "aria-hidden": "true" }),
-        props.children,
-      );
-    }
-
-    function Metric(props) {
-      return h("div", { className: "hlv-metric" },
-        h("span", { className: "hlv-metric__label" }, props.label),
-        h("strong", { className: "hlv-metric__value", title: String(props.value) }, props.value),
-        props.detail ? h("span", { className: "hlv-metric__detail" }, props.detail) : null,
-      );
+      return h("span", { className: "hlv-pill hlv-pill--" + (props.tone || "neutral") }, props.children);
     }
 
     function ControlButton(props) {
       return h("button", {
-        type: props.type || "button",
-        className: "hlv-button" +
-          (props.variant ? " hlv-button--" + props.variant : "") +
-          (props.wide ? " hlv-button--wide" : ""),
+        type: "button",
+        className: "hlv-button" + (props.variant ? " hlv-button--" + props.variant : ""),
         disabled: Boolean(props.disabled),
         onClick: props.onClick,
         title: props.title,
         "aria-label": props.ariaLabel,
-        "aria-pressed": props.pressed === undefined ? undefined : Boolean(props.pressed),
-      }, props.icon ? h("span", { className: "hlv-button__icon", "aria-hidden": "true" }, props.icon) : null,
-      h("span", null, props.children));
+        "aria-pressed": props.pressed,
+      }, props.children);
     }
 
     function TaskCard(item) {
@@ -853,329 +859,146 @@
       const state = taskStatePresentation(task.state);
       const progress = taskProgressText(task.progress);
       const detail = taskDetail(task);
-      const stopBusy = busyAction === "stop:" + task.taskId;
-      const ackBusy = busyAction === "ack:" + task.taskId;
-      const titleId = "hlv-task-title-" + task.taskId.replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 80);
-      return h("article", {
-        key: task.taskId,
-        className: "hlv-task-item" + (notification ? " hlv-task-item--unread" : ""),
-        "aria-labelledby": titleId,
-      },
-        h("div", { className: "hlv-task-item__header" },
-          h("div", null,
-            h("h3", { id: titleId, title: task.title || task.taskId }, task.title || "Background task"),
-            h("code", { title: "Stable task ID: " + task.taskId }, shortId(task.taskId)),
-          ),
+      const result = task.result || {};
+      const needsResult = task.state === "completed" && result.truncated && result.output === undefined;
+      const loading = pendingTaskActions.includes("get:" + task.taskId);
+      return h("article", { key: task.taskId, className: "hlv-task" },
+        h("div", { className: "hlv-task__heading" },
+          h("h3", null, task.title || "Background task"),
           h(StatusPill, { tone: state.tone }, state.label),
         ),
-        h("div", { className: "hlv-task-item__meta" },
-          h("time", { dateTime: new Date(task.updatedAt).toISOString() }, formatTaskTime(task.updatedAt)),
-          task.parentTaskId ? h("span", { title: "Parent task: " + task.parentTaskId },
-            "Follow-up to " + shortId(task.parentTaskId),
-          ) : null,
-        ),
-        progress ? h("p", { className: "hlv-task-item__progress" }, progress) : null,
-        notification ? h("p", { className: "hlv-task-item__notice", role: "status" }, notification.message) : null,
-        detail ? h("details", { className: "hlv-task-item__details" },
+        progress ? h("p", { className: "hlv-muted" }, progress) : null,
+        notification ? h("p", { role: "status" }, notification.message) : null,
+        detail || needsResult ? h("details", {
+          className: "hlv-result",
+          onToggle: function (event) { if (event.currentTarget.open) loadTaskResult(task); },
+        },
           h("summary", null, task.state === "completed" ? "View result" : "View details"),
+          loading ? h("p", { role: "status" }, "Loading result…") : null,
           h("pre", null, detail),
+          needsResult ? h("p", { className: "hlv-muted" },
+            connected ? "Summary shown. Load the retained result for full details." : "Reconnect to load the retained result.",
+            connected ? h(ControlButton, { disabled: loading, onClick: function () { loadTaskResult(task); } }, "Load full result") : null,
+          ) : result.truncated ? h("p", { className: "hlv-muted" }, "This result was shortened before storage.") : null,
         ) : null,
-        isTaskActive(task) || notification ? h("div", { className: "hlv-task-item__actions" },
+        h("div", { className: "hlv-task__actions" },
           isTaskActive(task) ? h(ControlButton, {
             variant: "danger",
-            disabled: !connected || task.state === "stopping" || stopBusy,
+            disabled: !connected || task.state === "stopping" || pendingTaskActions.includes("stop:" + task.taskId),
             onClick: function () { stopTask(task); },
-            ariaLabel: "Stop task " + task.taskId,
-          }, task.state === "stopping" || stopBusy ? "Stopping\u2026" : "Stop task") : null,
+            ariaLabel: "Stop task " + (task.title || task.taskId),
+          }, task.state === "stopping" ? "Stopping…" : "Stop task") : null,
           notification ? h(ControlButton, {
-            variant: "ghost",
-            disabled: !connected || ackBusy,
+            disabled: !connected || pendingTaskActions.includes("ack:" + task.taskId),
             onClick: function () { acknowledgeTask(notification); },
-            ariaLabel: "Mark task " + task.taskId + " update as read",
-          }, ackBusy ? "Marking\u2026" : "Mark read") : null,
-        ) : null,
+          }, "Mark read") : null,
+        ),
+        h("details", { className: "hlv-task-meta" },
+          h("summary", null, "Task details"),
+          h("code", null, task.taskId),
+          h("time", { dateTime: new Date(task.updatedAt).toISOString() }, formatTaskTime(task.updatedAt)),
+          task.parentTaskId ? h("p", null, "Parent: ", h("code", null, task.parentTaskId)) : null,
+        ),
       );
     }
 
     return h("div", { className: "hlv-page" },
-      h("section", { className: "hlv-hero" },
-        h("div", { className: "hlv-hero__copy" },
-          h("span", { className: "hlv-kicker" },
-            h("span", { className: "hlv-kicker__wave", "aria-hidden": "true" }, "\u223F"),
-            "Hermes Live Voice",
-          ),
-          h("h1", null, "Keep talking while Hermes keeps working."),
-          h("p", null, "Continuous voice for saved chats, durable tasks, and live progress."),
-        ),
-        h("div", { className: "hlv-hero__status", "aria-live": "polite" },
-          h(StatusPill, { tone: gatewayState.tone }, "Gateway ", gatewayState.label),
-          h(StatusPill, { tone: connection.tone }, connection.label),
+      h("header", { className: "hlv-header" },
+        h("h1", null, "Live Voice"),
+        h("span", { role: "status", className: "hlv-muted" },
+          playback.active ? "Hermes is speaking" : microphone.active ? "Listening" : connection.label,
         ),
       ),
-
+      h("div", { className: "hlv-controls" },
+        h("label", { className: "hlv-picker" },
+          h("span", null, "Chat"),
+          h("select", {
+            value: connected && selectedConversation && selectedConversation.sessionId ? selectedConversation.sessionId : conversationId,
+            disabled: connected || busyAction === "connect",
+            onChange: function (event) { setConversationId(event.target.value); },
+            "aria-label": "Choose a Hermes conversation",
+          },
+            h("option", { value: "new" }, "New chat"),
+            conversations.map(function (conversation) {
+              return h("option", { key: conversation.id, value: conversation.id }, clampText(conversation.title || conversation.preview || shortId(conversation.id), 80));
+            }),
+            conversationId !== "new" && !conversations.some(function (item) { return item.id === conversationId; })
+              ? h("option", { value: conversationId },
+                  selectedConversation && selectedConversation.sessionId === conversationId && selectedConversation.title || "Selected chat") : null,
+          ),
+        ),
+        connected ? h(ControlButton, {
+          disabled: busyAction === "disconnect", onClick: disconnect,
+          title: "Disconnect voice; background tasks keep running.",
+        }, "Disconnect") : h(ControlButton, {
+          variant: "primary", disabled: connectControl.disabled, onClick: connect,
+        }, connectControl.label),
+        connected ? h(ControlButton, {
+          disabled: !browserMicSupported || busyAction === "microphone",
+          pressed: microphone.active,
+          onClick: microphone.active ? stopMicrophone : startMicrophone,
+        }, microphone.active
+          ? audioCapabilities.turnDetection === "disabled" ? "Stop & send turn" : "Pause microphone"
+          : "Start microphone") : null,
+        connected ? h(ControlButton, {
+          onClick: interruptSpeech,
+          title: "Interrupt the current reply; background tasks keep running.",
+        }, "Interrupt speech") : null,
+      ),
       notice ? h("div", {
         className: "hlv-notice hlv-notice--" + notice.tone,
         role: notice.tone === "danger" ? "alert" : "status",
       },
         h("span", null, notice.text),
-        h("button", { type: "button", onClick: function () { setNotice(null); }, "aria-label": "Dismiss message" }, "\u00d7"),
+        h("button", { type: "button", onClick: function () { setNotice(null); }, "aria-label": "Dismiss message" }, "×"),
       ) : null,
-
-      h("div", { className: "hlv-durable-strip", role: "status" },
-        h("span", { className: "hlv-durable-strip__icon", "aria-hidden": "true" }, "\u25c9"),
-        h("div", null,
-          h("strong", null, taskInboxSummary(snapshot)),
-          h("span", null, " Voice can disconnect without cancelling tasks."),
-        ),
-      ),
-
-      h("div", { className: "hlv-grid" },
-        h("section", { className: "hlv-card hlv-console" },
-          h("div", { className: "hlv-card__header" },
-            h("div", null,
-              h("span", { className: "hlv-eyebrow" }, "Voice console"),
-              h("h2", null, connected ? "Session live" : "Ready when you are"),
-            ),
-            h(StatusPill, { tone: connection.tone }, connection.label),
-          ),
-          h("div", {
-            className: "hlv-orb" +
-              (microphone.active ? " hlv-orb--listening" : "") +
-              (playback.active ? " hlv-orb--speaking" : ""),
-            "aria-hidden": "true",
-          },
-            h("span", { className: "hlv-orb__ring hlv-orb__ring--one" }),
-            h("span", { className: "hlv-orb__ring hlv-orb__ring--two" }),
-            h("span", { className: "hlv-orb__core" }, microphone.active ? "\u25cf" : playback.active ? "\u223F" : "H"),
-          ),
-          h("div", { className: "hlv-console__state", "aria-live": "polite" },
-            h("strong", null,
-              microphone.state === "starting" ? "Requesting microphone\u2026" :
-              microphone.active ? "Listening" : playback.active ? "Hermes is speaking" :
-              connected ? "Connected and ready" : "Voice session is offline",
-            ),
-            h("span", null,
-              microphone.active ? microphoneActiveGuidance(audioCapabilities.turnDetection) :
-              playback.active ? "Interrupt speech whenever you want; background tasks keep running." :
-              connected ? connectedSessionGuidance(browserMicSupported) : gatewayState.detail,
+      !connected && !gateway.ready ? h("p", { className: "hlv-muted", role: "status" }, gatewayState.detail) : null,
+      connected && microphone.active && audioCapabilities.turnDetection === "disabled"
+        ? h("p", { className: "hlv-muted" }, microphoneActiveGuidance("disabled")) : null,
+      connected && !browserMicSupported ? h("p", { className: "hlv-muted" }, "Voice input is unavailable for this session. You can type below.") : null,
+      h("div", { className: "hlv-workspace" + (inboxItems.length ? " hlv-workspace--tasks" : "") },
+        h("section", { className: "hlv-conversation", "aria-label": "Conversation" },
+          h("div", { ref: transcriptViewportRef, className: "hlv-transcript", "aria-live": "polite", "aria-relevant": "additions text" },
+            transcript.length ? transcript.map(function (entry) {
+              return h("article", { key: entry.id, className: "hlv-message" },
+                h("strong", null, entry.speaker === "user" ? "You" : entry.speaker === "assistant" ? "Hermes" : "System"),
+                h("p", null, entry.text),
+              );
+            }) : h("div", { className: "hlv-empty" },
+              h("h2", null, connected ? "What would you like to do?" : "Talk to Hermes"),
+              h("p", null, connected ? "Speak or type a message." : "Choose a chat and connect. You can keep talking while tasks run."),
             ),
           ),
-          h("label", { className: "hlv-conversation-picker" },
-            h("span", null, "Hermes chat"),
-            h("select", {
-              value: connected && selectedConversation && selectedConversation.sessionId
-                ? selectedConversation.sessionId
-                : conversationId,
-              disabled: connected || busyAction === "connect",
-              onChange: function (event) { setConversationId(event.target.value); },
-              "aria-label": "Choose a Hermes conversation",
-            },
-              h("option", { value: "new" }, "Start a new chat"),
-              conversations.map(function (conversation) {
-                const title = conversation.title || conversation.preview || shortId(conversation.id);
-                return h("option", { key: conversation.id, value: conversation.id }, clampText(title, 80));
-              }),
-              connected && selectedConversation && selectedConversation.sessionId &&
-                !conversations.some(function (item) { return item.id === selectedConversation.sessionId; })
-                ? h("option", { value: selectedConversation.sessionId }, selectedConversation.title || "Current chat")
-                : null,
-            ),
-            h("small", null, connected && selectedConversation
-              ? "Voice is attached to this saved Hermes chat."
-              : "Continue a saved chat or start a fresh one."),
-          ),
-          h("div", { className: "hlv-connect-row" },
-            connected
-              ? h(ControlButton, {
-                  variant: "secondary",
-                  disabled: busyAction === "disconnect",
-                  onClick: disconnect,
-                }, busyAction === "disconnect" ? "Disconnecting\u2026" : "Disconnect voice")
-              : h(ControlButton, {
-                  variant: "primary",
-                  wide: true,
-                  disabled: connectControl.disabled,
-                  onClick: connect,
-                }, connectControl.label),
-          ),
-          h("div", { className: "hlv-control-grid hlv-control-grid--voice" },
-            microphone.active
-              ? h(ControlButton, {
-                  variant: "primary",
-                  pressed: true,
-                  disabled: busyAction === "microphone",
-                  icon: "\u25a0",
-                  onClick: stopMicrophone,
-                }, busyAction === "microphone"
-                  ? "Stopping\u2026"
-                  : audioCapabilities.turnDetection === "disabled" ? "Stop & send turn" : "Stop microphone")
-              : h(ControlButton, {
-                  variant: "secondary",
-                  pressed: false,
-                  disabled: !connected || !browserMicSupported || busyAction === "microphone",
-                  title: !browserMicSupported ? "This session does not expose browser-compatible PCM microphone input." : "",
-                  icon: "\u25cf",
-                  onClick: startMicrophone,
-                }, busyAction === "microphone" ? "Starting\u2026" : "Start microphone"),
-            h(ControlButton, {
-              variant: "warning",
-              disabled: !connected,
-              icon: "\u2016",
-              onClick: interruptSpeech,
-              title: "Cancel only the current assistant response.",
-            }, "Interrupt speech"),
-          ),
-          !browserMicSupported && connected ? h("p", { className: "hlv-inline-warning" },
-            inputAudio.enabled === false
-              ? "This provider session does not accept microphone audio. Text input remains available."
-              : "Browser capture supports PCM16 input, but this session negotiated " + inputMime + ". Text input remains available.",
-          ) : null,
           h("form", { className: "hlv-composer", onSubmit: sendText },
-            h("label", { htmlFor: "hlv-text-input" }, "Type to Hermes"),
-            h("div", { className: "hlv-composer__row" },
-              h("textarea", {
-                id: "hlv-text-input",
-                rows: 2,
-                maxLength: 16_000,
-                value: textInput,
-                disabled: !connected,
-                placeholder: connected ? "Ask, delegate, or keep the conversation going\u2026" : "Connect Live Voice to send a message",
-                onChange: function (event) { setTextInput(event.target.value); },
-                onKeyDown: function (event) {
-                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") sendText(event);
-                },
-              }),
-              h("button", {
-                type: "submit",
-                className: "hlv-send",
-                disabled: !connected || !textInput.trim(),
-                "aria-label": "Send message",
-                title: "Send (Command or Control + Enter)",
-              }, "\u2191"),
-            ),
-            h("span", { className: "hlv-composer__hint" }, "Voice stays available while tasks run."),
+            h("textarea", {
+              "aria-label": "Message to Hermes", rows: 2, maxLength: 16_000, value: textInput, disabled: !connected,
+              placeholder: connected ? "Message Hermes…" : "Connect to start a conversation",
+              onChange: function (event) { setTextInput(event.target.value); },
+              onKeyDown: function (event) { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") sendText(event); },
+            }),
+            h("button", { type: "submit", className: "hlv-button hlv-button--primary", disabled: !connected || !textInput.trim() }, "Send"),
           ),
+          transcript.length ? h("button", { className: "hlv-text-button", type: "button", onClick: function () { setTranscript([]); } }, "Clear transcript") : null,
         ),
-
-        h("aside", { className: "hlv-side" },
-          h("section", { className: "hlv-card hlv-session-card" },
-            h("div", { className: "hlv-card__header" },
-              h("div", null,
-                h("span", { className: "hlv-eyebrow" }, "Connection details"),
-                h("h2", null, "Live status"),
-              ),
-              h("button", {
-                type: "button",
-                className: "hlv-icon-button",
-                onClick: refreshStatus,
-                disabled: gateway.loading,
-                title: "Refresh gateway status",
-                "aria-label": "Refresh gateway status",
-              }, "\u21bb"),
-            ),
-            h("div", { className: "hlv-metrics" },
-              h(Metric, { label: "Gateway", value: gatewayState.label, detail: gatewayState.detail }),
-              h(Metric, { label: "Realtime provider", value: titleCase(provider) }),
-              h(Metric, { label: "Model", value: model }),
-              h(Metric, { label: "Protocol", value: "v" + protocolVersion }),
-              h(Metric, {
-                label: "Background tasks",
-                value: taskCapabilities.durable === false ? "Session only" : "Durable",
-                detail: taskCapabilities.parallel
-                  ? "Up to " + (taskCapabilities.maxConcurrent || "multiple") + " read-only tasks"
-                  : "One task at a time",
-              }),
-              h(Metric, {
-                label: "Microphone input",
-                value: inputAudio.enabled === false ? "Disabled" : inputMime || "Negotiated on connect",
-                detail: inputAudio.recommendedFrameMs ? inputAudio.recommendedFrameMs + " ms frames" : "",
-              }),
-            ),
-            h("p", { className: "hlv-security-note" },
-              h("span", { "aria-hidden": "true" }, "\u25c8"),
-              " Dashboard authentication is exchanged server-side. Gateway credentials are never stored in this page.",
-            ),
-          ),
-        ),
+        inboxItems.length ? h("aside", { className: "hlv-tasks", "aria-label": "Background tasks" },
+          h("h2", null, "Tasks"),
+          h("p", { className: "hlv-muted" }, taskInboxSummary(snapshot)),
+          inboxItems.map(TaskCard),
+          h("p", { className: "hlv-muted" }, "Tasks keep running when you disconnect."),
+        ) : null,
       ),
-
-      h("section", {
-        className: "hlv-card hlv-task-inbox",
-        "aria-labelledby": "hlv-task-inbox-title",
-      },
-        h("div", { className: "hlv-card__header" },
-          h("div", null,
-            h("span", { className: "hlv-eyebrow" }, "Durable background work"),
-            h("h2", { id: "hlv-task-inbox-title" }, "Task inbox"),
-          ),
-          h("div", { className: "hlv-task-inbox__counts" },
-            activeTasks.length ? h(StatusPill, { tone: "active" }, activeTasks.length + " active") : null,
-            h("span", {
-              className: "hlv-unread-badge" + (unreadNotifications.length ? " hlv-unread-badge--active" : ""),
-              "aria-label": unreadNotifications.length
-                ? unreadNotifications.length + " unread task updates"
-                : "No unread task updates",
-            }, unreadNotifications.length),
-          ),
+      h("details", { className: "hlv-details" },
+        h("summary", null, "Connection details"),
+        h("dl", null,
+          h("dt", null, "Gateway"), h("dd", null, gatewayState.label),
+          h("dt", null, "Provider"), h("dd", null, titleCase(provider)),
+          h("dt", null, "Model"), h("dd", null, model),
+          h("dt", null, "Protocol"), h("dd", null, "v" + protocolVersion),
+          h("dt", null, "Microphone"), h("dd", null, inputAudio.enabled === false ? "Unavailable" : inputMime || "Negotiated on connect"),
+          h("dt", null, "Turn detection"), h("dd", null, audioCapabilities.turnDetection || "Negotiated on connect"),
+          h("dt", null, "Task execution"), h("dd", null, taskCapabilities.parallel ? "Read-only parallelism enabled" : "One task at a time"),
         ),
-        h("p", { className: "hlv-task-inbox__copy" },
-          "Tasks can finish in any order. Each card keeps its task ID and latest state.",
-        ),
-        h("div", {
-          className: "hlv-task-list",
-          "aria-live": "polite",
-          "aria-relevant": "additions text",
-        },
-          inboxItems.length
-            ? inboxItems.map(TaskCard)
-            : h("div", { className: "hlv-empty hlv-empty--compact" },
-                h("span", { "aria-hidden": "true" }, "\u22ef"),
-                h("p", null, "Delegate a background task during the conversation. It will appear here without blocking voice."),
-              ),
-        ),
-      ),
-
-      h("section", { className: "hlv-card hlv-conversation" },
-        h("div", { className: "hlv-card__header" },
-          h("div", null,
-            h("span", { className: "hlv-eyebrow" }, "Realtime transcript"),
-            h("h2", null, "Conversation"),
-          ),
-          transcript.length ? h("button", {
-            type: "button",
-            className: "hlv-text-button",
-            onClick: function () { setTranscript([]); },
-          }, "Clear transcript") : null,
-        ),
-        h("div", {
-          ref: transcriptViewportRef,
-          className: "hlv-transcript",
-          "aria-live": "polite",
-          "aria-relevant": "additions text",
-        },
-          transcript.length
-            ? transcript.map(function (entry) {
-                return h("article", { key: entry.id, className: "hlv-message hlv-message--" + entry.speaker },
-                  h("div", { className: "hlv-message__speaker" },
-                    h("span", { className: "hlv-message__avatar", "aria-hidden": "true" }, entry.speaker === "user" ? "Y" : entry.speaker === "assistant" ? "V" : "i"),
-                    h("strong", null, entry.speaker === "user" ? "You" : entry.speaker === "assistant" ? "Live voice" : "System"),
-                    !entry.final ? h("span", { className: "hlv-message__streaming" }, "Live") : null,
-                  ),
-                  h("p", null, entry.text),
-                );
-              })
-            : h("div", { className: "hlv-empty" },
-                h("div", { className: "hlv-empty__mark", "aria-hidden": "true" }, "\u223F"),
-                h("h3", null, "Your conversation will appear here"),
-                h("p", null, "Connect and speak naturally \u2014 or use text when voice is unavailable."),
-              ),
-        ),
-      ),
-
-      h("footer", { className: "hlv-footer" },
-        h("p", null,
-          "Voice is a detachable session. Explicit Stop buttons target one stable task; leaving this page does not cancel background work.",
-        ),
+        h(ControlButton, { disabled: gateway.loading, onClick: refreshStatus }, "Refresh connection"),
       ),
     );
   }

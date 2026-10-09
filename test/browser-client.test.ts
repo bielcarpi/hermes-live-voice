@@ -51,6 +51,17 @@ describe("HermesLiveClient", () => {
     expect(client.tasks[0]).toMatchObject({ taskId: "task_one", state: "running" });
   });
 
+  it("removes an expired task from its cache when an exact read finds no retained record", async () => {
+    const { client, socket } = await connectedClient("live_expired_task");
+    socket.message({ type: "task.snapshot", reason: "initial", tasks: [taskSnapshot("task_expired", "completed", 2)], truncated: false });
+    await flushMessages();
+    expect(client.tasks).toHaveLength(1);
+    const requestId = client.getTask("task_expired");
+    socket.message({ type: "task.snapshot", reason: "get", requestId, tasks: [], truncated: false });
+    await flushMessages();
+    expect(client.tasks).toEqual([]);
+  });
+
   it("can resume a selected Hermes conversation without application glue", async () => {
     const client = createClient({ conversation: { mode: "resume", sessionId: "saved_chat" } });
     const connection = client.connect();
@@ -1312,6 +1323,33 @@ describe("HermesLiveAudio", () => {
     client.emit("response.started", {});
     await expect(audio.play({ type: "audio.output", data: frame, mimeType: "audio/pcm;rate=24000" })).resolves.toBe(true);
     await audio.dispose();
+  });
+
+  it("releases microphone resources when submitting the final turn fails", async () => {
+    const client = audioClient();
+    client.endAudio.mockImplementation(() => { throw new Error("fixture send failed"); });
+    const track = { stop: vi.fn() };
+    const context = new FakeAudioContext({});
+    const node = {
+      connect: vi.fn(), disconnect: vi.fn(),
+      port: { postMessage: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() },
+    };
+    const audio = createAudio({
+      client,
+      mediaDevices: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+      audioContextFactory: () => context,
+      audioWorkletNodeFactory: () => node,
+    });
+    try {
+      await audio.startMicrophone();
+      await expect(audio.stopMicrophone()).rejects.toThrow("fixture send failed");
+      expect(track.stop).toHaveBeenCalledOnce();
+      expect(node.disconnect).toHaveBeenCalledOnce();
+      expect(context.close).toHaveBeenCalledOnce();
+      expect(audio.microphoneState).toBe("idle");
+    } finally {
+      await audio.dispose();
+    }
   });
 
   it("stops a late microphone stream when disposed during permission", async () => {
