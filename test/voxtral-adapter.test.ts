@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LiveModelEvent } from "../src/application/live-gateway/ports/realtime-model.port.js";
-import { extractWavPcmBase64, VoxtralLiveAdapter } from "../src/adapters/outbound/realtime/voxtral.adapter.js";
+import { extractWavPcmBase64, voxtralSpeechFriendly, VoxtralLiveAdapter } from "../src/adapters/outbound/realtime/voxtral.adapter.js";
 import type { LiveModelCallbacks } from "../src/application/live-gateway/ports/realtime-model.port.js";
 
 const CONFIG = {
@@ -45,6 +45,38 @@ describe("extractWavPcmBase64", () => {
   it("rejects non-WAVE input", () => {
     expect(extractWavPcmBase64(Buffer.from("not a wav at all").toString("base64"))).toBeNull();
     expect(extractWavPcmBase64("")).toBeNull();
+  });
+});
+
+describe("voxtralSpeechFriendly", () => {
+  it("keeps natural sentences untouched", () => {
+    expect(voxtralSpeechFriendly("Salut, ça va ? Je t'ai entendu.")).toBe("Salut, ça va ? Je t'ai entendu.");
+  });
+
+  it("summarizes file paths", () => {
+    expect(voxtralSpeechFriendly("J'ai créé le fichier /home/flo/dev/apps/hello/index.ts.")).toBe(
+      "J'ai créé le fichier (chemin de fichiers)",
+    );
+  });
+
+  it("summarizes code blocks and URLs", () => {
+    const text = "Regarde ```const x = 1;\nconst y = 2;``` et https://example.com/a/b pour plus.";
+    const spoken = voxtralSpeechFriendly(text);
+    expect(spoken).toContain("(bloc de code)");
+    expect(spoken).toContain("(lien)");
+    expect(spoken).not.toContain("const");
+    expect(spoken).not.toContain("example.com");
+  });
+
+  it("keeps short inline code but summarizes long technical tokens", () => {
+    expect(voxtralSpeechFriendly("la commande `npm test` fonctionne")).toContain("npm test");
+    expect(voxtralSpeechFriendly("le hash a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 est bon")).toContain(
+      "(identifiant technique)",
+    );
+  });
+
+  it("falls back to the original text when everything would be stripped", () => {
+    expect(voxtralSpeechFriendly("   ")).toBe("   ".trim());
   });
 });
 

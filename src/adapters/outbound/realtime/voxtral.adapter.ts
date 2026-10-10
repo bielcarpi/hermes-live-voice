@@ -473,6 +473,10 @@ class VoxtralLiveSession implements LiveModelSession {
     const clean = text.trim();
     if (!clean || this.closing) return;
     this.callbacks.onEvent({ type: "text", text: clean, speaker: "assistant", final: true });
+    // The transcript keeps the full text; only the SPOKEN audio is sanitized
+    // (code blocks, file paths, URLs and long identifiers are summarized) so a
+    // voice reply never reads out "slash home slash flo slash …".
+    const spoken = voxtralSpeechFriendly(clean);
     const abort = new AbortController();
     this.ttsAbort = abort;
     try {
@@ -487,7 +491,7 @@ class VoxtralLiveSession implements LiveModelSession {
         body: JSON.stringify({
           model: this.config.ttsModel,
           voice: this.config.voice,
-          input: clean,
+          input: spoken,
           response_format: "wav",
         }),
       });
@@ -549,6 +553,26 @@ function voxtralSpokenToolText(call: LiveToolCall, response: Record<string, unkn
   if (call.name === "start_background_task") return "Task started. I will tell you when it is done.";
   if (call.name === "stop_background_task") return "Task stopped.";
   return "Done.";
+}
+
+/**
+ * Speech-friendly rendering of an assistant reply for TTS. The full text stays
+ * available in the transcript; this only shapes what is SPOKEN. Code blocks,
+ * URLs, file paths and long technical identifiers are replaced by short
+ * natural-language summaries so the voice channel stays conversational.
+ */
+export function voxtralSpeechFriendly(text: string): string {
+  const spoken = text
+    .replace(/```[\s\S]*?```/gu, " (bloc de code) ")
+    .replace(/`([^`\n]+)`/gu, (_match, code: string) =>
+      code.trim().split(/\s+/u).length <= 3 ? ` ${code.trim()} ` : " (extrait de code) ",
+    )
+    .replace(/https?:\/\/\S+/gu, " (lien) ")
+    .replace(/(?:~\/)?\/?(?:[A-Za-z0-9_.+-]+\/){2,}[A-Za-z0-9_.+-]*/gu, " (chemin de fichiers) ")
+    .replace(/\b[A-Za-z0-9_.\/+-]{30,}\b/gu, " (identifiant technique) ")
+    .replace(/\s{2,}/gu, " ")
+    .trim();
+  return spoken || text.trim();
 }
 
 /** Minimal RIFF/WAVE reader: returns the data chunk payload as base64 PCM16. */
