@@ -35,7 +35,9 @@ export function realtimeClientCapabilities(
         // STT WebSocket; the client keeps sending comfortable 24 kHz PCM.
         input: { enabled: true, mimeType: "audio/pcm;rate=24000", recommendedFrameMs: 50 },
         output: { enabled: true, mimeType: "audio/pcm;rate=24000" },
-        turnDetection: "disabled",
+        // The adapter owns turn-taking (server-side energy VAD): the user
+        // speaks, pauses, and the turn commits — natural conversation flow.
+        turnDetection: "provider",
       },
     };
   }

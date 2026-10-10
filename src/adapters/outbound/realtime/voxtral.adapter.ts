@@ -35,6 +35,12 @@ const VOXTRAL_TTS_OUTPUT_RATE = 24_000;
 const VOXTRAL_STT_CONNECT_TIMEOUT_MS = 10_000;
 const VOXTRAL_STT_FINAL_TIMEOUT_MS = 12_000;
 const VOXTRAL_AUDIO_CHUNK_BYTES = 8_192;
+// Server-side turn detection: the chained adapter owns turn-taking, so the
+// conversation flows naturally (speak -> pause -> Hermes replies) instead of
+// push-to-talk. Thresholds mirror a conversational VAD.
+const VOXTRAL_VAD_THRESHOLD_RMS = 0.012;
+const VOXTRAL_VAD_ONSET_MS = 150;
+const VOXTRAL_VAD_END_OF_TURN_MS = 700;
 
 interface VoxtralAdapterConfig {
   apiKey?: string;
@@ -78,6 +84,10 @@ class VoxtralLiveSession implements LiveModelSession {
   private speechStarted = false;
   private ttsAbort: AbortController | null = null;
   private sawAudioThisTurn = false;
+  private lastSpeechAt = 0;
+  private speechOnsetAt = 0;
+  private vadArmed = false;
+  private turnInFlight = false;
 
   constructor(
     private readonly config: VoxtralAdapterConfig,
@@ -177,10 +187,7 @@ class VoxtralLiveSession implements LiveModelSession {
       VOXTRAL_STT_INPUT_RATE,
     );
     this.sawAudioThisTurn = true;
-    if (!this.speechStarted) {
-      this.speechStarted = true;
-      this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
-    }
+    this.vadFrame(frame.data);
     try {
       await this.ensureStt();
     } catch (error) {
@@ -190,14 +197,66 @@ class VoxtralLiveSession implements LiveModelSession {
     this.stt!.send(JSON.stringify({ type: "input_audio.append", audio: frame.data }));
   }
 
+  /**
+   * Energy VAD on the incoming 16 kHz PCM: speech events fire on actual voice
+   * (so the client's barge-in interrupt only triggers when the user really
+   * speaks over the assistant), and a sustained silence after speech ends the
+   * turn automatically — the "speak naturally" conversation flow. Push to
+   * talk keeps working: audio.end flushes whatever utterance is in progress.
+   */
+  private vadFrame(base64Pcm: string): void {
+    const now = Date.now();
+    const level = pcm16RmsBase64(base64Pcm);
+    if (level >= VOXTRAL_VAD_THRESHOLD_RMS) {
+      this.lastSpeechAt = now;
+      if (!this.speechStarted) {
+        if (!this.speechOnsetAt) this.speechOnsetAt = now;
+        if (now - this.speechOnsetAt >= VOXTRAL_VAD_ONSET_MS) {
+          this.speechStarted = true;
+          this.speechOnsetAt = 0;
+          this.vadArmed = true;
+          this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
+        }
+      }
+    } else {
+      this.speechOnsetAt = 0;
+      if (this.vadArmed && now - this.lastSpeechAt >= VOXTRAL_VAD_END_OF_TURN_MS && !this.turnInFlight) {
+        this.vadArmed = false;
+        void this.endTurnAutomatically();
+      }
+    }
+  }
+
+  private async endTurnAutomatically(): Promise<void> {
+    if (this.closing || this.turnInFlight) return;
+    try {
+      await this.commitTurn();
+    } catch {
+      // a failed auto-commit must not kill the session; the user can retry
+    }
+  }
+
   async sendAudioStreamEnd(): Promise<boolean> {
     if (this.closing) return false;
     if (!this.sawAudioThisTurn) return false;
-    this.sawAudioThisTurn = false;
-    if (this.speechStarted) {
-      this.speechStarted = false;
-      this.callbacks.onEvent({ type: "input_speech_stopped", provider: "voxtral" });
+    const dispatched = await this.commitTurn();
+    if (dispatched) this.sawAudioThisTurn = false;
+    return dispatched;
+  }
+
+  private async commitTurn(): Promise<boolean> {
+    if (this.closing || this.turnInFlight) return false;
+    this.turnInFlight = true;
+    try {
+      return await this.commitTurnInner();
+    } finally {
+      this.turnInFlight = false;
     }
+  }
+
+  private async commitTurnInner(): Promise<boolean> {
+    this.speechStarted = false;
+    this.callbacks.onEvent({ type: "input_speech_stopped", provider: "voxtral" });
     const ws = this.stt;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       // No live wire: fall back to whatever partials accumulated.
@@ -348,6 +407,18 @@ class VoxtralLiveSession implements LiveModelSession {
       if (this.ttsAbort === abort) this.ttsAbort = null;
     }
   }
+}
+
+function pcm16RmsBase64(base64Pcm: string): number {
+  const buf = Buffer.from(base64Pcm, "base64");
+  const count = buf.length >> 1;
+  if (!count) return 0;
+  let acc = 0;
+  for (let i = 0; i < count; i++) {
+    const v = buf.readInt16LE(i * 2);
+    acc += v * v;
+  }
+  return Math.sqrt(acc / count) / 32_768;
 }
 
 function voxtralSpokenToolText(call: LiveToolCall, response: Record<string, unknown>): string {
