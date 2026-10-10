@@ -40,6 +40,9 @@ const VOXTRAL_AUDIO_CHUNK_BYTES = 8_192;
 // push-to-talk. Thresholds mirror a conversational VAD.
 const VOXTRAL_VAD_THRESHOLD_RMS = 0.012;
 const VOXTRAL_VAD_ONSET_MS = 150;
+/** Sustained speech required to barge in while the assistant is speaking:
+ * a clap, cough or drop is a burst well under this, real speech is above. */
+const VOXTRAL_BARGE_ONSET_MS = 450;
 const VOXTRAL_VAD_END_OF_TURN_MS = 700;
 // Completeness gate: before committing a VAD-detected end of turn, a cheap
 // model judges whether the utterance is complete. An incomplete one ("je
@@ -223,7 +226,10 @@ class VoxtralLiveSession implements LiveModelSession {
       this.lastSpeechAt = now;
       if (!this.speechStarted) {
         if (!this.speechOnsetAt) this.speechOnsetAt = now;
-        if (now - this.speechOnsetAt >= VOXTRAL_VAD_ONSET_MS) {
+        // While TTS is in flight, require longer sustained speech before
+        // firing the barge-in: parasitic bursts must not cut the reply.
+        const onsetMs = this.ttsAbort ? VOXTRAL_BARGE_ONSET_MS : VOXTRAL_VAD_ONSET_MS;
+        if (now - this.speechOnsetAt >= onsetMs) {
           this.speechStarted = true;
           this.speechOnsetAt = 0;
           this.vadArmed = true;
