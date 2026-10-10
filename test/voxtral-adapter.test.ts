@@ -83,6 +83,11 @@ describe("VoxtralLiveAdapter", () => {
       { id: "call_1", name: "continue_hermes_conversation", args: { message: "hi" } },
       { ok: true, message: "Voici ce que je sais faire." },
     );
+    // sendToolResponse accepts the receipt immediately; the speech runs on the
+    // speak chain and completes asynchronously.
+    for (let i = 0; i < 20 && !events.some((e) => e.type === "response"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     expect(speak).toHaveBeenCalledWith("Voici ce que je sais faire.");
     expect(events.at(-1)).toEqual({ type: "response", status: "completed" });
   });

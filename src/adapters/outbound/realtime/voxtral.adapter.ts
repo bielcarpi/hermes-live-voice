@@ -47,6 +47,7 @@ const VOXTRAL_VAD_END_OF_TURN_MS = 700;
 // Hermes half-spoken.
 const VOXTRAL_GATE_MAX_REJECTS = 2;
 const VOXTRAL_GATE_TIMEOUT_MS = 4_000;
+const VOXTRAL_GATE_HOLD_TIMEOUT_MS = 8_000;
 
 interface VoxtralAdapterConfig {
   apiKey?: string;
@@ -97,6 +98,8 @@ class VoxtralLiveSession implements LiveModelSession {
   private vadArmed = false;
   private turnInFlight = false;
   private gateRejects = 0;
+  private gateHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  private speakChain: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly config: VoxtralAdapterConfig,
@@ -225,6 +228,7 @@ class VoxtralLiveSession implements LiveModelSession {
           this.speechOnsetAt = 0;
           this.vadArmed = true;
           this.gateRejects = 0;
+          this.clearGateHoldTimer();
           this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
         }
       }
@@ -250,7 +254,17 @@ class VoxtralLiveSession implements LiveModelSession {
         }
         if (!complete) {
           this.gateRejects += 1;
-          this.vadArmed = true; // keep listening; the utterance keeps growing
+          // Hold the turn: only NEW speech re-arms the end-of-turn check
+          // (silence frames must not re-trigger the gate 150ms later, which
+          // would burn the rejection budget and commit anyway). Close the
+          // speech segment so the next utterance re-arms the VAD (and a new
+          // input_speech_started fires for the client's barge-in). The
+          // utterance keeps growing on the same realtime stream.
+          this.speechStarted = false;
+          this.vadArmed = false;
+          // Safety net: a held turn commits anyway when nothing follows, so
+          // a wrong NO can never leave the user without an answer.
+          this.armGateHoldTimer();
           return;
         }
       }
@@ -260,6 +274,24 @@ class VoxtralLiveSession implements LiveModelSession {
       await this.commitTurn();
     } catch {
       // a failed auto-commit must not kill the session; the user can retry
+    }
+  }
+
+  private armGateHoldTimer(): void {
+    this.clearGateHoldTimer();
+    this.gateHoldTimer = setTimeout(() => {
+      this.gateHoldTimer = null;
+      if (this.closing || this.turnInFlight) return;
+      if (!this.partial.trim()) return;
+      this.gateRejects = 0;
+      void this.commitTurn();
+    }, VOXTRAL_GATE_HOLD_TIMEOUT_MS);
+  }
+
+  private clearGateHoldTimer(): void {
+    if (this.gateHoldTimer) {
+      clearTimeout(this.gateHoldTimer);
+      this.gateHoldTimer = null;
     }
   }
 
@@ -282,11 +314,13 @@ class VoxtralLiveSession implements LiveModelSession {
             {
               role: "system",
               content:
-                "You judge spoken-voice turn boundaries. The user pauses while " +
-                "speaking. Answer with the single word YES when the utterance is " +
-                "complete and should be processed, NO when it is clearly " +
-                "unfinished and the speaker will continue (trailing conjunction, " +
-                "dangling clause, mid-thought). Answer YES or NO only.",
+                "You judge spoken-voice turn boundaries from a LIVE transcript " +
+                "(its start may be missing punctuation; ignore odd capitalization " +
+                "and commas mid-sentence). Default to YES. Answer NO only when " +
+                "the utterance ENDS mid-phrase — the very last words are a " +
+                "dangling conjunction, article, subordinator or an unfinished " +
+                "clause (e.g. 'je voudrais…', 'avec la…'). A sentence that ends " +
+                "on a normal word is YES. Answer YES or NO only.",
             },
             { role: "user", content: transcript.slice(-500) },
           ],
@@ -316,6 +350,7 @@ class VoxtralLiveSession implements LiveModelSession {
   }
 
   private async commitTurn(): Promise<boolean> {
+    this.clearGateHoldTimer();
     if (this.closing || this.turnInFlight) return false;
     this.turnInFlight = true;
     try {
@@ -387,15 +422,22 @@ class VoxtralLiveSession implements LiveModelSession {
   async sendToolResponse(call: LiveToolCall, response: Record<string, unknown>): Promise<void> {
     if (this.closing) return;
     const spoken = voxtralSpokenToolText(call, response);
-    await this.speak(spoken);
+    // Accept the receipt IMMEDIATELY: the gateway bounds provider IO waits
+    // (10s), and a TTS synthesis must never be what kills the session. The
+    // speech (and its response.completed) flows as events when ready.
+    this.speakChain = this.speakChain.then(() => this.speakTurn(spoken));
+  }
+
+  private async speakTurn(text: string): Promise<void> {
+    if (this.closing) return;
+    await this.speak(text);
     this.callbacks.onEvent({ type: "response", status: "completed" });
   }
 
   async sendTaskNotification(notification: LiveTaskNotification): Promise<void> {
     const { announcement } = requireLiveTaskNotification(notification);
     this.callbacks.onEvent({ type: "response", status: "started" });
-    await this.speak(announcement);
-    this.callbacks.onEvent({ type: "response", status: "completed" });
+    this.speakChain = this.speakChain.then(() => this.speakTurn(announcement));
   }
 
   async cancelResponse(): Promise<boolean> {
@@ -411,6 +453,7 @@ class VoxtralLiveSession implements LiveModelSession {
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    this.clearGateHoldTimer();
     this.ttsAbort?.abort();
     this.ttsAbort = null;
     this.rejectPendingFlush(new Error("session closed"));
