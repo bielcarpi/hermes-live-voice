@@ -99,6 +99,9 @@ class VoxtralLiveSession implements LiveModelSession {
   private lastSpeechAt = 0;
   private speechOnsetAt = 0;
   private vadArmed = false;
+  private vadFrames = 0;
+  private vadMaxRms = 0;
+  private vadLoggedStart = false;
   private turnInFlight = false;
   private gateRejects = 0;
   private gateHoldTimer: ReturnType<typeof setTimeout> | null = null;
@@ -220,8 +223,22 @@ class VoxtralLiveSession implements LiveModelSession {
    * talk keeps working: audio.end flushes whatever utterance is in progress.
    */
   private vadFrame(base64Pcm: string): void {
+    // Diagnostic : première trame + statistiques périodiques (niveau micro tel
+    // que reçu par la gateway) — voir les logs si un client n'obtient pas de réponse.
+    if (!this.vadLoggedStart) {
+      this.vadLoggedStart = true;
+      console.log("[voxtral-debug] audio stream started");
+    }
+    this.vadFrames++;
     const now = Date.now();
     const level = pcm16RmsBase64(base64Pcm);
+    if (level > this.vadMaxRms) this.vadMaxRms = level;
+    if (this.vadFrames % 200 === 0) {
+      console.log(
+        `[voxtral-debug] frames=${this.vadFrames} maxRms=${this.vadMaxRms.toFixed(4)} lastRms=${level.toFixed(4)}`,
+      );
+      this.vadMaxRms = 0;
+    }
     if (level >= VOXTRAL_VAD_THRESHOLD_RMS) {
       this.lastSpeechAt = now;
       if (!this.speechStarted) {
@@ -459,6 +476,7 @@ class VoxtralLiveSession implements LiveModelSession {
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    console.log(`[voxtral-debug] session closed frames=${this.vadFrames}`);
     this.clearGateHoldTimer();
     this.ttsAbort?.abort();
     this.ttsAbort = null;
