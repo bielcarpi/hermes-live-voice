@@ -41,6 +41,12 @@ const VOXTRAL_AUDIO_CHUNK_BYTES = 8_192;
 const VOXTRAL_VAD_THRESHOLD_RMS = 0.012;
 const VOXTRAL_VAD_ONSET_MS = 150;
 const VOXTRAL_VAD_END_OF_TURN_MS = 700;
+// Completeness gate: before committing a VAD-detected end of turn, a cheap
+// model judges whether the utterance is complete. An incomplete one ("je
+// voudrais…") re-arms the VAD and keeps listening instead of being sent to
+// Hermes half-spoken.
+const VOXTRAL_GATE_MAX_REJECTS = 2;
+const VOXTRAL_GATE_TIMEOUT_MS = 4_000;
 
 interface VoxtralAdapterConfig {
   apiKey?: string;
@@ -49,6 +55,8 @@ interface VoxtralAdapterConfig {
   ttsModel: string;
   voice: string;
   language?: string;
+  gateEnabled?: boolean;
+  gateModel?: string;
 }
 
 export class VoxtralLiveAdapter implements LiveModelAdapter {
@@ -88,6 +96,7 @@ class VoxtralLiveSession implements LiveModelSession {
   private speechOnsetAt = 0;
   private vadArmed = false;
   private turnInFlight = false;
+  private gateRejects = 0;
 
   constructor(
     private readonly config: VoxtralAdapterConfig,
@@ -215,6 +224,7 @@ class VoxtralLiveSession implements LiveModelSession {
           this.speechStarted = true;
           this.speechOnsetAt = 0;
           this.vadArmed = true;
+          this.gateRejects = 0;
           this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
         }
       }
@@ -229,10 +239,71 @@ class VoxtralLiveSession implements LiveModelSession {
 
   private async endTurnAutomatically(): Promise<void> {
     if (this.closing || this.turnInFlight) return;
+    if (this.config.gateEnabled) {
+      const transcript = this.partial.trim();
+      if (transcript && this.gateRejects < VOXTRAL_GATE_MAX_REJECTS) {
+        let complete = true;
+        try {
+          complete = await this.gateJudge(transcript);
+        } catch {
+          complete = true; // a gate failure must never block the conversation
+        }
+        if (!complete) {
+          this.gateRejects += 1;
+          this.vadArmed = true; // keep listening; the utterance keeps growing
+          return;
+        }
+      }
+    }
+    this.gateRejects = 0;
     try {
       await this.commitTurn();
     } catch {
       // a failed auto-commit must not kill the session; the user can retry
+    }
+  }
+
+  /** Cheap completeness judge: "YES"/"NO" from a small chat model. */
+  private async gateJudge(transcript: string): Promise<boolean> {
+    const base = this.config.baseUrl.replace(/\/$/u, "");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VOXTRAL_GATE_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.config.gateModel || "mistral-small-latest",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You judge spoken-voice turn boundaries. The user pauses while " +
+                "speaking. Answer with the single word YES when the utterance is " +
+                "complete and should be processed, NO when it is clearly " +
+                "unfinished and the speaker will continue (trailing conjunction, " +
+                "dangling clause, mid-thought). Answer YES or NO only.",
+            },
+            { role: "user", content: transcript.slice(-500) },
+          ],
+          max_tokens: 4,
+          temperature: 0,
+        }),
+      });
+      if (!response.ok) return true;
+      const payload = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const answer = String(payload.choices?.[0]?.message?.content ?? "yes")
+        .trim()
+        .toLowerCase();
+      return !answer.startsWith("no");
+    } finally {
+      clearTimeout(timer);
     }
   }
 

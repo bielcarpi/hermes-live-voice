@@ -129,6 +129,8 @@ const EnvSchema = z.object({
   VOXTRAL_TTS_MODEL: z.string().trim().min(1).max(128).default("voxtral-mini-tts-latest"),
   VOXTRAL_TTS_VOICE: z.string().trim().min(1).max(128).default("fr_marie_happy"),
   VOXTRAL_TTS_LANGUAGE: z.string().trim().min(1).max(16).optional(),
+  VOXTRAL_TURN_GATE: z.string().optional(),
+  VOXTRAL_GATE_MODEL: z.string().trim().min(1).max(128).default("mistral-small-latest"),
 });
 
 export type RealtimeProvider = "local" | "gemini" | "openai" | "voxtral" | "mock";
@@ -205,6 +207,8 @@ export interface AppConfig {
     ttsModel: string;
     voice: string;
     language?: string;
+    gateEnabled?: boolean;
+    gateModel?: string;
   };
 }
 
@@ -292,6 +296,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ttsModel: parsed.VOXTRAL_TTS_MODEL,
       voice: parsed.VOXTRAL_TTS_VOICE,
       ...(parsed.VOXTRAL_TTS_LANGUAGE ? { language: parsed.VOXTRAL_TTS_LANGUAGE } : {}),
+      ...(parseBool(parsed.VOXTRAL_TURN_GATE) ? { gateEnabled: true } : {}),
+      gateModel: parsed.VOXTRAL_GATE_MODEL,
     },
   };
 }
