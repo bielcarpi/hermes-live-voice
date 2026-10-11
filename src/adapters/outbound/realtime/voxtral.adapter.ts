@@ -505,6 +505,13 @@ class VoxtralLiveSession implements LiveModelSession {
       try {
         text = await this.batchTranscribe(Buffer.concat(this.turnAudio));
         console.log(`[voxtral-debug] batch fallback transcript=${JSON.stringify(text.slice(0, 80))}`);
+        // Garde anti-hallucination : le batch peut lire du bruit (eau qui bout)
+        // comme une pseudo-phrase. L'energie ne peut pas distinguer les bulles
+        // d'une voix au meme niveau - on laisse le modele juger la plausibilite.
+        if (text && !(await this.plausibleSpeech(text))) {
+          console.log(`[voxtral-debug] batch transcript rejected (noise artifact): ${JSON.stringify(text.slice(0, 60))}`);
+          text = "";
+        }
       } catch (error) {
         console.log(`[voxtral-debug] batch fallback failed: ${errorToMessage(error)}`);
       }
@@ -512,6 +519,58 @@ class VoxtralLiveSession implements LiveModelSession {
     this.turnAudio = [];
     if (!text) return this.dispatchConversationTurn("");
     return this.dispatchConversationTurn(this.finalizeUserEntry(text));
+  }
+
+  /**
+   * Le transcript sort-il d'une vraie parole ? Le batch hallucine parfois sur
+   * du bruit de fond (eau qui bout -> pseudo-phrases). Rejet = pas de reponse.
+   */
+  private async plausibleSpeech(transcript: string): Promise<boolean> {
+    const base = this.config.baseUrl.replace(/\/$/u, "");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VOXTRAL_GATE_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.config.gateModel || "mistral-small-latest",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You judge whether a candidate transcript was real HUMAN SPEECH " +
+                "or a transcription artifact from background NOISE (boiling " +
+                "water, road rumble, wind). The speaker SPEAKS FRENCH ONLY: a " +
+                "transcript that is clearly English, Spanish or another " +
+                "non-French language is an artifact and you must answer NO, " +
+                "even if it looks like a coherent sentence. Artifacts also " +
+                "look like garbled word salads lacking syntax. Real speech is " +
+                "a coherent FRENCH phrase. Answer YES or NO only.",
+            },
+            { role: "user", content: transcript.slice(0, 500) },
+          ],
+          max_tokens: 4,
+          temperature: 0,
+        }),
+      });
+      if (!response.ok) return true;
+      const payload = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const answer = String(payload.choices?.[0]?.message?.content ?? "yes")
+        .trim()
+        .toLowerCase();
+      return !answer.startsWith("no");
+    } catch {
+      return true;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async batchTranscribe(pcm: Buffer): Promise<string> {
