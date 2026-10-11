@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import WebSocket from "ws";
 import { normalizePcm16Audio } from "../../../domain/audio/pcm.js";
 import {
@@ -548,10 +549,11 @@ class VoxtralLiveSession implements LiveModelSession {
     if (this.closing) return;
     this.closing = true;
     console.log(`[voxtral-debug] session closed frames=${this.vadFrames}`);
+    console.log(`[voxtral-debug] dump check vadFrames=${this.vadFrames} partialActivityAt=${this.partialActivityAt} ring=${this.frameRing.length}`);
     if (this.vadFrames > 50 && this.partialActivityAt === 0 && this.frameRing.length > 0) {
       try {
         const dumpPath = `/tmp/live-capture-${Date.now()}.pcm`;
-        require("node:fs").writeFileSync(dumpPath, Buffer.concat(this.frameRing));
+        writeFileSync(dumpPath, Buffer.concat(this.frameRing));
         console.log(`[voxtral-debug] no-STT session dumped to ${dumpPath} (${this.frameRing.length} frames)`);
       } catch {
         // dump best-effort

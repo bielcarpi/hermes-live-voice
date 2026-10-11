@@ -95,7 +95,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node -e \"require('fs').chmodSync('dist/cli.js',0o755)\"",
     "dev": "tsx src/cli.ts dev",
     "start": "node dist/cli.js serve",
     "check": "tsx src/cli.ts check",
