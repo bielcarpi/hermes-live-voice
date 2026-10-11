@@ -46,6 +46,13 @@ const VOXTRAL_VAD_THRESHOLD_RMS = 0.012;
  * speech. Keeps working in noisy environments (the floor rises with the noise).
  */
 const VOXTRAL_VAD_FLOOR_FACTOR = 2.5;
+/** Plancher minimal du bruit : sans borne, l'EMA décroît exponentiellement
+ * pendant les silences totaux (micro AEC ≈ 0.0001) jusqu'à ce que TOUT
+ * devienne « parole » — le VAD s'arme au premier bruit et ne rend jamais la
+ * main : plus aucun tour ne se valide. */
+const VOXTRAL_VAD_FLOOR_MIN_RMS = 0.001;
+/** Fenêtre pendant laquelle une reconnaissance STT récente compte comme parole. */
+const VOXTRAL_STT_SPEECH_WINDOW_MS = 800;
 const VOXTRAL_VAD_ONSET_MS = 150;
 /** Sustained speech required to barge in while the assistant is speaking:
  * a clap, cough or drop is a burst well under this, real speech is above. */
@@ -107,6 +114,7 @@ class VoxtralLiveSession implements LiveModelSession {
   private speechOnsetAt = 0;
   private vadArmed = false;
   private vadFloor = 0.002;
+  private partialActivityAt = 0;
   private vadFrames = 0;
   private vadMaxRms = 0;
   private vadLoggedStart = false;
@@ -176,6 +184,7 @@ class VoxtralLiveSession implements LiveModelSession {
     if (type === "transcription.text.delta") {
       const fragment = String(event.text ?? "");
       this.partial += fragment;
+      this.partialActivityAt = Date.now();
       this.callbacks.onEvent({ type: "text", text: fragment, speaker: "user", final: false });
     } else if (type === "transcription.done") {
       this.resolvePendingFlush(String(event.text ?? "").trim() || this.partial.trim());
@@ -280,8 +289,25 @@ class VoxtralLiveSession implements LiveModelSession {
         }
       }
     } else {
-      // Silence: track the noise floor (EMA) and end the turn after a lull.
-      this.vadFloor = 0.97 * this.vadFloor + 0.03 * level;
+      // STT-driven speech: a distant voice in ambient noise (phone on a car
+      // seat, road rumble) can sit AT the noise floor by energy — invisible to
+      // the energy VAD — while Voxtral still recognizes the words. If the STT
+      // produced text recently, it IS speech: arm the VAD. Skipped while TTS
+      // is in flight so the assistant's own echo cannot re-arm the turn.
+      if (!this.ttsAbort && now - this.partialActivityAt < VOXTRAL_STT_SPEECH_WINDOW_MS) {
+        this.lastSpeechAt = now;
+        if (!this.speechStarted) {
+          this.speechStarted = true;
+          this.speechOnsetAt = 0;
+          this.vadArmed = true;
+          this.gateRejects = 0;
+          this.clearGateHoldTimer();
+          this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
+        }
+        return;
+      }
+      // Silence: track the noise floor (EMA, bornée basse) and end the turn after a lull.
+      this.vadFloor = Math.max(VOXTRAL_VAD_FLOOR_MIN_RMS, 0.97 * this.vadFloor + 0.03 * level);
       this.speechOnsetAt = 0;
       if (this.vadArmed && now - this.lastSpeechAt >= VOXTRAL_VAD_END_OF_TURN_MS && !this.turnInFlight) {
         this.vadArmed = false;
