@@ -54,6 +54,8 @@ const VOXTRAL_VAD_FLOOR_FACTOR = 2.5;
  * devienne « parole » — le VAD s'arme au premier bruit et ne rend jamais la
  * main : plus aucun tour ne se valide. */
 const VOXTRAL_VAD_FLOOR_MIN_RMS = 0.001;
+/** Plafond du plancher : au-dela, meme un bruit de route continu est de la parole. */
+const VOXTRAL_VAD_FLOOR_MAX_RMS = 0.03;
 /** Fenêtre pendant laquelle une reconnaissance STT récente compte comme parole. */
 const VOXTRAL_STT_SPEECH_WINDOW_MS = 800;
 /** Calme soutenu nécessaire avant de remettre le compteur d'onset à zéro. */
@@ -303,6 +305,13 @@ class VoxtralLiveSession implements LiveModelSession {
     if (speechy) {
       this.lastSpeechAt = now;
       this.silenceSinceAt = 0;
+      if (level < VOXTRAL_VAD_THRESHOLD_RMS) {
+        // Zone ambiguë : probable parole, mais un bruit ambiant continu
+        // (route ≈ 0.010) vit aussi ici — s'il ne tire pas le plancher vers le
+        // haut, le VAD ne voit plus jamais de silence et le tour ne finit
+        // jamais (impasse constatée en voiture : plancher gelé à 0.002).
+        this.vadFloor = Math.min(VOXTRAL_VAD_FLOOR_MAX_RMS, 0.995 * this.vadFloor + 0.005 * level);
+      }
     } else {
       // STT-driven speech: a distant voice in ambient noise (phone on a car
       // seat, road rumble) can sit AT the noise floor by energy — invisible to
