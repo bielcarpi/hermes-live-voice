@@ -39,6 +39,13 @@ const VOXTRAL_AUDIO_CHUNK_BYTES = 8_192;
 // conversation flows naturally (speak -> pause -> Hermes replies) instead of
 // push-to-talk. Thresholds mirror a conversational VAD.
 const VOXTRAL_VAD_THRESHOLD_RMS = 0.012;
+/**
+ * Adaptive floor: quiet phone mics deliver voice around RMS 0.01-0.02 — below
+ * the fixed threshold, so the VAD never fired. The floor follows the ambient
+ * noise (EMA over silent frames) and anything above floor x factor counts as
+ * speech. Keeps working in noisy environments (the floor rises with the noise).
+ */
+const VOXTRAL_VAD_FLOOR_FACTOR = 2.5;
 const VOXTRAL_VAD_ONSET_MS = 150;
 /** Sustained speech required to barge in while the assistant is speaking:
  * a clap, cough or drop is a burst well under this, real speech is above. */
@@ -99,6 +106,7 @@ class VoxtralLiveSession implements LiveModelSession {
   private lastSpeechAt = 0;
   private speechOnsetAt = 0;
   private vadArmed = false;
+  private vadFloor = 0.002;
   private vadFrames = 0;
   private vadMaxRms = 0;
   private vadLoggedStart = false;
@@ -255,7 +263,25 @@ class VoxtralLiveSession implements LiveModelSession {
           this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
         }
       }
+    } else if (level >= this.vadFloor * VOXTRAL_VAD_FLOOR_FACTOR) {
+      // Above the adaptive floor but below the absolute maximum: treat as
+      // speech (phone mics can deliver very quiet voice, e.g. RMS 0.01-0.02).
+      this.lastSpeechAt = now;
+      if (!this.speechStarted) {
+        if (!this.speechOnsetAt) this.speechOnsetAt = now;
+        const onsetMs = this.ttsAbort ? VOXTRAL_BARGE_ONSET_MS : VOXTRAL_VAD_ONSET_MS;
+        if (now - this.speechOnsetAt >= onsetMs) {
+          this.speechStarted = true;
+          this.speechOnsetAt = 0;
+          this.vadArmed = true;
+          this.gateRejects = 0;
+          this.clearGateHoldTimer();
+          this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
+        }
+      }
     } else {
+      // Silence: track the noise floor (EMA) and end the turn after a lull.
+      this.vadFloor = 0.97 * this.vadFloor + 0.03 * level;
       this.speechOnsetAt = 0;
       if (this.vadArmed && now - this.lastSpeechAt >= VOXTRAL_VAD_END_OF_TURN_MS && !this.turnInFlight) {
         this.vadArmed = false;
