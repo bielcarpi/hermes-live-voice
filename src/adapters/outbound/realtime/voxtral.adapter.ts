@@ -32,6 +32,8 @@ import { errorToMessage } from "../../../domain/error-message.js";
 
 const VOXTRAL_STT_INPUT_RATE = 16_000;
 const VOXTRAL_TTS_OUTPUT_RATE = 24_000;
+/** Délai avant de retenter une connexion STT échouée (la session reste vivante). */
+const VOXTRAL_STT_RETRY_MS = 3_000;
 const VOXTRAL_STT_CONNECT_TIMEOUT_MS = 10_000;
 const VOXTRAL_STT_FINAL_TIMEOUT_MS = 12_000;
 const VOXTRAL_AUDIO_CHUNK_BYTES = 8_192;
@@ -106,6 +108,7 @@ class VoxtralLiveSession implements LiveModelSession {
   private stt: WebSocket | null = null;
   private sttReady = false;
   private sttFailure = "";
+  private sttFailedAt = 0;
   private sttReadyWaiters: Array<() => void> = [];
   private partial = "";
   private pendingFlush: SttPendingFlush | null = null;
@@ -137,6 +140,16 @@ class VoxtralLiveSession implements LiveModelSession {
     if (this.stt && (this.stt.readyState === WebSocket.OPEN || this.stt.readyState === WebSocket.CONNECTING)) {
       return this.waitSttReady();
     }
+    // Un échec de connexion STT rend la session sourde (le VAD s'arme mais
+    // rien n'est transcrit). On réessaie après un délai au lieu d'échouer
+    // définitivement.
+    if (this.sttFailure && Date.now() - this.sttFailedAt < VOXTRAL_STT_RETRY_MS) {
+      return Promise.reject(new Error(this.sttFailure));
+    }
+    if (this.sttFailure) {
+      console.log(`[voxtral-debug] STT retry after failure: ${this.sttFailure}`);
+      this.sttFailure = "";
+    }
     if (this.closing || this.sttFailure) {
       return Promise.reject(new Error(this.sttFailure || "session closed"));
     }
@@ -153,19 +166,27 @@ class VoxtralLiveSession implements LiveModelSession {
       this.handleSttMessage(String(raw));
     });
     ws.on("open", () => {
+      console.log("[voxtral-debug] STT connected");
       this.sttReady = true;
       this.sttReadyWaiters.forEach((fn) => fn());
       this.sttReadyWaiters = [];
     });
     ws.on("error", (error: unknown) => {
       this.sttFailure = `Voxtral realtime connection failed: ${errorToMessage(error)}`;
+      this.sttFailedAt = Date.now();
+      console.log(`[voxtral-debug] STT FAILED: ${this.sttFailure}`);
       this.sttReadyWaiters.forEach((fn) => fn());
       this.sttReadyWaiters = [];
       this.rejectPendingFlush(new Error(this.sttFailure));
     });
     ws.on("close", () => {
+      console.log("[voxtral-debug] STT closed");
       this.rejectPendingFlush(new Error("Voxtral realtime connection closed."));
-      if (this.stt === ws) this.stt = null;
+      if (this.stt === ws) {
+        this.stt = null;
+        this.sttReady = false;
+        // Permet une reconnexion au prochain frame (ensureStt recrée).
+      }
     });
     return this.waitSttReady();
   }
@@ -200,6 +221,8 @@ class VoxtralLiveSession implements LiveModelSession {
     } else if (type === "error") {
       const err = (event.error ?? {}) as Record<string, unknown>;
       this.sttFailure = `Voxtral realtime error: ${String(err.message ?? err.code ?? "unknown")}`;
+      this.sttFailedAt = Date.now();
+      console.log(`[voxtral-debug] STT ERROR: ${this.sttFailure}`);
       this.rejectPendingFlush(new Error(this.sttFailure));
     }
     // session.created / session.updated / transcription.language: ignored.
