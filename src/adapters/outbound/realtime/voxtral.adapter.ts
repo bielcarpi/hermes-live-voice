@@ -110,6 +110,9 @@ class VoxtralLiveSession implements LiveModelSession {
   private sttReady = false;
   private sttFailure = "";
   private sttFailedAt = 0;
+  // Repli batch : audio du tour courant (le realtime peut rester muet sur de
+  // l'audio pourtant valide - la transcription batch fonctionne, elle).
+  private turnAudio: Buffer[] = [];
   // Diagnostic : buffer circulaire des dernieres trames recues (dump si aucun STT)
   private frameRing: Buffer[] = [];
   private sttReadyWaiters: Array<() => void> = [];
@@ -257,6 +260,8 @@ class VoxtralLiveSession implements LiveModelSession {
       VOXTRAL_STT_INPUT_RATE,
     );
     this.sawAudioThisTurn = true;
+    this.turnAudio.push(Buffer.from(frame.data, "base64"));
+    if (this.turnAudio.length > 800) this.turnAudio.splice(0, this.turnAudio.length - 800);
     this.frameRing.push(Buffer.from(frame.data, "base64"));
     if (this.frameRing.length > 400) this.frameRing.splice(0, this.frameRing.length - 400);
     this.vadFrame(frame.data);
@@ -461,7 +466,7 @@ class VoxtralLiveSession implements LiveModelSession {
     const ws = this.stt;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       // No live wire: fall back to whatever partials accumulated.
-      return this.dispatchConversationTurn(this.partial.trim());
+      return await this.dispatchWithBatchFallback(this.partial.trim());
     }
     ws.send(JSON.stringify({ type: "input_audio.flush" }));
     let transcript: string;
@@ -474,9 +479,61 @@ class VoxtralLiveSession implements LiveModelSession {
         this.pendingFlush = { resolve, reject, timer };
       });
     } catch {
-      return this.dispatchConversationTurn(this.finalizeUserEntry(this.partial.trim()));
+      return await this.dispatchWithBatchFallback(this.partial.trim());
     }
-    return this.dispatchConversationTurn(this.finalizeUserEntry(transcript.trim()));
+    return await this.dispatchWithBatchFallback(transcript.trim());
+  }
+
+  /**
+   * Repli batch : le realtime peut rester muet sur de l'audio pourtant valide
+   * (constate sur audio micro revalide par transcription batch et Vosk). Si le
+   * transcript du tour est vide, on transcrit l'audio du tour via l'API batch
+   * avant d'abandonner le tour.
+   */
+  private async dispatchWithBatchFallback(transcript: string): Promise<boolean> {
+    let text = transcript.trim();
+    if (!text && this.turnAudio.length >= 10) {
+      try {
+        text = await this.batchTranscribe(Buffer.concat(this.turnAudio));
+        console.log(`[voxtral-debug] batch fallback transcript=${JSON.stringify(text.slice(0, 80))}`);
+      } catch (error) {
+        console.log(`[voxtral-debug] batch fallback failed: ${errorToMessage(error)}`);
+      }
+    }
+    this.turnAudio = [];
+    if (!text) return this.dispatchConversationTurn("");
+    return this.dispatchConversationTurn(this.finalizeUserEntry(text));
+  }
+
+  private async batchTranscribe(pcm: Buffer): Promise<string> {
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0, "ascii");
+    header.writeUInt32LE(36 + pcm.length, 4);
+    header.write("WAVE", 8, "ascii");
+    header.write("fmt ", 12, "ascii");
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(VOXTRAL_STT_INPUT_RATE, 24);
+    header.writeUInt32LE(VOXTRAL_STT_INPUT_RATE * 2, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36, "ascii");
+    header.writeUInt32LE(pcm.length, 40);
+    const base = this.config.baseUrl.replace(/\/$/u, "");
+    const form = new FormData();
+    form.append("file", new Blob([Buffer.concat([header, pcm])], { type: "audio/wav" }), "turn.wav");
+    form.append("model", "voxtral-mini-latest");
+    form.append("language", "fr");
+    const response = await fetch(`${base}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.config.apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`batch transcribe failed with HTTP ${response.status}`);
+    const payload = (await response.json()) as { text?: string };
+    return (payload.text ?? "").trim();
   }
 
   /**
