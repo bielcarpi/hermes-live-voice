@@ -109,6 +109,8 @@ class VoxtralLiveSession implements LiveModelSession {
   private sttReady = false;
   private sttFailure = "";
   private sttFailedAt = 0;
+  // Diagnostic : buffer circulaire des dernieres trames recues (dump si aucun STT)
+  private frameRing: Buffer[] = [];
   private sttReadyWaiters: Array<() => void> = [];
   private partial = "";
   private pendingFlush: SttPendingFlush | null = null;
@@ -254,6 +256,8 @@ class VoxtralLiveSession implements LiveModelSession {
       VOXTRAL_STT_INPUT_RATE,
     );
     this.sawAudioThisTurn = true;
+    this.frameRing.push(Buffer.from(frame.data, "base64"));
+    if (this.frameRing.length > 400) this.frameRing.splice(0, this.frameRing.length - 400);
     this.vadFrame(frame.data);
     try {
       await this.ensureStt();
@@ -544,6 +548,16 @@ class VoxtralLiveSession implements LiveModelSession {
     if (this.closing) return;
     this.closing = true;
     console.log(`[voxtral-debug] session closed frames=${this.vadFrames}`);
+    if (this.vadFrames > 50 && this.partialActivityAt === 0 && this.frameRing.length > 0) {
+      try {
+        const dumpPath = `/tmp/live-capture-${Date.now()}.pcm`;
+        require("node:fs").writeFileSync(dumpPath, Buffer.concat(this.frameRing));
+        console.log(`[voxtral-debug] no-STT session dumped to ${dumpPath} (${this.frameRing.length} frames)`);
+      } catch {
+        // dump best-effort
+      }
+    }
+    this.frameRing = [];
     this.clearGateHoldTimer();
     this.ttsAbort?.abort();
     this.ttsAbort = null;
