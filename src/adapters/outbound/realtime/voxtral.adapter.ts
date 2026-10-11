@@ -53,6 +53,8 @@ const VOXTRAL_VAD_FLOOR_FACTOR = 2.5;
 const VOXTRAL_VAD_FLOOR_MIN_RMS = 0.001;
 /** Fenêtre pendant laquelle une reconnaissance STT récente compte comme parole. */
 const VOXTRAL_STT_SPEECH_WINDOW_MS = 800;
+/** Calme soutenu nécessaire avant de remettre le compteur d'onset à zéro. */
+const VOXTRAL_ONSET_QUIET_RESET_MS = 300;
 const VOXTRAL_VAD_ONSET_MS = 150;
 /** Sustained speech required to barge in while the assistant is speaking:
  * a clap, cough or drop is a burst well under this, real speech is above. */
@@ -112,9 +114,11 @@ class VoxtralLiveSession implements LiveModelSession {
   private sawAudioThisTurn = false;
   private lastSpeechAt = 0;
   private speechOnsetAt = 0;
+  private silenceSinceAt = 0;
   private vadArmed = false;
   private vadFloor = 0.002;
   private partialActivityAt = 0;
+  private lastSttDeltaLog = 0;
   private vadFrames = 0;
   private vadMaxRms = 0;
   private vadLoggedStart = false;
@@ -185,6 +189,11 @@ class VoxtralLiveSession implements LiveModelSession {
       const fragment = String(event.text ?? "");
       this.partial += fragment;
       this.partialActivityAt = Date.now();
+      // Diagnostic (throttlé) : Voxtral entend-il le client ?
+      if (Date.now() - this.lastSttDeltaLog > 2_000) {
+        this.lastSttDeltaLog = Date.now();
+        console.log(`[voxtral-debug] stt delta ${JSON.stringify(this.partial.slice(0, 60))}`);
+      }
       this.callbacks.onEvent({ type: "text", text: fragment, speaker: "user", final: false });
     } else if (type === "transcription.done") {
       this.resolvePendingFlush(String(event.text ?? "").trim() || this.partial.trim());
@@ -252,66 +261,49 @@ class VoxtralLiveSession implements LiveModelSession {
     if (level > this.vadMaxRms) this.vadMaxRms = level;
     if (this.vadFrames % 200 === 0) {
       console.log(
-        `[voxtral-debug] frames=${this.vadFrames} maxRms=${this.vadMaxRms.toFixed(4)} lastRms=${level.toFixed(4)}`,
+        `[voxtral-debug] frames=${this.vadFrames} maxRms=${this.vadMaxRms.toFixed(4)} lastRms=${level.toFixed(4)} floor=${this.vadFloor.toFixed(4)}`,
       );
       this.vadMaxRms = 0;
     }
-    if (level >= VOXTRAL_VAD_THRESHOLD_RMS) {
+    const onsetMs = this.ttsAbort ? VOXTRAL_BARGE_ONSET_MS : VOXTRAL_VAD_ONSET_MS;
+    const speechy = level >= VOXTRAL_VAD_THRESHOLD_RMS || level >= this.vadFloor * VOXTRAL_VAD_FLOOR_FACTOR;
+    if (speechy) {
       this.lastSpeechAt = now;
-      if (!this.speechStarted) {
-        if (!this.speechOnsetAt) this.speechOnsetAt = now;
-        // While TTS is in flight, require longer sustained speech before
-        // firing the barge-in: parasitic bursts must not cut the reply.
-        const onsetMs = this.ttsAbort ? VOXTRAL_BARGE_ONSET_MS : VOXTRAL_VAD_ONSET_MS;
-        if (now - this.speechOnsetAt >= onsetMs) {
-          this.speechStarted = true;
-          this.speechOnsetAt = 0;
-          this.vadArmed = true;
-          this.gateRejects = 0;
-          this.clearGateHoldTimer();
-          this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
-        }
-      }
-    } else if (level >= this.vadFloor * VOXTRAL_VAD_FLOOR_FACTOR) {
-      // Above the adaptive floor but below the absolute maximum: treat as
-      // speech (phone mics can deliver very quiet voice, e.g. RMS 0.01-0.02).
-      this.lastSpeechAt = now;
-      if (!this.speechStarted) {
-        if (!this.speechOnsetAt) this.speechOnsetAt = now;
-        const onsetMs = this.ttsAbort ? VOXTRAL_BARGE_ONSET_MS : VOXTRAL_VAD_ONSET_MS;
-        if (now - this.speechOnsetAt >= onsetMs) {
-          this.speechStarted = true;
-          this.speechOnsetAt = 0;
-          this.vadArmed = true;
-          this.gateRejects = 0;
-          this.clearGateHoldTimer();
-          this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
-        }
-      }
+      this.silenceSinceAt = 0;
     } else {
       // STT-driven speech: a distant voice in ambient noise (phone on a car
       // seat, road rumble) can sit AT the noise floor by energy — invisible to
       // the energy VAD — while Voxtral still recognizes the words. If the STT
-      // produced text recently, it IS speech: arm the VAD. Skipped while TTS
-      // is in flight so the assistant's own echo cannot re-arm the turn.
+      // produced text recently, it IS speech. Skipped while TTS is in flight
+      // so the assistant's own echo cannot re-arm the turn.
       if (!this.ttsAbort && now - this.partialActivityAt < VOXTRAL_STT_SPEECH_WINDOW_MS) {
         this.lastSpeechAt = now;
-        if (!this.speechStarted) {
-          this.speechStarted = true;
-          this.speechOnsetAt = 0;
-          this.vadArmed = true;
-          this.gateRejects = 0;
-          this.clearGateHoldTimer();
-          this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
+        this.silenceSinceAt = 0;
+      } else {
+        if (!this.silenceSinceAt) this.silenceSinceAt = now;
+        // Onset tolérant : la vraie parole fluctue — une frame calme isolée ne
+        // remet PAS le compteur d'onset à zéro ; seul un calme soutenu (300 ms).
+        if (now - this.silenceSinceAt >= VOXTRAL_ONSET_QUIET_RESET_MS) this.speechOnsetAt = 0;
+        // Silence: track the noise floor (EMA, bornée basse) and end the turn after a lull.
+        this.vadFloor = Math.max(VOXTRAL_VAD_FLOOR_MIN_RMS, 0.97 * this.vadFloor + 0.03 * level);
+        if (this.vadArmed && now - this.lastSpeechAt >= VOXTRAL_VAD_END_OF_TURN_MS && !this.turnInFlight) {
+          this.vadArmed = false;
+          console.log(`[voxtral-debug] end of turn (partial=${JSON.stringify(this.partial.slice(0, 80))})`);
+          void this.endTurnAutomatically();
         }
         return;
       }
-      // Silence: track the noise floor (EMA, bornée basse) and end the turn after a lull.
-      this.vadFloor = Math.max(VOXTRAL_VAD_FLOOR_MIN_RMS, 0.97 * this.vadFloor + 0.03 * level);
-      this.speechOnsetAt = 0;
-      if (this.vadArmed && now - this.lastSpeechAt >= VOXTRAL_VAD_END_OF_TURN_MS && !this.turnInFlight) {
-        this.vadArmed = false;
-        void this.endTurnAutomatically();
+    }
+    if (!this.speechStarted) {
+      if (!this.speechOnsetAt) this.speechOnsetAt = now;
+      if (now - this.speechOnsetAt >= onsetMs) {
+        this.speechStarted = true;
+        this.speechOnsetAt = 0;
+        this.vadArmed = true;
+        this.gateRejects = 0;
+        this.clearGateHoldTimer();
+        console.log(`[voxtral-debug] VAD armed level=${level.toFixed(4)} floor=${this.vadFloor.toFixed(4)}`);
+        this.callbacks.onEvent({ type: "input_speech_started", provider: "voxtral" });
       }
     }
   }
