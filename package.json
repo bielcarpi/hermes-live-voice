@@ -133,7 +133,7 @@
   "devDependencies": {
     "@types/node": "^22.20.3",
     "@types/ws": "^8.18.1",
-    "happy-dom": "20.14.6",
+    "happy-dom": "21.0.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "tsx": "^4.23.11",
