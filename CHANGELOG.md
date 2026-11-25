@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.3.0 - 2026-11-25
+
+Live Voice now lives inside Hermes Dashboard's own Chat. Upgrading from 1.2.0:
+
+- Voice is a bar in Hermes Chat, built from the supported `chat:top` slot and host components. The separate chat page, transcript, and composer are gone. Select a conversation in Hermes's list and press **Start voice**; switching chats detaches voice without stopping background work.
+- OpenAI defaults to continuous voice with server VAD. Setup keeps explicit provider settings, detects hosted keys, and installs local models only when you choose `--provider local`.
+- Completion notices arrive while the microphone is open, running tasks stay visible behind queued ones, and full retained results load after reconnect.
+- Local voice matches task names by whole words and tells current work apart from the latest queued task.
+- Microphone capture is always released after a failed final turn. Docker assets are readable by the non-root user from private checkouts.
+- Require Zod 4.6.6+ for Zod 4 consumers (GHSA-mrhx-c7xc-m3w5) and update the Happy DOM test dependency to 21.0.4.
+- Rewrite the README around the everyday workflow.
+
+Requires Hermes Agent 0.20.0+. Run `npm install --global hermes-live-voice`, then `hermes-live upgrade`, and restart Hermes Dashboard.
+
+Validation: 771 tests, packed installation on Node 20, Linux and Windows CI, Docker, and Hermes v0.20.0 and v0.21.6 compatibility pass. The Dashboard flow was checked in the real Hermes v0.21.6 UI with a fixture gateway and synthetic microphone ([UI receipt](https://github.com/bielcarpi/hermes-live-voice/blob/v1.3.0-rc.2/docs/provider-receipts/2026-10-09-v1.3.0-rc.2.md)). Hosted provider audio on physical devices was not re-tested for this release; please [report](https://github.com/bielcarpi/hermes-live-voice/issues/new?template=bug_report.md) anything that sounds wrong.
+
 ## 1.3.0-rc.2 - 2026-10-09
 
 - Put Live Voice inside Hermes Dashboard Chat using the supported `chat:top` slot and host `Card`, `Button`, and `Badge` components. Remove the separate chat page, transcript, composer, saved-chat picker, stylesheet, and redundant conversation-list relay.
