@@ -11,7 +11,7 @@ Live Voice now lives inside Hermes Dashboard's own Chat. Upgrading from 1.2.0:
 - Completion notices arrive while the microphone is open, running tasks stay visible behind queued ones, and full retained results load after reconnect.
 - Local voice matches task names by whole words and tells current work apart from the latest queued task.
 - Microphone capture is always released after a failed final turn. Docker assets are readable by the non-root user from private checkouts.
-- Require Zod 4.6.6+ for Zod 4 consumers (GHSA-mrhx-c7xc-m3w5) and update the Happy DOM test dependency to 21.0.4.
+- Require Zod 4.6.6+ for Zod 4 consumers (GHSA-mrhx-c7xc-m3w5) and update the Happy DOM test dependency to 21.0.4. Update the Gemini SDK to 2.32.0, the Node 22 container image, and pinned workflow actions.
 - Rewrite the README around the everyday workflow.
 
 Requires Hermes Agent 0.20.0+. Run `npm install --global hermes-live-voice`, then `hermes-live upgrade`, and restart Hermes Dashboard.
