@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update the Gemini SDK to 3.6.1 and keep Gemini Live on the `v1beta` API, which SDK 3 no longer uses by default.
+
 ## 1.3.0 - 2026-11-25
 
 Live Voice now lives inside Hermes Dashboard's own Chat. Upgrading from 1.2.0:
