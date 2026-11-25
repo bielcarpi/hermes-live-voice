@@ -54,6 +54,7 @@ describe("Gemini Live adapter helpers", () => {
       expect(developerClient.apiClient.isVertexAI()).toBe(false);
       expect(developerClient.apiClient.getBaseUrl()).toBe("https://generativelanguage.googleapis.com/");
       expect(developerClient.apiClient.getWebsocketBaseUrl()).toBe("wss://generativelanguage.googleapis.com/");
+      expect(developerClient.apiClient.getApiVersion()).toBe("v1beta");
 
       const vertexConfig = testGeminiConfig({
         enterprise: true,
@@ -71,6 +72,7 @@ describe("Gemini Live adapter helpers", () => {
       expect(vertexClient.apiClient.isVertexAI()).toBe(true);
       expect(vertexClient.apiClient.getBaseUrl()).toBe("https://us-central1-aiplatform.googleapis.com/");
       expect(vertexClient.apiClient.getWebsocketBaseUrl()).toBe("wss://us-central1-aiplatform.googleapis.com/");
+      expect(vertexClient.apiClient.getApiVersion()).toBe("v1beta1");
 
       expect(officialGeminiApiBaseUrl({ enterprise: true, location: "global" }))
         .toBe("https://aiplatform.googleapis.com/");
