@@ -6,7 +6,7 @@ export function checkZodConsumers({ tarball, workDir, cacheDir }) {
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   const compiler = resolve("node_modules/typescript/bin/tsc");
   const env = { ...process.env, npm_config_cache: cacheDir, NPM_CONFIG_CACHE: cacheDir };
-  for (const [version, importPath] of [["3.25.76", "zod"], ["4.5.4", "zod/v3"]]) {
+  for (const [version, importPath] of [["3.25.76", "zod"], ["4.6.6", "zod/v3"]]) {
     const consumer = join(workDir, `zod-consumer-${version}`);
     mkdirSync(consumer, { recursive: true });
     checked(npm, [

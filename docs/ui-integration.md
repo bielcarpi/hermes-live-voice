@@ -18,7 +18,7 @@ Other UIs need an explicit protocol v6 integration and a server-side credential 
 
 The package exports `ClientMessageSchema`, `ServerMessageSchema`, and related
 schemas for server-side integrations. Hermes Live v1 keeps the Zod 3 schema and
-error API. It supports the Zod 3.25.76 and Zod 4.5.4 package lines through the
+error API. It supports the Zod 3.25.76+ and Zod 4.6.6+ package lines through the
 stable `zod/v3` entry point. Zod is a peer dependency so consumers can compose
 schemas and check `ZodError` with their own installed copy; normal npm installs
 resolve this dependency automatically.
