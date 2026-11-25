@@ -83,6 +83,8 @@ export function buildGeminiClientOptions(config: AppConfig["gemini"]): Record<st
     };
   }
   return {
+    // The Gemini Developer API serves Live only on v1beta; SDK 3 defaults to v1.
+    apiVersion: "v1beta",
     ...common,
     enterprise: false,
     apiKey: config.apiKey,
