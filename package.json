@@ -127,7 +127,7 @@
     "prepack": "npm run check:dashboard-assets && npm run build"
   },
   "dependencies": {
-    "@google/genai": "2.32.0",
+    "@google/genai": "3.6.1",
     "ws": "8.22.0"
   },
   "devDependencies": {
